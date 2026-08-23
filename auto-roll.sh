@@ -53,6 +53,12 @@ BRANCH="${BRANCH:-main}"
 STATE_FILE="${STATE_FILE:-/var/lib/substrate/last-rolled-sha256}"
 LOCK_FILE=/var/lib/substrate/auto-roll.lock
 
+# site.yml is gitignored, so the clone below never contains it. systemd supplies
+# this via EnvironmentFile; exporting it explicitly makes the dependency visible
+# and lets a manual debugging run work by sourcing the same env file:
+#   set -a; . /etc/substrate/auto-roll.env; set +a; /usr/local/sbin/auto-roll.sh
+export SUBSTRATE_SITE_FILE="${SUBSTRATE_SITE_FILE:?SUBSTRATE_SITE_FILE must be set (see /etc/substrate/auto-roll.env)}"
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 # A roll takes minutes and the timer fires on a schedule — overlapping runs

@@ -37,7 +37,15 @@ except ImportError:  # pragma: no cover
     )
 
 REPO_ROOT = Path(__file__).resolve().parent
-SITE_FILE = REPO_ROOT / "site.yml"
+# site.yml normally lives beside the code, but a DEPLOYED copy (the auto-roll
+# clone on a hypervisor) cannot have it — it is gitignored, so a fresh clone
+# never contains it. $SUBSTRATE_SITE_FILE lets the installer point at a system
+# location (/etc/substrate/site.yml, mode 0600) instead of copying secrets into
+# a git working tree.
+# NOTE: test the STRING, not Path(...) — Path("") evaluates to Path(".") which
+# is truthy, so `Path(env) or default` silently returns the current directory.
+_SITE_OVERRIDE = os.environ.get("SUBSTRATE_SITE_FILE", "").strip()
+SITE_FILE = Path(_SITE_OVERRIDE) if _SITE_OVERRIDE else REPO_ROOT / "site.yml"
 VERSIONS_FILE = REPO_ROOT / "versions.yml"
 EXAMPLE_FILE = REPO_ROOT / "site.example.yml"
 
