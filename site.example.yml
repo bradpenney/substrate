@@ -1,0 +1,123 @@
+# ---------------------------------------------------------------------------
+# SITE CONFIGURATION — copy to `site.yml` and edit. `site.yml` is gitignored.
+#
+#   cp site.example.yml site.yml && $EDITOR site.yml
+#
+# Everything that identifies a particular installation lives here: addresses,
+# usernames, storage pool names, hardware layout. The code in this repo is
+# deliberately generic so it can be published without handing anyone a map of
+# the network it happens to run on.
+#
+# Both bootstrap implementations read THIS file — provision.py (via
+# siteconfig.py) and ansible/inventory.yml. That's intentional: it makes the
+# two definitions impossible to drift apart, rather than merely checking that
+# they haven't. What stays independent is the part that matters for the
+# destroy-and-rebuild gate — the BUILD LOGIC, which is written twice and
+# verified to produce byte-identical node configuration.
+#
+# Addresses below use the TEST-NET-1 range from RFC 5737, reserved for
+# documentation, so nothing here is a real host anywhere.
+# ---------------------------------------------------------------------------
+
+# The unprivileged admin account created on every node and used to reach the
+# hypervisors. Needs passwordless sudo on the hypervisors during a build
+# (see temp-sudo.sh, which grants it time-boxed).
+admin_user: youruser
+
+network:
+  gateway: 192.0.2.1
+  dns_servers:
+    - 192.0.2.1
+    - 8.8.8.8
+  # Bridge on each hypervisor that VMs attach to, so nodes get real LAN IPs.
+  bridge: br0
+  # The VM's NIC name, matched by NAME in systemd-networkd.
+  # NEVER match on Type=ether — it also matches the CNI's veth pairs and
+  # breaks pod networking completely.
+  primary_nic: ens2
+
+# The physical machines that host VMs. Two here, but any number works.
+hypervisors:
+  # `ssh_target: null` means "this script runs ON that machine".
+  host-a:
+    ssh_target: null
+    # How the OTHER hypervisor reaches this one. Required when ssh_target is
+    # null, because "run locally" carries no address a peer could use.
+    peer_target: youruser@192.0.2.10
+    # libvirt storage pool for VM disks. Genuinely differs per machine —
+    # an LVM pool, or the stock dir pool when there's no LVM.
+    disk_pool: default
+    # true when the pool's backing filesystem is btrfs: VM images on a
+    # copy-on-write filesystem fragment badly, so the pool directory needs
+    # `chattr +C` BEFORE any image is created.
+    pool_needs_nocow: true
+  host-b:
+    ssh_target: youruser@192.0.2.11
+    disk_pool: vmpool
+    pool_needs_nocow: false
+
+# Every node is a combined k0s controller+worker — deliberate for small-cluster
+# resiliency. Keep the count ODD: etcd needs a majority, so 5 tolerates 2
+# failures while 6 tolerates the same 2 and adds split-brain risk.
+#
+# Exactly ONE node must have `bootstrap: true`. It comes up first and alone;
+# every other node joins using a token minted from it. That ordering matters
+# only for the initial build — afterwards all nodes are equal.
+#
+# memory_mib / vcpu are optional per-node overrides; omit them to use the
+# defaults below. Sizing per host is the point: machines differ, so uniform
+# sizing would waste one and starve the other.
+nodes:
+  node-1:
+    hypervisor: host-b
+    ip: 192.0.2.20
+    bootstrap: true
+  node-2:
+    hypervisor: host-b
+    ip: 192.0.2.21
+  node-3:
+    hypervisor: host-a
+    ip: 192.0.2.23
+    memory_mib: 10240
+    vcpu: 4
+  node-4:
+    hypervisor: host-a
+    ip: 192.0.2.24
+    memory_mib: 10240
+    vcpu: 4
+  node-5:
+    hypervisor: host-a
+    ip: 192.0.2.25
+    memory_mib: 10240
+    vcpu: 4
+
+defaults:
+  memory_mib: 7168
+  vcpu: 2          # proven-working; 3 produced an odd 3-socket topology
+  disk_gb: 20
+
+
+k0s:
+  args:
+    - "--enable-worker"
+    - "--no-taints"
+  # Long enough for a full fleet build in one session, short enough that a
+  # stale token in an old ISO fails loudly rather than silently working.
+  token_expiry: 24h
+
+libvirt:
+  iso_pool: isos
+  iso_pool_path: /var/lib/libvirt/isos
+
+# GitOps bootstrap (ADR-018). Baked into each node via the k0s manifest
+# deployer, so a rebuilt cluster self-configures rather than coming back empty.
+flux:
+  # The OCI artifact holding your cluster config. Flux pulls this; nothing is
+  # ever kubectl-applied.
+  oci_repository: ghcr.io/youruser/your-config-repo
+  oci_tag: main
+  # Read-only registry credentials, if the artifact is private. Leave the token
+  # empty for a public artifact. This is the one bootstrap credential that
+  # cannot be avoided: Flux needs it before External Secrets exists.
+  ghcr_username: youruser
+  ghcr_token: ""

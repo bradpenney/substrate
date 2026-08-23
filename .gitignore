@@ -1,0 +1,19 @@
+# Ansible lives in a repo-local venv (see ansible/README rationale in site.yml).
+# It's ~57MB of third-party code — recreate it, don't commit it:
+#   python3 -m venv .venv && .venv/bin/pip install ansible-core
+.venv/
+
+__pycache__/
+*.pyc
+
+# Saved cluster end-state snapshots from `gate.py rebuild`. Machine-local
+# evidence from a specific run, not source — and they go stale the moment the
+# cluster is rebuilt.
+.fingerprints/
+
+# Ansible retry files
+*.retry
+
+# Real site configuration: addresses, usernames, storage layout.
+# Committed template is site.example.yml — this file never goes to git.
+site.yml

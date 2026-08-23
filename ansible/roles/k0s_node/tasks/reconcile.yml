@@ -1,0 +1,58 @@
+---
+# Correct drift on a VM that already exists.
+#
+# An idempotent re-run shouldn't just skip existing VMs — it should bring them
+# back to the desired state. Two things matter for a cluster that must survive
+# host reboots: autostart being set, and the VM actually running.
+
+- name: Read current domain info
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system dominfo {{ inventory_hostname }}"
+  delegate_to: "{{ hypervisor }}"
+  changed_when: false
+  register: info
+
+- name: Enable autostart if it drifted off
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system autostart {{ inventory_hostname }}"
+  delegate_to: "{{ hypervisor }}"
+  when: "'disable' in (info.stdout | regex_search('Autostart:.*') | default(''))"
+
+- name: Read current domain state
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system domstate {{ inventory_hostname }}"
+  delegate_to: "{{ hypervisor }}"
+  changed_when: false
+  register: state
+
+- name: Start the VM if it isn't running
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system start {{ inventory_hostname }}"
+  delegate_to: "{{ hypervisor }}"
+  when: state.stdout.strip() != 'running'
+
+- name: Wait for a restarted VM to come back
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o BatchMode=yes -o ConnectTimeout=5
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+      {{ admin_user }}@{{ static_ip }} cat /proc/cmdline
+  delegate_to: localhost
+  register: restarted
+  until: restarted.rc == 0 and 'COS_ACTIVE' in restarted.stdout
+  retries: "{{ (ssh_wait_timeout | int // poll_interval | int) }}"
+  delay: "{{ poll_interval }}"
+  changed_when: false
+  failed_when: false
+  when: state.stdout.strip() != 'running'
+
+- name: Warn if a restarted VM did not become reachable
+  ansible.builtin.debug:
+    msg: "WARNING: {{ inventory_hostname }} was started but did not become reachable"
+  when:
+    - state.stdout.strip() != 'running'
+    - restarted.rc | default(1) != 0
+
+- name: Existing VM reconciled
+  ansible.builtin.set_fact:
+    vm_ready: true

@@ -1,0 +1,91 @@
+---
+# Keep the pinned flux-operator from rotting.
+#
+# THE TENSION THIS RESOLVES: pinning is required for reproducibility — a rebuild
+# months from now must install the same operator — but a pin nobody touches
+# silently becomes years out of date, which is its own risk.
+#
+# So: stay pinned, and let a bot propose the bump. Weekly, this checks for a new
+# release, downloads the asset, computes its REAL sha256, and opens a PR
+# updating versions.yml. A human reviews and merges; nothing auto-deploys.
+#
+# Note the sha is computed from the downloaded artifact, not copied from a
+# release note — the checksum has to be evidence, not an assertion.
+name: bump-flux-operator
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"      # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for a newer release
+        id: check
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep -A1 '^flux_operator:' versions.yml | grep 'version:' | awk '{print $2}')
+          LATEST=$(curl -sfL https://api.github.com/repos/controlplaneio-fluxcd/flux-operator/releases/latest \
+                   | jq -r .tag_name)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"   >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already on $CURRENT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "$CURRENT -> $LATEST"
+          fi
+
+      - name: Compute the new checksum from the actual asset
+        if: steps.check.outputs.changed == 'true'
+        id: sum
+        run: |
+          set -euo pipefail
+          URL="https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/${{ steps.check.outputs.latest }}/install.yaml"
+          curl -sfL -o /tmp/install.yaml "$URL"
+          # Sanity-check it's a real manifest before trusting the digest.
+          grep -q '^kind: CustomResourceDefinition' /tmp/install.yaml
+          echo "sha=$(sha256sum /tmp/install.yaml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Update versions.yml
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          sed -i "s|^  version: ${{ steps.check.outputs.current }}$|  version: ${{ steps.check.outputs.latest }}|" versions.yml
+          sed -i "s|^  sha256: .*$|  sha256: ${{ steps.sum.outputs.sha }}|" versions.yml
+          grep -A3 '^flux_operator:' versions.yml
+
+      - name: Open a PR
+        if: steps.check.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bump/flux-operator-${{ steps.check.outputs.latest }}
+          title: "bump flux-operator ${{ steps.check.outputs.current }} → ${{ steps.check.outputs.latest }}"
+          commit-message: "bump flux-operator to ${{ steps.check.outputs.latest }}"
+          body: |
+            Automated bump of the pinned flux-operator.
+
+            | | |
+            |---|---|
+            | from | `${{ steps.check.outputs.current }}` |
+            | to | `${{ steps.check.outputs.latest }}` |
+            | sha256 | `${{ steps.sum.outputs.sha }}` |
+
+            The checksum was computed from the downloaded release asset, not
+            copied from the release notes.
+
+            **Merging this does not deploy anything.** The operator manifest is
+            fetched at node build time, so it takes effect on the next node
+            rebuild — consistent with the destroy-and-rebuild model for node OS
+            changes.
+
+            Review the upstream release notes before merging:
+            https://github.com/controlplaneio-fluxcd/flux-operator/releases/tag/${{ steps.check.outputs.latest }}

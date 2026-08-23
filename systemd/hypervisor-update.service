@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly hypervisor updates (reboots only when required and safe)
+Documentation=https://github.com/bradpenney/substrate
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# PEER_HOST and KUBECONFIG_PATH come from here; written per-host by
+# deploy-updates.sh since each hypervisor's peer is the other one.
+EnvironmentFile=/etc/homelab/update.env
+ExecStart=/usr/local/bin/hypervisor-update.sh
+# Updates + drain + guest shutdown grace can legitimately take a while.
+TimeoutStartSec=3600

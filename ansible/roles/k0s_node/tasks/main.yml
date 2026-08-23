@@ -1,0 +1,36 @@
+---
+# Create (or reconcile) one k0s node VM.
+#
+# Every task runs on the node's HYPERVISOR via delegate_to — the node itself is
+# never an Ansible connection target, by design.
+
+- name: Does the VM already exist?
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system dominfo {{ inventory_hostname }}"
+  delegate_to: "{{ hypervisor }}"
+  changed_when: false
+  failed_when: false
+  register: dominfo
+
+# An idempotent re-run shouldn't merely SKIP an existing VM — it should correct
+# drift. Two things matter for a cluster that must survive host reboots:
+# autostart being set, and the VM actually running.
+- name: Reconcile an existing VM
+  ansible.builtin.include_tasks: reconcile.yml
+  when: dominfo.rc == 0
+
+- name: Build a new VM
+  ansible.builtin.include_tasks: create.yml
+  loop: "{{ range(1, (create_retries | int) + 1) | list }}"
+  loop_control:
+    loop_var: attempt
+  when:
+    - dominfo.rc != 0
+    - not (vm_ready | default(false))
+
+- name: Fail if the VM never came up
+  ansible.builtin.fail:
+    msg: "{{ inventory_hostname }} failed to come up after {{ create_retries }} attempts"
+  when:
+    - dominfo.rc != 0
+    - not (vm_ready | default(false))

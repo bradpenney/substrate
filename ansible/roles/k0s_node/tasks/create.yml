@@ -1,0 +1,188 @@
+---
+# One creation attempt for a k0s node VM.
+#
+# ⚠️ THE INSTALL LIFECYCLE ORDERING BELOW IS THE SINGLE MOST IMPORTANT THING IN
+# THIS REPO. A misordered step here produced a symptom (vCPU frozen at
+# EIP=0xb78c, HLT=1) that survived reimplementation in OpenTofu, Ansible AND
+# plain Python, which is exactly why it looked for hours like a tool problem
+# rather than a sequencing one. It was never the tool.
+#
+# Three phases, in this order, no exceptions:
+#   1. Create and boot with CD FIRST (virt-install's own default — do not
+#      override it). Forcing "disk first" on a blank, never-written disk makes
+#      SeaBIOS HALT rather than fall through to the CD.
+#   2. Wait for the domain to reach `shut off`. Kairos POWERS OFF after
+#      installing rather than rebooting (it detects that a reboot would land
+#      back in the installer and declines to loop). Do NOT wait on SSH here:
+#      the live installer brings up networking and sshd early, so port 22
+#      answers while the disk is still blank.
+#   3. Only THEN switch to disk-first, start, and confirm the installed system
+#      is really running by checking /proc/cmdline.
+
+# ⚠️ EVERYTHING BELOW IS WRAPPED IN A BLOCK GUARDED ON `vm_ready`.
+#
+# The retry loop lives in main.yml as `include_tasks` in a `loop`. A `when:` on
+# that include does NOT stop later iterations once an earlier one has succeeded
+# — which bit for real: attempt 1 built the VM and confirmed COS_ACTIVE, then
+# attempt 2 ran anyway and died with "Guest name 's2-vm1' is already in use",
+# failing the whole playbook after a SUCCESSFUL build.
+#
+# A block-level `when` is inherited by every task inside it and evaluated when
+# each task actually runs, so once `vm_ready` is set the remaining attempts
+# become no-ops. Guarding the block is the fix; guarding the include is not.
+- name: Create the VM (skipped entirely once a previous attempt succeeded)
+  when: not (vm_ready | default(false))
+  block:
+
+    - name: "[{{ inventory_hostname }}] attempt {{ attempt }}/{{ create_retries }}"
+      ansible.builtin.debug:
+        msg: "Creating {{ inventory_hostname }} on {{ hypervisor }} ({{ static_ip }})"
+
+    # ------------------------------------------------------------ seed ISO
+
+    - name: Render the cloud-config
+      ansible.builtin.template:
+        src: cloud-config.yaml.j2
+        dest: "/tmp/{{ inventory_hostname }}-user-data"
+        mode: "0644"
+      delegate_to: "{{ hypervisor }}"
+
+    - name: Create the empty meta-data file
+      ansible.builtin.copy:
+        content: ""
+        dest: "/tmp/{{ inventory_hostname }}-meta-data"
+        mode: "0644"
+      delegate_to: "{{ hypervisor }}"
+
+    # -graft-points is required: without it mkisofs names the files after their
+    # full source paths, and cloud-init then can't find user-data/meta-data.
+    - name: Build the NoCloud seed ISO
+      ansible.builtin.command:
+        cmd: >-
+          mkisofs
+          -output {{ iso_pool_path }}/{{ inventory_hostname }}-cloudinit.iso
+          -volid cidata -joliet -rock -graft-points
+          user-data=/tmp/{{ inventory_hostname }}-user-data
+          meta-data=/tmp/{{ inventory_hostname }}-meta-data
+      delegate_to: "{{ hypervisor }}"
+
+    # NON-FATAL, mirroring provision.py's `check=False`. libvirt chowns an ISO
+    # to `qemu` once attached to a domain, and only the owner may chmod it. On a
+    # fresh build mkisofs creates it as us so this succeeds; on a re-run over an
+    # existing ISO it would fail for no good reason.
+    - name: Make the seed ISO readable by qemu
+      ansible.builtin.file:
+        path: "{{ iso_pool_path }}/{{ inventory_hostname }}-cloudinit.iso"
+        mode: "0644"
+      delegate_to: "{{ hypervisor }}"
+      failed_when: false
+
+    # --------------------------------------------------------- phase 1: create
+
+    # Shelling out to virt-install rather than defining domain XML directly is a
+    # deliberate, load-bearing choice. An OpenTofu attempt using
+    # dmacvicar/terraform-provider-libvirt produced VMs that looked identical on
+    # paper but failed, because that provider builds domain XML from scratch and
+    # omits the OS-profile-aware defaults virt-install gets free from libosinfo
+    # (ACPI/APIC, power management, clock timers, disk cache/IO/discard, USB
+    # controller model). Any reimplementation must shell out to virt-install too.
+    #
+    # NOTE: boot order is NOT touched here. virt-install already sets the correct
+    # order for a fresh install (CD bootindex=1, disk bootindex=2).
+    - name: Create the VM (CD-first boot — virt-install's default, do not override)
+      ansible.builtin.command:
+        cmd: >-
+          virt-install
+          --connect qemu:///system
+          --name {{ inventory_hostname }}
+          --memory {{ memory_mib | default(vm_memory_mib) }}
+          --vcpus {{ vcpu | default(vm_vcpu) }}
+          --cpu host-passthrough
+          --disk pool={{ hostvars[hypervisor].disk_pool }},size={{ vm_disk_gb }},bus=virtio
+          --cdrom {{ iso_pool_path }}/kairos-hadron-k0s.iso
+          --disk device=cdrom,bus=sata,path={{ iso_pool_path }}/{{ inventory_hostname }}-cloudinit.iso
+          --network bridge={{ network_bridge }},model=virtio
+          --os-variant generic
+          --graphics none
+          --console pty,target_type=serial
+          --noautoconsole
+      delegate_to: "{{ hypervisor }}"
+
+    # ------------------------------ phase 2: wait for the installer to finish
+
+    - name: Wait for the installer to finish (Kairos POWERS OFF, it does not reboot)
+      ansible.builtin.command:
+        cmd: "virsh -c qemu:///system domstate {{ inventory_hostname }}"
+      delegate_to: "{{ hypervisor }}"
+      register: domstate
+      until: domstate.stdout.strip() == 'shut off'
+      retries: "{{ (install_wait_timeout | int // poll_interval | int) }}"
+      delay: "{{ poll_interval }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Record whether the install completed
+      ansible.builtin.set_fact:
+        install_ok: "{{ domstate.stdout.strip() == 'shut off' }}"
+
+    # ---------------------------- phase 3: boot from disk and confirm install
+
+    - name: Switch to disk-first boot (ONLY now that something is installed)
+      ansible.builtin.command:
+        cmd: >-
+          virt-xml -c qemu:///system {{ inventory_hostname }}
+          --edit --boot hd,cdrom,menu=off
+      delegate_to: "{{ hypervisor }}"
+      when: install_ok | bool
+
+    # Without autostart a host reboot (including the nightly-update reboots)
+    # silently leaves the cluster down: libvirtd comes back but the domains don't.
+    - name: Enable autostart (survive a hypervisor reboot)
+      ansible.builtin.command:
+        cmd: "virsh -c qemu:///system autostart {{ inventory_hostname }}"
+      delegate_to: "{{ hypervisor }}"
+      when: install_ok | bool
+
+    - name: Start the installed system
+      ansible.builtin.command:
+        cmd: "virsh -c qemu:///system start {{ inventory_hostname }}"
+      delegate_to: "{{ hypervisor }}"
+      when: install_ok | bool
+
+    # SSH reachability alone is NOT a valid "installed" signal — the live
+    # installer answers on port 22 while the disk is still blank. The reliable
+    # discriminator is the kernel command line:
+    #     live media : root=live:CDLABEL=COS_LIVE
+    #     installed  : root=LABEL=COS_ACTIVE
+    #
+    # StrictHostKeyChecking=no is scoped to exactly this probe (not set
+    # globally): a rebuilt VM legitimately presents a new host key at a
+    # recycled IP.
+    - name: Confirm the node booted the INSTALLED system (COS_ACTIVE, not COS_LIVE)
+      ansible.builtin.command:
+        cmd: >-
+          ssh -o BatchMode=yes -o ConnectTimeout=5
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          {{ admin_user }}@{{ static_ip }} cat /proc/cmdline
+      delegate_to: localhost
+      register: cmdline
+      until: cmdline.rc == 0 and 'COS_ACTIVE' in cmdline.stdout
+      retries: "{{ (ssh_wait_timeout | int // poll_interval | int) }}"
+      delay: "{{ poll_interval }}"
+      changed_when: false
+      failed_when: false
+      when: install_ok | bool
+
+    - name: Mark the VM as successfully built
+      ansible.builtin.set_fact:
+        vm_ready: true
+      when:
+        - install_ok | bool
+        - cmdline.rc | default(1) == 0
+        - "'COS_ACTIVE' in (cmdline.stdout | default(''))"
+
+    # --------------------------------------------- cleanup before any retry
+
+    - name: Clean up the failed attempt
+      ansible.builtin.include_tasks: cleanup_failed.yml
+      when: not (vm_ready | default(false))

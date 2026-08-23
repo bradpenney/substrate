@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly hypervisor update check
+Documentation=https://github.com/bradpenney/substrate
+
+[Timer]
+# Nightly. The randomised delay staggers the two hypervisors so they don't
+# start together — belt-and-braces alongside the peer reboot-lock check, since
+# two hosts rebooting at once would take the whole cluster down.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=45m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

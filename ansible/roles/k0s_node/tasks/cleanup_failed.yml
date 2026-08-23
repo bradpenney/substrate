@@ -1,0 +1,66 @@
+---
+# Tear down a failed creation attempt so the next one starts clean.
+#
+# Two distinct kinds of leftover state, and MISSING THE SECOND ONE ONCE BRICKED
+# THE WHOLE CLUSTER.
+
+# ---- 1. the VM and its disk ----
+#
+# Deliberately NOT `undefine --remove-all-storage`: that deletes every
+# POOL-MANAGED volume attached to the domain, and read-only CDROMs are not
+# exempt (verified experimentally). Since the seed ISOs and the shared Kairos
+# ISO all live in the `isos` pool, that flag would delete the SHARED Kairos ISO
+# out from under every subsequent VM — and a FAILED install is precisely when
+# it's still attached. Resolve this domain's own disks and delete only those.
+- name: Find this domain's own disks (excluding CDROMs)
+  ansible.builtin.shell:
+    cmd: >-
+      virsh -c qemu:///system domblklist {{ inventory_hostname }} --details
+      | awk '$2 == "disk" && $4 != "-" { print $4 }'
+  delegate_to: "{{ hypervisor }}"
+  changed_when: false
+  failed_when: false
+  register: own_disks
+
+- name: Destroy the VM
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system destroy {{ inventory_hostname }}"
+  delegate_to: "{{ hypervisor }}"
+  failed_when: false
+
+- name: Undefine the VM (no --remove-all-storage — see above)
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system undefine {{ inventory_hostname }}"
+  delegate_to: "{{ hypervisor }}"
+  failed_when: false
+
+- name: Delete only this VM's own disk volumes
+  ansible.builtin.command:
+    cmd: >-
+      virsh -c qemu:///system vol-delete
+      --pool {{ hostvars[hypervisor].disk_pool }} {{ item }}
+  delegate_to: "{{ hypervisor }}"
+  loop: "{{ own_disks.stdout_lines | default([]) }}"
+  failed_when: false
+
+# ---- 2. the etcd ghost member ----
+#
+# A joining node registers itself in etcd BEFORE it's fully up. Destroy that VM
+# and its etcd membership survives as a ghost. With 2 members and 1 alive there
+# is no majority: elections loop forever, the API server wedges, and etcd
+# CANNOT remove the ghost because removal itself requires quorum —
+# unrecoverable without a wipe. This actually happened during the build.
+#
+# Skipped for the bootstrap node, which by definition has no cluster to be a
+# ghost in yet.
+- name: Prune a possible etcd ghost member
+  ansible.builtin.command:
+    cmd: >-
+      ssh -o BatchMode=yes -o ConnectTimeout=10
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+      {{ admin_user }}@{{ hostvars[groups['k0s_bootstrap'][0]].static_ip }}
+      sudo k0s etcd leave --peer-address {{ static_ip }}
+  delegate_to: localhost
+  failed_when: false
+  changed_when: false
+  when: inventory_hostname not in groups['k0s_bootstrap']

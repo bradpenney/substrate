@@ -1,0 +1,37 @@
+# Pinned upstream component versions — COMMITTED, unlike site.yml.
+#
+# These are project-wide choices, not site-specific ones, so they live in the
+# repo where they are visible to version-control and to the update automation
+# in .github/workflows/bump-flux-operator.yaml.
+#
+# Everything here is PINNED, never "latest": a rebuild months from now must
+# install the same thing. The checksum is what actually guarantees that — the
+# tag only says what was *asked* for.
+
+flux_operator:
+  version: v0.58.1
+  sha256: d674546f8cd6c9a09c55a279b119c880ae6d79c726ff7c57ec4d92b26827a04d
+  # Where the pinned asset comes from. {version} is substituted.
+  url: https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/{version}/install.yaml
+
+# Flux ITSELF is not pinned here — the FluxInstance CR carries a semver RANGE
+# and the operator keeps the toolkit current in-cluster. Only the operator
+# needs an external bump, which is why only it appears in this file.
+flux_distribution:
+  version: "2.x"
+
+# The node OS image. PINNED so every node in the fleet is byte-identical and a
+# rebuild months from now produces the same nodes.
+#
+# ⚠️ THIS IS THE NODE PATCHING STORY. The hypervisors get nightly OS updates;
+# the nodes are immutable and get NONE. They run whatever image they were built
+# from, indefinitely — CVEs included. The only way to patch them is to roll the
+# fleet onto a newer image (`gate.py roll`), so letting this pin go stale is a
+# standing security gap, not a tidiness issue.
+kairos:
+  version: v4.1.2
+  # The asset name encodes flavour + k0s version, so a bump may change more of
+  # this string than just the tag — the bump bot resolves the real asset name
+  # from the release rather than guessing.
+  iso_url: "https://github.com/kairos-io/kairos/releases/download/v4.1.2/kairos-hadron-v0.4.0-standard-amd64-generic-v4.1.2-k0sv1.36.1+k0s.0.iso"
+  iso_sha256: "af7b191cdf7ccc66189c69469066c947df75c3fab4f46102a68bc96847e600f8"

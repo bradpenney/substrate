@@ -1,0 +1,155 @@
+---
+# Prepare a hypervisor to host k0s VMs. Idempotent: safe to re-run against a
+# host that's already fully prepared.
+
+# Fail fast with a useful message rather than dying two minutes in with a bare
+# "virt-install: command not found" after the ISO has already downloaded.
+# server1 genuinely hit this: it had virsh and qemu-kvm from desktop/Docker use
+# but had never been a hypervisor, so virt-install was missing.
+#
+# Uses the `shell` module rather than `command`: `command -v` is a shell
+# builtin, and relying on a `command` binary happening to exist on PATH is
+# needlessly fragile across distros.
+- name: Preflight — required tooling is present
+  ansible.builtin.shell:
+    cmd: "command -v {{ item }}"
+  loop:
+    - virsh
+    - virt-install
+    - virt-xml
+    - mkisofs
+    - curl
+    - sha256sum
+  changed_when: false
+  register: tool_check
+  failed_when: tool_check.rc != 0
+
+# The pool is NOT created here on purpose. Creating it means choosing a backing
+# store, which differs fundamentally per host (LVM VG vs a directory on btrfs)
+# and on server2 would mean carving space out of the VG that holds the host's
+# own root LV. That's a deliberate human decision, not something a provisioning
+# run should improvise.
+- name: Disk pool exists
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system pool-info {{ disk_pool }}"
+  changed_when: false
+  register: pool_info
+  failed_when: false
+
+- name: Fail clearly if the disk pool is missing
+  ansible.builtin.fail:
+    msg: >-
+      Disk pool '{{ disk_pool }}' does not exist on {{ inventory_hostname }}.
+      Create it before provisioning — this is a deliberate manual step because
+      the backing store differs per host.
+  when: pool_info.rc != 0
+
+- name: Resolve the disk pool's directory path (btrfs no-CoW check)
+  ansible.builtin.shell:
+    cmd: >-
+      virsh -c qemu:///system pool-dumpxml {{ disk_pool }}
+      | sed -n 's:.*<path>\(.*\)</path>.*:\1:p'
+  changed_when: false
+  register: pool_path
+  when: pool_needs_nocow | bool
+
+# sudo is needed for BOTH the check and the change: the pool dir is root-owned
+# 0711, so an unprivileged lsattr returns "Permission denied" rather than the
+# flags — which made the idempotency check silently never match, re-running
+# chattr on every single pass.
+- name: Check whether the pool directory is already no-CoW
+  ansible.builtin.shell:
+    cmd: "lsattr -d {{ pool_path.stdout }} 2>/dev/null | cut -d' ' -f1"
+  become: true
+  changed_when: false
+  register: nocow_check
+  when:
+    - pool_needs_nocow | bool
+    - pool_path.stdout | default('') | length > 0
+
+- name: Set no-CoW on the btrfs pool directory
+  ansible.builtin.command:
+    cmd: "chattr +C {{ pool_path.stdout }}"
+  become: true
+  when:
+    - pool_needs_nocow | bool
+    - pool_path.stdout | default('') | length > 0
+    - "'C' not in (nocow_check.stdout | default(''))"
+  # Not fatal — VMs still work, just with CoW fragmentation — but it must be
+  # visible rather than swallowed.
+  failed_when: false
+  register: chattr_result
+
+- name: Warn if no-CoW could not be set
+  ansible.builtin.debug:
+    msg: "WARNING: chattr +C failed on {{ pool_path.stdout }} — VM images will fragment on btrfs"
+  when:
+    - chattr_result is defined
+    - chattr_result.rc is defined
+    - chattr_result.rc != 0
+
+- name: ISO pool exists
+  ansible.builtin.command:
+    cmd: "virsh -c qemu:///system pool-info {{ iso_pool }}"
+  changed_when: false
+  register: iso_pool_info
+  failed_when: false
+
+- name: Create the ISO pool if absent
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  loop:
+    - "virsh -c qemu:///system pool-define-as {{ iso_pool }} dir --target {{ iso_pool_path }}"
+    - "virsh -c qemu:///system pool-build {{ iso_pool }}"
+    - "virsh -c qemu:///system pool-start {{ iso_pool }}"
+    - "virsh -c qemu:///system pool-autostart {{ iso_pool }}"
+  when: iso_pool_info.rc != 0
+
+# Checksum-gated download. Re-downloading ~500MB on every run would dominate
+# the rebuild time while proving nothing — the pinned checksum is what actually
+# guarantees the image is the intended one.
+- name: Check the pinned Kairos ISO
+  ansible.builtin.command:
+    cmd: "sha256sum {{ iso_pool_path }}/kairos-hadron-k0s.iso"
+  changed_when: false
+  failed_when: false
+  register: iso_sum
+
+- name: Download the pinned Kairos ISO
+  ansible.builtin.command:
+    cmd: "curl -fL -o {{ iso_pool_path }}/kairos-hadron-k0s.iso {{ kairos_iso_url }}"
+  when: (iso_sum.stdout | default('')).split(' ')[0] != kairos_iso_sha256
+
+- name: Re-verify the ISO checksum after download
+  ansible.builtin.command:
+    cmd: "sha256sum {{ iso_pool_path }}/kairos-hadron-k0s.iso"
+  changed_when: false
+  register: iso_sum_after
+  when: (iso_sum.stdout | default('')).split(' ')[0] != kairos_iso_sha256
+
+- name: Fail on ISO checksum mismatch
+  ansible.builtin.fail:
+    msg: >-
+      Kairos ISO checksum mismatch on {{ inventory_hostname }}:
+      expected {{ kairos_iso_sha256 }},
+      got {{ (iso_sum_after.stdout | default('')).split(' ')[0] }}
+  when:
+    - iso_sum_after is defined
+    - iso_sum_after.stdout is defined
+    - iso_sum_after.stdout.split(' ')[0] != kairos_iso_sha256
+
+# NON-FATAL, mirroring provision.py's `check=False` on the same operation.
+# libvirt chowns an ISO to `qemu` once it is attached to a domain, and only the
+# owner may chmod it — so on any run after the first this fails with
+# "Operation not permitted". It is also unnecessary: curl creates the file
+# readable, and the pool directory is setgid `libvirt`.
+#
+# This asymmetry (Python tolerant, Ansible fatal) is exactly the divergence the
+# two-implementation design exists to surface — and it did, at runtime. The
+# render guards only compare cloud-config output, so they cannot catch a
+# difference in TASK SEMANTICS.
+- name: Ensure the ISO is readable by qemu
+  ansible.builtin.file:
+    path: "{{ iso_pool_path }}/kairos-hadron-k0s.iso"
+    mode: "0644"
+  failed_when: false

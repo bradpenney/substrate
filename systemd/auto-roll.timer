@@ -1,0 +1,16 @@
+[Unit]
+Description=Poll for a new pinned Kairos image and roll the fleet
+Documentation=https://github.com/bradpenney/substrate
+
+[Timer]
+# Every 20 minutes. The target is a rolling update within 24h of a release; the
+# bump PR arrives within a day of publication, and this closes the gap between
+# "approved on a phone" and "nodes actually patched".
+OnBootSec=10min
+OnUnitActiveSec=20min
+# Small jitter so a fleet-wide restart doesn't align every timer exactly.
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

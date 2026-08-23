@@ -1,0 +1,23 @@
+[Unit]
+Description=Roll k0s nodes onto a newly-pinned Kairos image
+Documentation=https://github.com/bradpenney/substrate
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as the admin user, NOT root: provisioning needs no blanket privilege
+# since prepare-hypervisor.sh made the ISO pool group-writable. The only
+# privileged operation left (chattr on the btrfs pool) has its own narrow
+# sudoers rule.
+# Substituted at install time by deploy-auto-roll.sh from site.yml's
+# admin_user. Left as a placeholder so the repo carries no identity — the same
+# reason addresses live in the gitignored site.yml (ADR-012).
+User=__ADMIN_USER__
+Group=__ADMIN_USER__
+EnvironmentFile=/etc/substrate/auto-roll.env
+ExecStart=/usr/local/sbin/auto-roll.sh
+# A full fleet roll is ~5 nodes x 2-3 min, plus settle time between each.
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal

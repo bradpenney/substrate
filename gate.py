@@ -1,0 +1,736 @@
+#!/bin/sh
+"exec" "$(cd $(dirname $0); pwd)/.venv/bin/python3" "-u" "$0" "$@"
+"""
+Destroy-and-rebuild gate — parts 1 (wipe) and 2 (verify).
+
+THE REQUIREMENT this exists to satisfy (Brad, verbatim):
+
+    "Before we start adding workloads on this (migrating them from docker
+    compose) I want to prove that I can fully destroy/rebuild the cluster with
+    both the python script and ansible. This means it gets fully wiped, yet
+    comes back with all components live and ready with either bootstrap
+    method."
+
+So the gate has to answer one question with an exit code: *does this cluster
+genuinely rebuild from nothing, or does it merely happen to be working?*
+
+WHY THIS IS A SEPARATE TOOL FROM provision.py
+The provisioner's job is to build a cluster. It should not know how to destroy
+one, and it must not be the thing that decides whether its own output is
+healthy — if provision.py held a wrong idea of "healthy" it would happily
+validate itself. Keeping verification here means the tool being proven and the
+tool doing the proving are different code.
+
+It imports provision.py only for genuinely shared primitives (`run`, the
+node-readiness poll, host/VM shapes). The health criteria live here.
+
+  ./gate.py verify                              # non-destructive health check
+  ./gate.py fingerprint                         # non-destructive end-state snapshot
+  ./gate.py wipe --dry-run                      # show what would be destroyed
+  ./gate.py wipe --yes                          # DESTRUCTIVE
+  ./gate.py rebuild --yes --method python       # ONE wipe, one rebuild, verify, save fingerprint
+  ./gate.py rebuild --yes --method ansible      # same, via the playbook
+  ./gate.py compare python ansible              # non-destructive; the actual proof
+  ./gate.py roll --yes [--node s1-vm2]          # DESTRUCTIVE: rebuild nodes on the pinned image
+
+HOW THE HARD GATE IS RUN — and why there is no single "do it all" command:
+
+An earlier version had a `full-gate` subcommand that wiped, rebuilt with
+Python, wiped AGAIN, rebuilt with Ansible, and compared. It worked, but it was
+the wrong shape: one command destroyed the cluster twice, unattended, with no
+decision point in between. If the second rebuild failed you were left with
+nothing, having thrown away a cluster that had just been verified healthy.
+
+So each pass is now its own deliberate command, and each SAVES its fingerprint.
+Run them whenever suits — hours or days apart — then `compare`. The proof is
+identical; the blast radius per command is halved, and you choose when each
+teardown happens.
+
+Note that the BUILD tools never destroy anything: provision.py and site.yml
+only create and reconcile. Every destructive operation lives in this file.
+
+Exit code 0 means the assertion held. Anything else means it did not.
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import provision
+import hosts as hosts_module
+from hosts import HOSTS, ISO_POOL_PATH
+
+# A rebuilt cluster needs a moment after nodes go Ready before every system pod
+# has been rescheduled and settled. Separate from NODE_READY_TIMEOUT because
+# it's a different failure mode: nodes Ready but workloads not converging.
+PODS_READY_TIMEOUT = 600
+PODS_POLL_INTERVAL = 10
+DNS_TIMEOUT = 120
+
+# Namespaces whose pods must all be healthy for the cluster to count as "live
+# and ready". k0s puts everything it manages in these.
+SYSTEM_NAMESPACES = ["kube-system"]
+
+
+# ---------------------------------------------------------------- utilities
+
+
+def all_vms() -> list[tuple[provision.Host, provision.VM]]:
+    return [(h, v) for h in HOSTS for v in h.vms]
+
+
+def bootstrap_vm() -> provision.VM:
+    return provision.find_bootstrap()[1]
+
+
+def kubectl(args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run kubectl against the cluster via the bootstrap node's `k0s kubectl`.
+
+    Deliberately not a local kubectl: after a wipe there is no local
+    kubeconfig, and a stale one points at a node that no longer exists — so
+    depending on one would make the gate fail for reasons unrelated to whether
+    the cluster rebuilt correctly.
+    """
+    return subprocess.run(
+        [
+            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            f"{provision.ADMIN_USER}@{bootstrap_vm().static_ip}", f"sudo k0s kubectl {args}",
+        ],
+        capture_output=True, text=True, timeout=timeout,
+    )
+
+
+# ------------------------------------------------------------- part 1: wipe
+
+
+def wipe(dry_run: bool = False) -> None:
+    """Destroy the entire fleet, leaving nothing that a rebuild could inherit.
+
+    "Fully wiped" means more than deleting VMs. Three kinds of leftover state
+    have each caused real problems in this build:
+
+      - **Seed ISOs.** Each carries a baked-in join token. A stale one lets a
+        node rejoin a cluster that no longer exists.
+      - **known_hosts entries.** Rebuilt VMs get new SSH host keys at the same
+        IPs, so stale entries make later SSH fail with a host-key mismatch.
+        Local drifted state is still drifted state.
+
+    NOT wiped, deliberately, and both cases are worth understanding:
+
+      - **The pinned Kairos ISO.** An immutable artifact verified by checksum
+        on every run, not cluster state. Re-downloading ~500MB per rebuild
+        would slow the gate while proving nothing.
+
+      - **etcd membership — no explicit prune here.** This looks like an
+        omission given that a ghost etcd member bricked this cluster once, so
+        to be explicit: etcd's data lives in each node's own disk, and
+        `undefine --remove-all-storage` destroys those disks. A *full* wipe
+        therefore clears etcd membership by construction; there is nothing
+        left to be a ghost of. Pruning matters only for *partial* teardowns —
+        destroying one VM while the cluster survives — which is exactly the
+        case provision.py already handles via etcd_prune() on retry.
+
+        Actively pruning here would also be harmful: `k0s etcd leave` against
+        a live cluster has no timeout in etcd_prune(), so a wedged control
+        plane would hang an unattended gate run indefinitely — and pruning
+        members out from under still-running nodes invites them to crash or
+        re-add themselves mid-wipe. Destroying storage is both simpler and
+        strictly more thorough.
+    """
+    label = "DRY RUN — would destroy" if dry_run else "DESTROYING"
+    print(f"=== {label} {len(all_vms())} VMs ===")
+
+    for host, vm in all_vms():
+        exists = provision.vm_exists(host, vm)
+        state = provision.domain_state(host, vm) if exists else "absent"
+        print(f"  [{host.name}] {vm.name} ({state})")
+        if not exists:
+            continue
+        # Show the exact volumes that will be deleted. An LVM pool may be
+        # defined over the same volume group that holds the hypervisor's own
+        # root LV, so "which volumes exactly" is a question worth being able
+        # to answer before pressing go, not after.
+        for path in provision.disk_volume_paths(host, vm):
+            print(f"      {'would delete' if dry_run else 'deleting'} volume {path}")
+        if dry_run:
+            continue
+        provision.destroy_and_undefine(host, vm)
+
+    print("=== removing seed ISOs and cloud-config scratch files ===")
+    for host, vm in all_vms():
+        paths = [
+            f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso",
+            f"/tmp/{vm.name}-user-data",
+            f"/tmp/{vm.name}-meta-data",
+        ]
+        for path in paths:
+            print(f"  [{host.name}] {'would remove' if dry_run else 'removing'} {path}")
+            if not dry_run:
+                provision.run(host, ["rm", "-f", path], check=False)
+
+    print("=== clearing local known_hosts entries (rebuilt VMs get new keys) ===")
+    for _, vm in all_vms():
+        print(f"  {'would clear' if dry_run else 'clearing'} {vm.static_ip}")
+        if not dry_run:
+            subprocess.run(["ssh-keygen", "-R", vm.static_ip],
+                           capture_output=True, text=True)
+
+    if dry_run:
+        print("\nDRY RUN — nothing was changed.")
+    else:
+        print("\nwipe complete — no VMs, no seed ISOs, no etcd members, no host keys")
+
+
+# ----------------------------------------------------------- part 2: verify
+
+
+def verify() -> bool:
+    """Assert the three documented gate criteria. Returns True only if all pass.
+
+    Every check runs even if an earlier one fails, so a single run reports the
+    full picture rather than making the operator fix-and-rerun to discover the
+    next problem.
+    """
+    print("=== verifying cluster health ===")
+    results = {
+        "nodes Ready": _check_nodes(),
+        "system pods healthy": _check_system_pods(),
+        "cluster DNS resolving": _check_dns(),
+        # Added after a passing run left Flux unverified — see _check_flux().
+        "flux reconciling": _check_flux(),
+    }
+    print("\n=== gate results ===")
+    for name, ok in results.items():
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
+    return all(results.values())
+
+
+def _check_nodes() -> bool:
+    expected = [v.name for _, v in all_vms()]
+    try:
+        provision.wait_for_nodes_ready(bootstrap_vm(), expected)
+        return True
+    except RuntimeError as e:
+        print(f"  node check failed: {e}")
+        return False
+
+
+def _check_system_pods() -> bool:
+    """Wait for every system pod to be Running with all containers ready.
+
+    Checks readiness per-container rather than trusting phase alone: a pod can
+    sit in Running with 0/1 containers ready indefinitely (a failing readiness
+    probe), which is exactly the crash-looping state seen when CNI was broken
+    by the `Type=ether` bug. "Running" on its own is not health.
+    """
+    print("--- system pods ---")
+    deadline = time.time() + PODS_READY_TIMEOUT
+    last_report = None
+    while time.time() < deadline:
+        unhealthy = _unhealthy_pods()
+        if unhealthy is not None and not unhealthy:
+            print("  all system pods Running and ready")
+            return True
+        if unhealthy:
+            report = tuple(sorted(unhealthy))
+            if report != last_report:
+                for line in sorted(unhealthy):
+                    print(f"  waiting on: {line}")
+                last_report = report
+        time.sleep(PODS_POLL_INTERVAL)
+
+    print(f"  system pods did not settle within {PODS_READY_TIMEOUT}s")
+    for line in sorted(_unhealthy_pods() or ["<could not query>"]):
+        print(f"    still unhealthy: {line}")
+    return False
+
+
+def _unhealthy_pods() -> list[str] | None:
+    """Names of system pods that aren't Running-and-fully-ready.
+
+    Returns None if the API can't be reached or parsed — a transient state
+    during a rebuild, not a failure. Callers keep polling.
+    """
+    bad = []
+    for namespace in SYSTEM_NAMESPACES:
+        result = kubectl(f"get pods -n {namespace} -o json")
+        if result.returncode != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        for pod in payload.get("items", []):
+            name = pod.get("metadata", {}).get("name", "<unnamed>")
+            status = pod.get("status", {})
+            phase = status.get("phase")
+            # Completed one-shot pods are fine; they're not meant to stay up.
+            if phase == "Succeeded":
+                continue
+            statuses = status.get("containerStatuses", [])
+            ready = sum(1 for c in statuses if c.get("ready"))
+            total = len(statuses)
+            if phase != "Running" or total == 0 or ready != total:
+                bad.append(f"{namespace}/{name} ({phase}, {ready}/{total} ready)")
+    return bad
+
+
+def _check_dns() -> bool:
+    """Resolve an in-cluster name from inside a pod.
+
+    Done from a pod, not from a node, on purpose: this is the path real
+    workloads use, so it exercises CoreDNS *plus* the CNI and kube-proxy
+    together. A node-level DNS query would pass while pod networking was
+    completely broken — which is precisely the failure the `Type=ether` bug
+    produced.
+    """
+    print("--- cluster DNS ---")
+    pod = f"gate-dns-{int(time.time())}"
+
+    # Deliberately NOT `kubectl run -i --rm`. That attaches to the pod and
+    # streams its output, and log streaming goes through the konnectivity
+    # agents — which are still churning for a minute or two after a rebuild.
+    # The first version of this check did exactly that and produced a FALSE
+    # FAILURE on a cluster whose DNS was working perfectly:
+    #     couldn't fetch pre-attach logs: ... context deadline exceeded
+    # It was really testing "can I stream logs right now" as much as "does DNS
+    # resolve". A gate that cries wolf is worse than no gate.
+    #
+    # Instead: fire and forget, then assert on the pod's TERMINAL PHASE.
+    # nslookup exits non-zero when resolution fails, so phase == Succeeded IS
+    # the assertion — no output parsing, nothing routed through konnectivity.
+    started = kubectl(
+        f"run {pod} --image=busybox:1.36 --restart=Never "
+        f"-- nslookup kubernetes.default.svc.cluster.local"
+    )
+    if started.returncode != 0:
+        print(f"  could not start the DNS test pod: {started.stderr.strip()[:200]}")
+        _force_delete_pod(pod)
+        return False
+
+    deadline = time.time() + DNS_TIMEOUT
+    phase = ""
+    while time.time() < deadline:
+        result = kubectl(f"get pod {pod} -o jsonpath={{.status.phase}}")
+        phase = result.stdout.strip()
+        if phase in ("Succeeded", "Failed"):
+            break
+        time.sleep(3)
+
+    resolved = phase == "Succeeded"
+    if resolved:
+        print("  kubernetes.default.svc.cluster.local resolved")
+    else:
+        # Best-effort evidence only — never let an unavailable log turn into
+        # the verdict, which is the mistake this whole rewrite fixes.
+        logs = kubectl(f"logs {pod}")
+        detail = (logs.stdout or logs.stderr).strip()[:400] or "<no logs available>"
+        print(f"  DNS check pod ended in phase {phase or '<timed out>'}:\n    {detail}")
+
+    _force_delete_pod(pod)
+    return resolved
+
+
+
+def _check_flux() -> bool:
+    """Assert Flux is actually reconciling, not merely installed.
+
+    WHY THIS EXISTS: without it the gate passed on a cluster whose platform
+    could have been completely wedged. Nodes Ready, system pods healthy and DNS
+    resolving say nothing about whether the config artifact was pulled and
+    applied — so a rebuild that produced an empty cluster would have been
+    scored identically to one that produced a working platform.
+
+    That gap was found by verifying Flux BY HAND after a passing run: exactly
+    the "checked by a human, not by the tooling" pattern the gate exists to
+    eliminate.
+
+    Skipped (not failed) when Flux isn't installed, so the gate still works on
+    a substrate-only cluster — this is a platform assertion, not a
+    substrate one.
+    """
+    print("--- flux reconciliation ---")
+    result = kubectl("get kustomization -A -o json")
+    if result.returncode != 0:
+        print("  Flux not installed — skipping (substrate-only cluster)")
+        return True
+
+    try:
+        items = json.loads(result.stdout).get("items", [])
+    except json.JSONDecodeError:
+        print("  could not parse Kustomization list")
+        return False
+
+    if not items:
+        print("  Flux is installed but has NO Kustomizations — nothing is being reconciled")
+        return False
+
+    deadline = time.time() + PODS_READY_TIMEOUT
+    while time.time() < deadline:
+        items = json.loads(kubectl("get kustomization -A -o json").stdout).get("items", [])
+        bad = []
+        for k in items:
+            name = f"{k['metadata']['namespace']}/{k['metadata']['name']}"
+            ready = next((c for c in k.get("status", {}).get("conditions", [])
+                          if c.get("type") == "Ready"), None)
+            if not ready or ready.get("status") != "True":
+                bad.append(f"{name}: {(ready or {}).get('message', 'no Ready condition')[:80]}")
+        if not bad:
+            revs = {k["status"].get("lastAppliedRevision", "?") for k in items}
+            print(f"  {len(items)} Kustomizations reconciled")
+            for r in sorted(revs):
+                print(f"    revision {r}")
+            return True
+        time.sleep(PODS_POLL_INTERVAL)
+
+    print(f"  Kustomizations did not reconcile within {PODS_READY_TIMEOUT}s:")
+    for line in bad:
+        print(f"    {line}")
+    return False
+
+
+def _force_delete_pod(pod: str) -> None:
+    """`--rm` doesn't clean up when the run times out or the pod never starts,
+    which would leave the next gate run tripping over its own litter."""
+    kubectl(f"delete pod {pod} --ignore-not-found --force --grace-period=0")
+
+
+# ---------------------------------------------------------------- rebuild
+
+
+BOOTSTRAP_METHODS = {
+    "python": ([sys.executable, "-u", "provision.py"], None),
+    "ansible": ([".venv/bin/ansible-playbook", "site.yml"], "ansible"),
+}
+
+
+def rebuild(method: str = "python") -> bool:
+    """Wipe, rebuild from scratch with one bootstrap method, verify.
+
+    Runs the bootstrap tool as a SUBPROCESS rather than importing it, so what
+    the gate exercises is exactly the entrypoint a human would run — not a
+    slightly different in-process path. That matters more for the Ansible case,
+    where "run the playbook" is the only meaningful interface.
+    """
+    argv, cwd = BOOTSTRAP_METHODS[method]
+    started = time.time()
+    wipe()
+    print(f"\n=== rebuilding with {method} ===")
+    # The ansible venv path is relative to the repo root, so resolve it before
+    # changing directory.
+    if cwd:
+        argv = [str(Path(__file__).parent / argv[0])] + argv[1:]
+    result = subprocess.run(argv, cwd=cwd)
+    if result.returncode != 0:
+        print(f"\nGATE FAILED: {method} bootstrap exited {result.returncode}")
+        return False
+    print()
+    ok = verify()
+    mins = (time.time() - started) / 60
+    print(f"\n{method.upper()} REBUILD {'PASSED' if ok else 'FAILED'} — {mins:.1f} min")
+    if ok:
+        # Saved rather than held in memory, so the two halves of the gate can be
+        # run at different times — and compared later without a single command
+        # ever destroying the cluster twice.
+        save_fingerprint(method)
+        print(f"\nWhen you've done the other method too:  ./gate.py compare python ansible")
+    return ok
+
+
+def cluster_fingerprint() -> dict:
+    """A comparable description of the cluster's end state.
+
+    Parts 3-4 of the gate need more than "both runs passed" — two runs could
+    each be healthy while having built materially different clusters (a node on
+    the wrong hypervisor, a different k0s version, a missing etcd member). This
+    captures the properties that must match, and deliberately EXCLUDES things
+    that legitimately differ between rebuilds: pod names, UIDs, IPs assigned by
+    the CNI, ages, and resource versions.
+    """
+    fingerprint = {}
+
+    result = kubectl("get nodes -o json")
+    payload = json.loads(result.stdout)
+    nodes = {}
+    for node in payload.get("items", []):
+        meta = node.get("metadata", {})
+        status = node.get("status", {})
+        nodes[meta.get("name")] = {
+            "ready": any(c.get("type") == "Ready" and c.get("status") == "True"
+                         for c in status.get("conditions", [])),
+            "kubelet_version": status.get("nodeInfo", {}).get("kubeletVersion"),
+            "os_image": status.get("nodeInfo", {}).get("osImage"),
+            "internal_ip": next(
+                (a.get("address") for a in status.get("addresses", [])
+                 if a.get("type") == "InternalIP"), None),
+            "roles": sorted(k.split("/", 1)[1] for k in meta.get("labels", {})
+                            if k.startswith("node-role.kubernetes.io/")),
+        }
+    fingerprint["nodes"] = nodes
+
+    # Which VM sits on which hypervisor — a cluster that came back with nodes
+    # on the wrong hosts would still look healthy to kubectl.
+    fingerprint["placement"] = {
+        vm.name: host.name for host, vm in all_vms()
+        if provision.vm_exists(host, vm)
+    }
+
+    # Workload identity, not instance identity: DaemonSet/Deployment names and
+    # their expected counts, rather than the ephemeral pod names.
+    workloads = {}
+    for namespace in SYSTEM_NAMESPACES:
+        for kind in ("daemonsets", "deployments"):
+            result = kubectl(f"get {kind} -n {namespace} -o json")
+            if result.returncode != 0:
+                continue
+            for item in json.loads(result.stdout).get("items", []):
+                name = item["metadata"]["name"]
+                status = item.get("status", {})
+                workloads[f"{namespace}/{kind}/{name}"] = (
+                    status.get("numberReady") if kind == "daemonsets"
+                    else status.get("readyReplicas")
+                )
+    fingerprint["workloads"] = workloads
+
+    # Platform state. Included so the python-vs-ansible comparison covers what
+    # the cluster RUNS, not merely how it was built — the source URL and the
+    # set of reconciled Kustomizations must match across both methods.
+    #
+    # Deliberately NOT the applied revision: that is the artifact digest, which
+    # legitimately changes whenever the config repo is pushed. Comparing it
+    # would make the two passes differ for reasons unrelated to reproducibility.
+    result = kubectl("get kustomization -A -o json")
+    if result.returncode == 0:
+        try:
+            fingerprint["flux_kustomizations"] = sorted(
+                f"{k['metadata']['namespace']}/{k['metadata']['name']}"
+                for k in json.loads(result.stdout).get("items", []))
+        except json.JSONDecodeError:
+            pass
+    result = kubectl("get ocirepository -A -o json")
+    if result.returncode == 0:
+        try:
+            fingerprint["flux_sources"] = sorted(
+                f"{o['metadata']['namespace']}/{o['metadata']['name']}={o['spec']['url']}"
+                for o in json.loads(result.stdout).get("items", []))
+        except json.JSONDecodeError:
+            pass
+
+    return fingerprint
+
+
+def compare_fingerprints(a: dict, b: dict, label_a: str, label_b: str) -> bool:
+    """Report every difference between two cluster end states."""
+    problems = []
+
+    def walk(x, y, path=""):
+        for key in sorted(set(x) | set(y)):
+            where = f"{path}.{key}" if path else key
+            if key not in x:
+                problems.append(f"  {where}: absent after {label_a}, present after {label_b}")
+            elif key not in y:
+                problems.append(f"  {where}: present after {label_a}, absent after {label_b}")
+            elif isinstance(x[key], dict) and isinstance(y[key], dict):
+                walk(x[key], y[key], where)
+            elif x[key] != y[key]:
+                problems.append(f"  {where}: {label_a}={x[key]!r} vs {label_b}={y[key]!r}")
+
+    walk(a, b)
+    if problems:
+        print(f"\n=== END STATES DIFFER between {label_a} and {label_b} ===")
+        print("\n".join(problems))
+        return False
+    print(f"\n=== end states IDENTICAL between {label_a} and {label_b} ===")
+    return True
+
+
+FINGERPRINT_DIR = Path(__file__).parent / ".fingerprints"
+
+
+def save_fingerprint(method: str) -> Path:
+    """Record the current cluster's end state, tagged with the method that built it."""
+    FINGERPRINT_DIR.mkdir(exist_ok=True)
+    path = FINGERPRINT_DIR / f"{method}.json"
+    path.write_text(json.dumps(cluster_fingerprint(), indent=2, sort_keys=True) + "\n")
+    print(f"fingerprint saved: {path}")
+    return path
+
+
+def compare_saved(a: str, b: str) -> bool:
+    """Compare two previously saved fingerprints.
+
+    Separate from the rebuilds on purpose — see `full_gate`'s note. This is what
+    turns two independent runs, done whenever suits, into the actual proof.
+    """
+    pa, pb = FINGERPRINT_DIR / f"{a}.json", FINGERPRINT_DIR / f"{b}.json"
+    missing = [str(p) for p in (pa, pb) if not p.exists()]
+    if missing:
+        print(f"missing fingerprint(s): {', '.join(missing)}", file=sys.stderr)
+        print(f"run: ./gate.py rebuild --yes --method <method>   (saves one each time)",
+              file=sys.stderr)
+        return False
+    return compare_fingerprints(json.loads(pa.read_text()), json.loads(pb.read_text()), a, b)
+
+
+# ---------------------------------------------------- rolling node replacement
+
+
+def healthy_nodes() -> list[str]:
+    """Names of nodes the cluster currently considers Ready."""
+    states = provision.node_ready_states(bootstrap_vm()) or {}
+    return sorted(n for n, ready in states.items() if ready)
+
+
+def roll(target: str | None = None) -> bool:
+    """Replace nodes ONE AT A TIME onto the currently-pinned Kairos image.
+
+    THE REQUIREMENT: Kairos/Hadron updates are destroy-and-rebuild, never
+    in-place. The node OS is immutable — there is no `dnf update` path, so the
+    only way to patch a node is to replace it.
+
+    That makes this the NODE PATCHING STORY. The hypervisors get nightly
+    updates; the nodes get none, and will run whatever image they were built
+    from indefinitely. Rolling is not version hygiene, it is how node CVEs
+    actually get fixed.
+
+    WHY STRICTLY ONE AT A TIME, even though etcd could tolerate two:
+    5 nodes means quorum 3, so two *could* be down at once — but that leaves
+    ZERO margin, and a single unexpected failure inside that window loses
+    quorum and takes the cluster with it. One at a time keeps a spare failure
+    in hand throughout. The extra minutes are cheaper than the risk.
+
+    Cluster health is re-verified BETWEEN every node, so a roll that starts
+    going wrong stops instead of continuing to eat the fleet.
+    """
+    targets = [(h, v) for h, v in all_vms() if target is None or v.name == target]
+    if not targets:
+        print(f"no such node: {target}", file=sys.stderr)
+        return False
+
+    print(f"=== rolling {len(targets)} node(s) onto image {hosts_module.KAIROS_ISO_SHA256[:12]}... ===")
+    print("    one at a time; cluster health re-verified between each\n")
+
+    expected = [v.name for _, v in all_vms()]
+
+    for host, vm in targets:
+        # --- gate: refuse to start unless the cluster is already whole ---
+        ready = healthy_nodes()
+        unhealthy = [n for n in expected if n not in ready]
+        if unhealthy:
+            print(f"REFUSING to roll {vm.name}: cluster is not fully healthy "
+                  f"(not Ready: {unhealthy})")
+            print("  Rolling into a degraded cluster is how a maintenance window "
+                  "becomes an outage.")
+            return False
+
+        # The bootstrap node holds no special status once the cluster exists,
+        # but a join token must be minted from something STILL RUNNING — never
+        # from the node being replaced.
+        donors = [(h, v) for h, v in all_vms() if v.name != vm.name and v.name in ready]
+        if not donors:
+            print(f"REFUSING to roll {vm.name}: no other healthy node to mint a token from")
+            return False
+        donor_host, donor_vm = donors[0]
+
+        print(f"--- {vm.name} (on {host.name}) --- token donor: {donor_vm.name}")
+
+        provision.destroy_and_undefine(host, vm)
+        # A destroyed node's etcd membership outlives it. Left behind, that
+        # ghost costs quorum on the NEXT replacement — the failure that once
+        # bricked this cluster outright.
+        provision.etcd_prune(donor_host, donor_vm, vm)
+        provision.run(host, ["rm", "-f",
+                             f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso"], check=False)
+        subprocess.run(["ssh-keygen", "-R", vm.static_ip], capture_output=True, text=True)
+
+        token = provision.generate_join_token(donor_host, donor_vm)
+        provision.create_vm(host, vm, join_token=token,
+                            bootstrap_pair=(donor_host, donor_vm))
+
+        print(f"    waiting for {vm.name} to rejoin and the cluster to settle...")
+        provision.wait_for_nodes_ready(bootstrap_vm(), expected)
+        if not _check_system_pods():
+            print(f"ROLL HALTED: system pods did not settle after replacing {vm.name}")
+            return False
+        print(f"    {vm.name} replaced and healthy\n")
+
+    print("=== roll complete — every node rebuilt on the pinned image ===")
+    provision.refresh_client_access(bootstrap_vm(), [v.static_ip for _, v in all_vms()])
+    return True
+
+
+# ------------------------------------------------------------------- cli
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_wipe = sub.add_parser("wipe", help="DESTRUCTIVE: destroy the entire fleet")
+    p_wipe.add_argument("--yes", action="store_true", help="required to actually destroy")
+    p_wipe.add_argument("--dry-run", action="store_true", help="show what would be destroyed")
+
+    sub.add_parser("verify", help="check cluster health (non-destructive)")
+
+    p_rebuild = sub.add_parser("rebuild", help="DESTRUCTIVE: wipe, rebuild, verify")
+    p_rebuild.add_argument("--yes", action="store_true", help="required to actually destroy")
+    p_rebuild.add_argument("--method", choices=sorted(BOOTSTRAP_METHODS), default="python",
+                           help="which bootstrap implementation to rebuild with")
+
+    p_cmp = sub.add_parser("compare",
+                           help="compare two saved fingerprints (non-destructive)")
+    p_cmp.add_argument("a", choices=sorted(BOOTSTRAP_METHODS))
+    p_cmp.add_argument("b", choices=sorted(BOOTSTRAP_METHODS))
+
+    sub.add_parser("fingerprint", help="print the cluster's comparable end state (non-destructive)")
+
+    p_roll = sub.add_parser(
+        "roll",
+        help="DESTRUCTIVE (one node at a time): rebuild nodes onto the pinned Kairos image")
+    p_roll.add_argument("--yes", action="store_true", help="required to actually replace nodes")
+    p_roll.add_argument("--node", help="roll only this node (default: the whole fleet)")
+
+    args = parser.parse_args()
+
+    if args.command == "verify":
+        return 0 if verify() else 1
+
+    if args.command == "fingerprint":
+        print(json.dumps(cluster_fingerprint(), indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "compare":
+        return 0 if compare_saved(args.a, args.b) else 1
+
+    if args.command == "roll":
+        if not args.yes:
+            print("refusing to roll without --yes", file=sys.stderr)
+            return 2
+        return 0 if roll(args.node) else 1
+
+    # Destructive paths need an explicit flag. This tears down the whole
+    # cluster; it must never be reachable by a bare command or a stray
+    # shell-history recall.
+    if args.command == "wipe":
+        if args.dry_run:
+            wipe(dry_run=True)
+            return 0
+        if not args.yes:
+            print("refusing to wipe without --yes (use --dry-run to preview)", file=sys.stderr)
+            return 2
+        wipe()
+        return 0
+
+    if not args.yes:
+        print("refusing to rebuild without --yes", file=sys.stderr)
+        return 2
+    return 0 if rebuild(args.method) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,143 @@
+---
+# Keep the pinned Kairos node image from rotting.
+#
+# ⚠️ THIS IS THE NODE PATCHING PATH. The hypervisors get nightly OS updates; the
+# k0s nodes are immutable and get NONE — they run whatever image they were built
+# from, indefinitely, CVEs included. The only way to patch them is to roll the
+# fleet onto a newer image (`gate.py roll --yes`). A stale pin here is a standing
+# security gap, not untidiness.
+#
+# Unlike flux-operator, the asset NAME encodes flavour and k0s version, e.g.
+#   kairos-hadron-v0.4.0-standard-amd64-generic-v4.1.2-k0sv1.36.1+k0s.0.iso
+# so the bot RESOLVES the real asset from the release API rather than guessing a
+# filename — and carries the k0s version bump along with it.
+name: bump-kairos
+
+on:
+  schedule:
+    # DAILY. Target is a rolling update within 24h of a release, so a weekly
+    # check could miss the window by six days. The job is cheap and only acts
+    # when the pinned version actually differs — a no-op run costs one API call.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the newest matching image
+        id: check
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep -A1 '^kairos:' versions.yml | grep 'version:' | awk '{print $2}')
+          REL=$(curl -sfL https://api.github.com/repos/kairos-io/kairos/releases/latest)
+          LATEST=$(jq -r .tag_name <<<"$REL")
+
+          # Match the same flavour we already run: hadron / standard / amd64 /
+          # generic. Never switch flavour automatically — that is an
+          # architectural change, not a version bump.
+          ASSET=$(jq -r '.assets[].browser_download_url' <<<"$REL" \
+                  | grep 'kairos-hadron-' | grep 'standard-amd64-generic' \
+                  | grep '\.iso$' | head -1)
+
+          # Flag security content so the PR can shout instead of blending into
+          # routine version noise. Crude but useful: the release body is the only
+          # machine-readable signal available here, so treat a hit as "look
+          # closely", never as authoritative.
+          BODY=$(jq -r '.body // ""' <<<"$REL")
+          if grep -qiE 'cve-[0-9]{4}-[0-9]+|security fix|vulnerabilit' <<<"$BODY"; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            echo "cves=$(grep -oiE 'CVE-[0-9]{4}-[0-9]+' <<<"$BODY" | sort -u | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          else
+            echo "security=false" >> "$GITHUB_OUTPUT"
+            echo "cves=" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST"   >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET"     >> "$GITHUB_OUTPUT"
+
+          if [ "$CURRENT" = "$LATEST" ] || [ -z "$ASSET" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and checksum the actual image
+        if: steps.check.outputs.changed == 'true'
+        id: sum
+        run: |
+          set -euo pipefail
+          # ~500MB, but the checksum has to be EVIDENCE, not an assertion copied
+          # from a release note.
+          curl -sfL -o /tmp/kairos.iso "${{ steps.check.outputs.asset }}"
+          file /tmp/kairos.iso | grep -qi 'ISO 9660'
+          echo "sha=$(sha256sum /tmp/kairos.iso | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Update versions.yml
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+          p = pathlib.Path("versions.yml"); t = p.read_text()
+          t = re.sub(r'(?m)^(kairos:\n  version: ).*$', r'\1' + os.environ["LATEST"], t)
+          t = re.sub(r'(?m)^(  iso_url: ).*$',    r'\1"' + os.environ["ASSET"] + '"', t)
+          t = re.sub(r'(?m)^(  iso_sha256: ).*$', r'\1"' + os.environ["SHA"] + '"', t)
+          p.write_text(t)
+          PY
+          grep -A4 '^kairos:' versions.yml
+        env:
+          LATEST: ${{ steps.check.outputs.latest }}
+          ASSET: ${{ steps.check.outputs.asset }}
+          SHA: ${{ steps.sum.outputs.sha }}
+
+      - name: Open a PR
+        if: steps.check.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bump/kairos-${{ steps.check.outputs.latest }}
+          # Requesting review is what actually pushes a notification to the
+          # GitHub mobile app — a plain PR from a bot is easy to miss.
+          reviewers: bradpenney
+          assignees: bradpenney
+          labels: |
+            node-image
+            ${{ steps.check.outputs.security == 'true' && 'security' || 'routine' }}
+          title: "${{ steps.check.outputs.security == 'true' && '🔒 SECURITY: ' || '' }}bump Kairos node image ${{ steps.check.outputs.current }} → ${{ steps.check.outputs.latest }}"
+          commit-message: "bump Kairos to ${{ steps.check.outputs.latest }}"
+          body: |
+            Automated bump of the pinned Kairos node image.
+
+            ${{ steps.check.outputs.security == 'true' && '## 🔒 Release notes mention security fixes' || '' }}
+            ${{ steps.check.outputs.cves != '' && format('**Referenced: {0}**', steps.check.outputs.cves) || '' }}
+
+            | | |
+            |---|---|
+            | from | `${{ steps.check.outputs.current }}` |
+            | to | `${{ steps.check.outputs.latest }}` |
+            | asset | `${{ steps.check.outputs.asset }}` |
+            | sha256 | `${{ steps.sum.outputs.sha }}` |
+
+            Checksum computed from the downloaded image, not copied from release
+            notes. Flavour is held constant (hadron / standard / amd64 /
+            generic) — switching flavour is an architectural change, not a bump.
+
+            ### Merging this triggers a rolling node replacement
+
+            `auto-roll.timer` on the hypervisor polls this repo and, on seeing a
+            changed pin on `main`, runs `gate.py roll --yes` — replacing nodes
+            **one at a time**, re-verifying full cluster health between each,
+            and halting if anything fails to settle.
+
+            **So approving this from your phone starts a fleet-wide node
+            rebuild.** That is the intent, but it is not a no-op: expect roughly
+            2-3 minutes per node.
+
+            Check the k0s version in the asset name — a k0s bump rides along
+            with the image.

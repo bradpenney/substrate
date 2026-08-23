@@ -1,0 +1,131 @@
+{#
+  Kairos cloud-config. A faithful port of provision.py's render_cloud_config().
+  `check_render.py` diffs this template's output against the Python version so
+  the two implementations cannot drift.
+
+  THREE THINGS HERE ARE LOAD-BEARING — all three were real bugs:
+
+  1. `stages:`, NOT cloud-init's `write_files:`. Kairos copies this whole
+     config to /oem/90_custom.yaml on the PERSISTENT partition during install
+     and re-runs its `stages` on every boot, which is how config survives on an
+     immutable OS with an ephemeral rootfs. `write_files` is honoured ONLY in
+     the live installer environment — files written that way exist during
+     install and then silently vanish. Verified by mounting the installed image
+     offline: the stages-written network file was there, a write_files token
+     was not.
+
+  2. `permissions:` UNQUOTED octal. In a `stages` block Kairos wants a YAML
+     integer (it stores 0644 as decimal 420). Quoting it makes the file
+     silently NOT get written — which on the network config means a node with
+     no IP and no error anywhere. This is the OPPOSITE of cloud-init's
+     `write_files`, where unquoted fails loudly with
+     `strconv.ParseUint: parsing "384"`. Same-looking field, two parsers,
+     contradictory rules — hence both bugs.
+
+  3. `Name={{ primary_nic }}`, never `Type=ether`. Type=ether also matches the
+     CNI's per-pod veth pairs; systemd-networkd claims them, applies host
+     settings, and pod networking dies completely.
+
+  Jinja whitespace control is used carefully below: the `permissions` values
+  must stay unquoted integers and the indentation must survive exactly.
+#}
+#cloud-config
+hostname: {{ inventory_hostname }}
+users:
+- name: {{ admin_user }}
+  groups:
+    - admin
+  ssh_authorized_keys:
+    - {{ ssh_public_key }}
+install:
+  device: /dev/vda
+  reboot: true
+  auto: true
+k0s:
+  enabled: true
+  args:
+{% for arg in k0s_args %}
+    - {{ arg }}
+{% endfor %}
+{% if join_token is defined and join_token %}
+    - --token-file /etc/k0s/join-token
+{% endif %}
+stages:
+  initramfs:
+    - files:
+        - path: /etc/systemd/network/10-static.network
+          permissions: 0644
+          content: |
+            [Match]
+            Name={{ primary_nic }}
+            [Network]
+            Address={{ static_ip }}/24
+            Gateway={{ gateway }}
+{% for d in dns_servers %}
+            DNS={{ d }}
+{% endfor %}
+{% if join_token is defined and join_token %}
+        - path: /etc/k0s/join-token
+          permissions: 0600
+          content: |
+            {{ join_token }}
+{% endif %}
+        - path: /etc/ssh/sshd_config.d/99-hardening.conf
+          permissions: 0644
+          content: |
+            # Key-only auth. Kairos's example cloud-config sets a guessable
+            # password (`passwd: kairos`); this build sets no password at all,
+            # and this makes password auth unusable regardless.
+            PasswordAuthentication no
+            KbdInteractiveAuthentication no
+            PermitRootLogin prohibit-password
+        - path: /var/lib/k0s/manifests/flux-instance/instance.yaml
+          permissions: 0644
+          content: |
+            ---
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: flux-system
+{% if flux_pull_secret_b64 %}
+            ---
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: ghcr-auth
+              namespace: flux-system
+            type: kubernetes.io/dockerconfigjson
+            data:
+              .dockerconfigjson: {{ flux_pull_secret_b64 }}
+{% endif %}
+            ---
+            apiVersion: fluxcd.controlplane.io/v1
+            kind: FluxInstance
+            metadata:
+              name: flux
+              namespace: flux-system
+            spec:
+              distribution:
+                version: {{ flux.distribution_version }}
+                registry: ghcr.io/fluxcd
+              sync:
+                kind: OCIRepository
+                url: oci://{{ flux.oci_repository }}
+                ref: {{ flux.oci_tag }}
+                path: clusters/homelab
+{% if flux_pull_secret_b64 %}
+                pullSecret: ghcr-auth
+{% endif %}
+  network:
+    - name: fetch the pinned flux-operator manifest
+      commands:
+        - |
+          set -e
+          D=/var/lib/k0s/manifests/flux-operator
+          # Guard: Kairos re-runs stages on EVERY boot, so without this each
+          # reboot would re-download 97KB for no reason.
+          [ -f "$D/install.yaml" ] && exit 0
+          mkdir -p "$D"
+          curl -fsSL -o /tmp/flux-operator.yaml {{ flux.operator_url }}
+          echo "{{ flux.operator_sha256 }}  /tmp/flux-operator.yaml" | sha256sum -c -
+          mv /tmp/flux-operator.yaml "$D/install.yaml"
