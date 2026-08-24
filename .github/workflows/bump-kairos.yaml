@@ -31,6 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
       - name: Resolve the newest matching image
         id: check
         run: |
@@ -39,12 +42,26 @@ jobs:
           REL=$(curl -sfL https://api.github.com/repos/kairos-io/kairos/releases/latest)
           LATEST=$(jq -r .tag_name <<<"$REL")
 
-          # Match the same flavour we already run: hadron / standard / amd64 /
-          # generic. Never switch flavour automatically — that is an
-          # architectural change, not a version bump.
-          ASSET=$(jq -r '.assets[].browser_download_url' <<<"$REL" \
-                  | grep 'kairos-hadron-' | grep 'standard-amd64-generic' \
-                  | grep '\.iso$' | head -1)
+          # Asset selection lives in .github/scripts/select_kairos_asset.py.
+          #
+          # It is a SCRIPT, not inline Python-in-shell-in-YAML: the inline
+          # version broke the workflow file outright (three escaping layers —
+          # see ADR-032). Logic that needs quoting belongs in a file, where it
+          # can also be tested.
+          #
+          # It guards two real mistakes: Kairos ships a BUILD MATRIX (v4.2.0
+          # carried k0s 1.34.10, 1.35.7 AND 1.36.3), so `head -1` picked a
+          # two-minor DOWNGRADE purely from asset ordering; and taking the
+          # highest blindly could skip a minor version, exceeding the supported
+          # upgrade skew.
+          CURRENT_URL=$(python3 -c \
+            'import yaml;print(yaml.safe_load(open("versions.yml"))["kairos"]["iso_url"])')
+          if ! ASSET=$(printf '%s' "$REL" \
+                | python3 .github/scripts/select_kairos_asset.py --current-url "$CURRENT_URL"); then
+            echo "::notice::no safe k0s image in $LATEST — see the message above"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Flag security content so the PR can shout instead of blending into
           # routine version noise. Crude but useful: the release body is the only

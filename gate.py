@@ -54,6 +54,7 @@ Exit code 0 means the assertion held. Anything else means it did not.
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -511,6 +512,13 @@ def cluster_fingerprint() -> dict:
                 for k in json.loads(result.stdout).get("items", []))
         except json.JSONDecodeError:
             pass
+    # The image pin this cluster was built against. NOT part of the field-by-field
+    # comparison — it is metadata about the run — but `compare` refuses to compare
+    # fingerprints captured against different pins, because a version bump changes
+    # kubelet_version legitimately and would otherwise look like a reproducibility
+    # failure.
+    fingerprint["_pinned_image_sha256"] = hosts_module.KAIROS_ISO_SHA256
+
     result = kubectl("get ocirepository -A -o json")
     if result.returncode == 0:
         try:
@@ -573,10 +581,45 @@ def compare_saved(a: str, b: str) -> bool:
         print(f"run: ./gate.py rebuild --yes --method <method>   (saves one each time)",
               file=sys.stderr)
         return False
-    return compare_fingerprints(json.loads(pa.read_text()), json.loads(pb.read_text()), a, b)
+    fa, fb = json.loads(pa.read_text()), json.loads(pb.read_text())
+
+    # Precondition: both must have been captured against the SAME pinned image.
+    # A version bump legitimately changes kubelet_version and os_image, so
+    # comparing across pins would report a difference that is not a fault — and
+    # worse, would look like the two bootstrap methods disagreeing.
+    pin_a = fa.pop("_pinned_image_sha256", None)
+    pin_b = fb.pop("_pinned_image_sha256", None)
+    if pin_a != pin_b:
+        print("REFUSING to compare: the fingerprints were captured against "
+              "DIFFERENT pinned images.", file=sys.stderr)
+        print(f"  {a}: {pin_a or '<not recorded>'}", file=sys.stderr)
+        print(f"  {b}: {pin_b or '<not recorded>'}", file=sys.stderr)
+        print("\nA version bump changes kubelet_version legitimately. Re-run both "
+              "passes on the current pin, then compare.", file=sys.stderr)
+        return False
+
+    return compare_fingerprints(fa, fb, a, b)
 
 
 # ---------------------------------------------------- rolling node replacement
+
+
+def expected_k0s_version() -> str | None:
+    """The k0s version the PINNED image carries, parsed from its asset name.
+
+    Kairos encodes it in the filename (`...-k0sv1.36.3+k0s.2.iso`), which makes
+    the intended outcome of a roll checkable rather than assumed. URL-decoded
+    first: the `+` arrives as `%2B`.
+    """
+    import urllib.parse
+    m = re.search(r"k0sv([\d.]+)\+k0s",
+                  urllib.parse.unquote(hosts_module.KAIROS_ISO_URL))
+    return m.group(1) if m else None
+
+
+def node_kubelet_version(name: str) -> str | None:
+    result = kubectl(f"get node {name} -o jsonpath={{.status.nodeInfo.kubeletVersion}}")
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def healthy_nodes() -> list[str]:
@@ -638,6 +681,20 @@ def roll(target: str | None = None) -> bool:
 
         print(f"--- {vm.name} (on {host.name}) --- token donor: {donor_vm.name}")
 
+        # ⚠️ FETCH THE PINNED IMAGE FIRST. Without this the roll destroys the VM
+        # and rebuilds it from whatever ISO is ALREADY on the hypervisor —
+        # reporting "rolling onto image <new sha>" while changing nothing, and
+        # passing every health gate because the cluster really is healthy. It is
+        # just still on the old version.
+        #
+        # That happened: a roll to Kairos v4.2.0 brought the node back on
+        # v4.1.2. Silent success is the worst failure mode a patching tool can
+        # have — it reports the fleet as updated when it is not.
+        #
+        # ensure_kairos_iso() is checksum-gated, so this is a no-op when the
+        # image is already correct.
+        provision.ensure_kairos_iso(host)
+
         provision.destroy_and_undefine(host, vm)
         # A destroyed node's etcd membership outlives it. Left behind, that
         # ghost costs quorum on the NEXT replacement — the failure that once
@@ -656,6 +713,22 @@ def roll(target: str | None = None) -> bool:
         if not _check_system_pods():
             print(f"ROLL HALTED: system pods did not settle after replacing {vm.name}")
             return False
+
+        # ASSERT THE OUTCOME, don't assume it. "Healthy" is not "updated" — the
+        # bug above passed every health check while achieving nothing. The
+        # expected k0s version is derivable from the pinned asset name, so there
+        # is no excuse for taking the rebuild on trust.
+        want = expected_k0s_version()
+        if want:
+            got = node_kubelet_version(vm.name)
+            if got and want not in got:
+                print(f"ROLL HALTED: {vm.name} came back on kubelet {got}, "
+                      f"but the pinned image carries k0s {want}.")
+                print("  The node was rebuilt from a STALE image — the fleet is "
+                      "NOT patched. Do not continue.")
+                return False
+            print(f"    {vm.name} verified on k0s {got}")
+
         print(f"    {vm.name} replaced and healthy\n")
 
     print("=== roll complete — every node rebuilt on the pinned image ===")

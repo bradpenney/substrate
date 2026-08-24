@@ -85,8 +85,18 @@ fi
 git -C "$REPO_DIR" fetch --quiet origin "$BRANCH" || { log "ERROR: fetch failed"; exit 1; }
 git -C "$REPO_DIR" reset --quiet --hard "origin/$BRANCH" || { log "ERROR: reset failed"; exit 1; }
 
-PINNED=$(grep -A3 '^kairos:' "$REPO_DIR/versions.yml" | grep 'iso_sha256:' \
-         | awk -F'"' '{print $2}')
+# Parse with a REAL YAML parser, not grep -A<n>.
+#
+# The first version used `grep -A3 '^kairos:' | grep iso_sha256`, which broke
+# the moment versions.yml gained explanatory comments — they pushed the field
+# to line six and the -A3 window missed it entirely. The failure was silent in
+# the sense that it looked like a missing value rather than a broken parse.
+#
+# The clone's venv has PyYAML (deploy-auto-roll.sh installs it), so there is no
+# excuse for hand-rolling this.
+PINNED=$("$REPO_DIR/.venv/bin/python3" -c \
+  'import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))["kairos"]["iso_sha256"])' \
+  "$REPO_DIR/versions.yml" 2>/dev/null)
 if [[ -z "$PINNED" ]]; then
     log "ERROR: could not read the pinned image checksum from versions.yml"
     exit 1

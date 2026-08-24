@@ -115,17 +115,49 @@
   failed_when: false
   register: iso_sum
 
-- name: Download the pinned Kairos ISO
+# Download to a TEMP name, verify, then rename into place — mirroring
+# provision.py's ensure_kairos_iso(). Two reasons:
+#
+#   1. PERMISSIONS. libvirt chowns an attached ISO to `qemu:qemu`, so the admin
+#      user cannot overwrite it in place: `curl -o` fails "Permission denied"
+#      even though the pool dir is group-writable (the admin is in `libvirt`,
+#      not `qemu`). Creating a new file and renaming needs only DIRECTORY write.
+#      This is what lets an image refresh work with no sudo at all.
+#   2. ATOMICITY. Writing straight to the canonical path leaves a TRUNCATED ISO
+#      there if the download dies — and a half-downloaded image that merely
+#      EXISTS is exactly what a later run treats as "present".
+- name: Download the pinned Kairos ISO (to a temp name)
   ansible.builtin.command:
-    cmd: "curl -fL -o {{ iso_pool_path }}/kairos-hadron-k0s.iso {{ kairos_iso_url }}"
+    cmd: "curl -fL -o {{ iso_pool_path }}/kairos-hadron-k0s.iso.tmp {{ kairos_iso_url }}"
   when: (iso_sum.stdout | default('')).split(' ')[0] != kairos_iso_sha256
 
 - name: Re-verify the ISO checksum after download
   ansible.builtin.command:
-    cmd: "sha256sum {{ iso_pool_path }}/kairos-hadron-k0s.iso"
+    cmd: "sha256sum {{ iso_pool_path }}/kairos-hadron-k0s.iso.tmp"
   changed_when: false
   register: iso_sum_after
   when: (iso_sum.stdout | default('')).split(' ')[0] != kairos_iso_sha256
+
+# Publish ONLY an image that verified. Unlinking needs write on the DIRECTORY,
+# not the file, so this succeeds despite the old ISO being owned by qemu.
+- name: Publish the verified ISO
+  ansible.builtin.shell:
+    cmd: >-
+      rm -f {{ iso_pool_path }}/kairos-hadron-k0s.iso &&
+      mv {{ iso_pool_path }}/kairos-hadron-k0s.iso.tmp
+         {{ iso_pool_path }}/kairos-hadron-k0s.iso
+  when:
+    - iso_sum_after is defined
+    - iso_sum_after.stdout is defined
+    - iso_sum_after.stdout.split(' ')[0] == kairos_iso_sha256
+
+- name: Discard a bad download
+  ansible.builtin.command:
+    cmd: "rm -f {{ iso_pool_path }}/kairos-hadron-k0s.iso.tmp"
+  when:
+    - iso_sum_after is defined
+    - iso_sum_after.stdout is defined
+    - iso_sum_after.stdout.split(' ')[0] != kairos_iso_sha256
 
 - name: Fail on ISO checksum mismatch
   ansible.builtin.fail:

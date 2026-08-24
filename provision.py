@@ -201,13 +201,32 @@ def ensure_kairos_iso(host: Host) -> None:
         print(f"[{host.name}] Kairos ISO already present and verified")
         return
     print(f"[{host.name}] downloading Kairos ISO (~500MB)...")
-    run(host, ["curl", "-fL", "-o", dest, KAIROS_ISO_URL])
-    result = run(host, ["sha256sum", dest])
+    # Download to a TEMP name, verify, then rename into place. Two reasons:
+    #
+    # 1. PERMISSIONS. libvirt chowns an attached ISO to `qemu:qemu`, so the
+    #    admin user cannot overwrite it in place — `curl -o` fails with
+    #    "Permission denied" even though the pool directory is group-writable.
+    #    Creating a new file and renaming needs only DIRECTORY write, which we
+    #    have. This is what lets image refresh work without any sudo.
+    #
+    # 2. ATOMICITY. Writing straight to the canonical path leaves a truncated
+    #    ISO there if the download dies partway — and a half-downloaded image
+    #    that merely *exists* is exactly the kind of thing a later run treats as
+    #    "present". Verify first, publish second.
+    tmp = f"{dest}.tmp"
+    run(host, ["rm", "-f", tmp], check=False)
+    run(host, ["curl", "-fL", "-o", tmp, KAIROS_ISO_URL])
+    result = run(host, ["sha256sum", tmp])
     actual = result.stdout.split()[0]
     if actual != KAIROS_ISO_SHA256:
+        run(host, ["rm", "-f", tmp], check=False)
         raise RuntimeError(
             f"[{host.name}] Kairos ISO checksum mismatch: expected {KAIROS_ISO_SHA256}, got {actual}"
         )
+    # Unlinking needs write on the DIRECTORY, not the file — so this works even
+    # though the old ISO is owned by qemu.
+    run(host, ["rm", "-f", dest], check=False)
+    run(host, ["mv", tmp, dest])
     # Non-fatal: libvirt chowns attached ISOs to qemu, so a pre-existing file
     # may not be ours to chmod. mkisofs/curl already create it readable.
     run(host, ["chmod", "0644", dest], check=False)
