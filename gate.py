@@ -252,6 +252,9 @@ def verify() -> bool:
         # Fifth criterion (ADR-044). The other four all passed on a cluster
         # whose admission webhooks were entirely non-functional.
         "api-server -> pod tunnel": _check_apiserver_tunnel(),
+        # Sixth criterion (ADR-055). Two rebuilds shipped clusters that could
+        # not issue certificates or take backups while every other check passed.
+        "required secrets present": _check_required_secrets(),
     }
     print("\n=== gate results ===")
     for name, ok in results.items():
@@ -307,6 +310,64 @@ def _check_apiserver_tunnel() -> bool:
                 print("         konnectivity agents are not registered with this")
                 print("         controller — the ADR-044 failure. Check that the")
                 print("         load balancer DISTRIBUTES across all controllers.")
+    return ok
+
+
+# Secrets the platform cannot function without, and which no manifest creates.
+#
+# Each is a (namespace, name, reason) that must exist and be non-empty. Keep
+# this list SHORT and only for things whose absence breaks the platform — it is
+# a gate, not an inventory.
+REQUIRED_SECRETS = [
+    ("cert-manager", "cloudflare-api-token",
+     "cert-manager cannot solve DNS-01 — NO certificate will ever issue"),
+    ("pv-backup", "rclone-config",
+     "the PV backup CronJobs cannot reach the remote — NO backup will run"),
+]
+
+
+def _check_required_secrets() -> bool:
+    """Assert hand-created secrets survived the rebuild.
+
+    WHY THIS EXISTS
+    Two rebuilds on 2026-08-25 produced clusters that could not issue
+    certificates and could not take backups, and EVERY other criterion passed.
+    Nodes Ready, pods healthy, DNS resolving, Flux reconciling, tunnel working —
+    all green, on a cluster that was quietly broken.
+
+    Nothing surfaced it because the failure is silent by construction:
+    cert-manager retries forever rather than erroring, and a backup that never
+    runs produces no signal at all. The absence of a secret is invisible unless
+    something looks for it.
+
+    This is the stop-gap. ADR-055's External Secrets Operator is the real fix —
+    at which point this check becomes a regression test rather than a crutch.
+    """
+    print("--- required secrets ---")
+    ok = True
+    for ns, name, why in REQUIRED_SECRETS:
+        r = subprocess.run(
+            ["kubectl", "-n", ns, "get", "secret", name, "-o", "json"],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            ok = False
+            print(f"  [MISSING] {ns}/{name}")
+            print(f"            {why}")
+            continue
+        try:
+            data = json.loads(r.stdout).get("data") or {}
+        except Exception:
+            data = {}
+        # Present but empty is as broken as absent, and looks healthier.
+        if not data or not any(v for v in data.values()):
+            ok = False
+            print(f"  [EMPTY  ] {ns}/{name} exists but carries no data")
+            print(f"            {why}")
+        else:
+            print(f"  [ok     ] {ns}/{name}  ({len(data)} key(s))")
+    if not ok:
+        print("  These are created OUT OF BAND and do not survive a rebuild.")
+        print("  See ADR-055 — this is why the rebuild guarantee is not yet true.")
     return ok
 
 

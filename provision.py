@@ -43,6 +43,7 @@ from hosts import (
     KAIROS_ISO_SHA256,
     K0S_ARGS,
     CONTROL_PLANE_VIP,
+    EXTERNAL_SECRETS,
     VM_MEMORY_MIB,
     VM_VCPU,
     VM_DISK_GB,
@@ -404,6 +405,38 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
               .dockerconfigjson: {b64}
 """
 
+    # --- External Secrets bootstrap credential (ADR-055) ---
+    #
+    # Rendered as a k0s manifest so it lands BEFORE anything needs it, on a
+    # freshly rebuilt cluster, with no human step. This is the credential whose
+    # absence made two rebuilds silently produce clusters that could not issue
+    # certificates or take backups.
+    #
+    # The namespace is created here too: a Secret cannot be applied into a
+    # namespace that does not exist, and k0s applies manifests in filename
+    # order within a directory, not dependency order.
+    eso_yaml = ""
+    _eso = EXTERNAL_SECRETS or {}
+    if _eso.get("client_id") and _eso.get("client_secret"):
+        eso_yaml = f"""        - path: /var/lib/k0s/manifests/external-secrets-bootstrap/creds.yaml
+          permissions: 0600
+          content: |
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: external-secrets
+            ---
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: infisical-credentials
+              namespace: external-secrets
+            type: Opaque
+            stringData:
+              clientId: {_eso['client_id']}
+              clientSecret: {_eso['client_secret']}
+"""
+
     k0s_args_yaml = "\n".join(f"    - {arg}" for arg in args)
     dns_yaml = "\n".join(f"            DNS={d}" for d in DNS_SERVERS)
     return f"""#cloud-config
@@ -434,7 +467,7 @@ stages:
             Address={vm.static_ip}/24
             Gateway={GATEWAY}
 {dns_yaml}
-{k0s_config_yaml}{storage_disk_yaml}{token_file_yaml}        - path: /etc/ssh/sshd_config.d/99-hardening.conf
+{k0s_config_yaml}{storage_disk_yaml}{eso_yaml}{token_file_yaml}        - path: /etc/ssh/sshd_config.d/99-hardening.conf
           permissions: 0644
           content: |
             # Key-only auth. Kairos's example cloud-config sets a guessable

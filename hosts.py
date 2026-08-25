@@ -142,6 +142,8 @@ K0S_ARGS = list(_CFG["k0s"]["args"])
 # Empty string when no load balancer is configured, so provision.py can
 # simply test truthiness rather than branching on presence.
 CONTROL_PLANE_VIP = (_CFG.get("control_plane") or {}).get("vip") or ""
+# ADR-055. Empty client_id/client_secret disables ESO bootstrap entirely.
+EXTERNAL_SECRETS = dict(_CFG.get("external_secrets") or {})
 
 # Join tokens are generated fresh on each provisioning run and baked into
 # each joining node's seed ISO, so nodes join on first boot with no
