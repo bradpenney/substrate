@@ -17,3 +17,4 @@ __pycache__/
 # Real site configuration: addresses, usernames, storage layout.
 # Committed template is site.example.yml — this file never goes to git.
 site.yml
+.dns-migration.env

@@ -95,6 +95,13 @@ defaults:
   memory_mib: 7168
   vcpu: 2          # proven-working; 3 produced an odd 3-socket topology
   disk_gb: 20
+  # Dedicated second disk for Longhorn (ADR-050), in GB.
+  #
+  # 0 = do not attach one, which is the safe default: a node built without it
+  # is not silently degraded, Longhorn simply finds no disk to claim. Raise this
+  # (and rebuild) when rolling out storage. Per-node overrides are supported —
+  # server1's nodes can carry far more than server2's.
+  storage_disk_gb: 0
 
 
 k0s:
@@ -121,3 +128,10 @@ flux:
   # cannot be avoided: Flux needs it before External Secrets exists.
   ghcr_username: youruser
   ghcr_token: ""
+
+# Optional. Only needed by dns/migrate_to_cloudflare.py (ADR-037).
+# Credentials for that script live in .dns-migration.env (also gitignored),
+# as VERCEL_TOKEN= and CLOUDFLARE_TOKEN= lines.
+dns:
+  domain: example.com
+  vercel_team: team_xxxxxxxxxxxxxxxxxxxxxxxx

@@ -47,6 +47,9 @@ k0s:
 {% for arg in k0s_args %}
     - {{ arg }}
 {% endfor %}
+{% if control_plane_vip %}
+    - --config /etc/k0s/k0s.yaml
+{% endif %}
 {% if join_token is defined and join_token %}
     - --token-file /etc/k0s/join-token
 {% endif %}
@@ -64,6 +67,48 @@ stages:
 {% for d in dns_servers %}
             DNS={{ d }}
 {% endfor %}
+{% if control_plane_vip %}
+        - path: /etc/k0s/k0s.yaml
+          permissions: 0644
+          content: |
+            apiVersion: k0s.k0sproject.io/v1beta1
+            kind: ClusterConfig
+            metadata:
+              name: k0s
+            spec:
+              api:
+                externalAddress: {{ control_plane_vip }}
+                sans:
+                  - {{ control_plane_vip }}
+{% endif %}
+{% if storage_disk_gb | default(0) | int > 0 %}
+        - path: /etc/systemd/system/usr-local-longhorn.mount
+          permissions: 0644
+          content: |
+            [Unit]
+            Description=Longhorn data disk
+            After=local-fs.target
+            [Mount]
+            What=/dev/vdb
+            Where=/usr/local/longhorn
+            Type=ext4
+            Options=defaults,noatime
+            [Install]
+            WantedBy=local-fs.target
+        - path: /usr/local/bin/prepare-longhorn-disk.sh
+          permissions: 0755
+          content: |
+            #!/bin/sh
+            # Format ONCE. blkid succeeds only if a filesystem already exists,
+            # so a reboot preserves data and a rebuild starts clean.
+            set -e
+            [ -b /dev/vdb ] || exit 0
+            if ! blkid /dev/vdb >/dev/null 2>&1; then
+                mkfs.ext4 -F -L longhorn /dev/vdb
+            fi
+            mkdir -p /usr/local/longhorn
+            systemctl enable --now usr-local-longhorn.mount
+{% endif %}
 {% if join_token is defined and join_token %}
         - path: /etc/k0s/join-token
           permissions: 0600
@@ -117,6 +162,13 @@ stages:
                 pullSecret: ghcr-auth
 {% endif %}
   network:
+{% if storage_disk_gb | default(0) | int > 0 %}
+    - name: prepare the Longhorn data disk
+      commands:
+        - |
+          set -e
+          /usr/local/bin/prepare-longhorn-disk.sh
+{% endif %}
     - name: fetch the pinned flux-operator manifest
       commands:
         - |

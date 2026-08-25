@@ -42,9 +42,11 @@ from hosts import (
     KAIROS_ISO_URL,
     KAIROS_ISO_SHA256,
     K0S_ARGS,
+    CONTROL_PLANE_VIP,
     VM_MEMORY_MIB,
     VM_VCPU,
     VM_DISK_GB,
+    VM_STORAGE_DISK_GB,
     NETWORK_BRIDGE,
     ISO_POOL,
     ISO_POOL_PATH,
@@ -239,6 +241,95 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     # "look nice" next to the surrounding code would silently break the
     # cloud-config, the exact bug hit earlier with an HCL heredoc.
     args = list(K0S_ARGS)
+    storage_gb = (vm.storage_disk_gb if vm.storage_disk_gb is not None
+                  else VM_STORAGE_DISK_GB)
+
+    # --- control-plane load balancer (ADR-045) ---
+    #
+    # `externalAddress` does two load-bearing things: it puts the VIP into the
+    # API server certificate's SANs (without which every client hitting the VIP
+    # gets a TLS name mismatch), and it makes k0s hand out the VIP — not the
+    # generating node's own address — in join tokens and in the konnectivity
+    # agent DaemonSet.
+    #
+    # That second effect is the actual fix for ADR-044: the agents' single
+    # `--proxy-server-host` becomes the VIP, and HAProxy then spreads their
+    # connections across every konnectivity server instead of pinning all of
+    # them to whichever controller happened to write the DaemonSet last.
+    k0s_config_yaml = ""
+    if CONTROL_PLANE_VIP:
+        args.append("--config /etc/k0s/k0s.yaml")
+        # UNQUOTED octal permissions — `stages` wants a YAML integer here.
+        # The opposite of `write_files`, which wants it quoted. Getting this
+        # backwards is a silent no-op, not an error.
+        k0s_config_yaml = f"""        - path: /etc/k0s/k0s.yaml
+          permissions: 0644
+          content: |
+            apiVersion: k0s.k0sproject.io/v1beta1
+            kind: ClusterConfig
+            metadata:
+              name: k0s
+            spec:
+              api:
+                externalAddress: {CONTROL_PLANE_VIP}
+                sans:
+                  - {CONTROL_PLANE_VIP}
+"""
+
+    # --- dedicated Longhorn disk (ADR-050) ---
+    #
+    # Mounted at /usr/local/longhorn, NOT the upstream default
+    # /var/lib/longhorn. On Kairos the rootfs is read-only ext2 and only
+    # specific paths are bind-mounted from COS_PERSISTENT; /var/lib is not
+    # writable, so the default path would either fail or land somewhere
+    # ephemeral and lose every replica on reboot. /usr/local IS persistent and
+    # writable, so it can host the mountpoint.
+    #
+    # /etc/systemd is persistent too, which is why a .mount unit written here
+    # survives reboots on an immutable OS.
+    #
+    # The format is deliberately one-shot and conditional: `blkid` succeeds only
+    # once a filesystem exists, so a node that is rebooted (rather than rebuilt)
+    # keeps its data. A rebuilt node gets a brand-new blank disk and formats it,
+    # which is correct — Longhorn will rebuild its replicas from peers.
+    storage_disk_yaml = ""
+    storage_prepare_yaml = ""
+    if storage_gb:
+        storage_prepare_yaml = """    - name: prepare the Longhorn data disk
+      commands:
+        - |
+          set -e
+          /usr/local/bin/prepare-longhorn-disk.sh
+"""
+    if storage_gb:
+        storage_disk_yaml = """        - path: /etc/systemd/system/usr-local-longhorn.mount
+          permissions: 0644
+          content: |
+            [Unit]
+            Description=Longhorn data disk
+            After=local-fs.target
+            [Mount]
+            What=/dev/vdb
+            Where=/usr/local/longhorn
+            Type=ext4
+            Options=defaults,noatime
+            [Install]
+            WantedBy=local-fs.target
+        - path: /usr/local/bin/prepare-longhorn-disk.sh
+          permissions: 0755
+          content: |
+            #!/bin/sh
+            # Format ONCE. blkid succeeds only if a filesystem already exists,
+            # so a reboot preserves data and a rebuild starts clean.
+            set -e
+            [ -b /dev/vdb ] || exit 0
+            if ! blkid /dev/vdb >/dev/null 2>&1; then
+                mkfs.ext4 -F -L longhorn /dev/vdb
+            fi
+            mkdir -p /usr/local/longhorn
+            systemctl enable --now usr-local-longhorn.mount
+"""
+
     token_file_yaml = ""
     if join_token is not None:
         # Every non-bootstrap node joins the existing cluster as a further
@@ -343,7 +434,7 @@ stages:
             Address={vm.static_ip}/24
             Gateway={GATEWAY}
 {dns_yaml}
-{token_file_yaml}        - path: /etc/ssh/sshd_config.d/99-hardening.conf
+{k0s_config_yaml}{storage_disk_yaml}{token_file_yaml}        - path: /etc/ssh/sshd_config.d/99-hardening.conf
           permissions: 0644
           content: |
             # Key-only auth. Kairos's example cloud-config sets a guessable
@@ -376,7 +467,7 @@ stages:
                 ref: {flux["oci_tag"]}
                 path: clusters/homelab{sync_pull_secret}
   network:
-    - name: fetch the pinned flux-operator manifest
+{storage_prepare_yaml}    - name: fetch the pinned flux-operator manifest
       commands:
         - |
           set -e
@@ -616,8 +707,12 @@ def create_vm(host: Host, vm: VM, join_token: str | None = None,
         reconcile_existing(host, vm)
         return
 
+    # Per-VM override, else the fleet default. 0 means no second disk at all.
+    storage_gb = vm.storage_disk_gb if vm.storage_disk_gb is not None else VM_STORAGE_DISK_GB
+
     for attempt in range(1, CREATE_RETRIES + 1):
-        print(f"[{host.name}] creating {vm.name} (attempt {attempt}/{CREATE_RETRIES})...")
+        print(f"[{host.name}] creating {vm.name} (attempt {attempt}/{CREATE_RETRIES})"
+              + (f" with a {storage_gb}GB storage disk" if storage_gb else "") + "...")
         build_seed_iso(host, vm, join_token)
         run(
             host,
@@ -629,6 +724,12 @@ def create_vm(host: Host, vm: VM, join_token: str | None = None,
                 "--vcpus", str(vm.vcpu or VM_VCPU),
                 "--cpu", "host-passthrough",
                 "--disk", f"pool={host.disk_pool},size={VM_DISK_GB},bus=virtio",
+                # Dedicated Longhorn disk (ADR-050), attached as vdb when sized.
+                # Omitted entirely when 0, so this is inert until storage rolls
+                # out — and a node built without it is not silently different,
+                # because Longhorn simply finds no disk to claim.
+                *(["--disk", f"pool={host.disk_pool},size={storage_gb},bus=virtio"]
+                  if storage_gb else []),
                 "--cdrom", f"{ISO_POOL_PATH}/kairos-hadron-k0s.iso",
                 "--disk", f"device=cdrom,bus=sata,path={ISO_POOL_PATH}/{vm.name}-cloudinit.iso",
                 "--network", f"bridge={NETWORK_BRIDGE},model=virtio",

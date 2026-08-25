@@ -34,7 +34,8 @@ import inventory
 TEMPLATE_DIR = Path(__file__).parent / "roles" / "k0s_node" / "templates"
 
 
-def render_jinja(vm_name: str, static_ip: str, join_token: str | None) -> str:
+def render_jinja(vm_name: str, static_ip: str, join_token: str | None,
+                 hostvars: dict | None = None) -> str:
     # Group vars come from the dynamic inventory — the same source the playbook
     # itself uses, so this compares what Ansible would ACTUALLY render rather
     # than a hand-maintained approximation of it.
@@ -59,12 +60,19 @@ def render_jinja(vm_name: str, static_ip: str, join_token: str | None) -> str:
         static_ip=static_ip,
         join_token=join_token,
         **gvars,
+        # Per-NODE vars, which the playbook gets from the inventory's hostvars.
+        # Without these the storage-disk branch renders empty on the Jinja side
+        # and the comparison passes by comparing two absences.
+        **(hostvars or {}),
     )
 
 
 def compare(label: str, vm: py.VM, join_token: str | None) -> bool:
     expected = provision.render_cloud_config(vm, join_token)
-    actual = render_jinja(vm.name, vm.static_ip, join_token)
+    hostvars = {}
+    if vm.storage_disk_gb is not None:
+        hostvars["storage_disk_gb"] = vm.storage_disk_gb
+    actual = render_jinja(vm.name, vm.static_ip, join_token, hostvars)
     if expected == actual:
         print(f"  [ok ] {label}: byte-identical ({len(actual)} bytes)")
         return True
@@ -89,6 +97,15 @@ def main() -> int:
     ok &= compare(
         "joining node (with token)",
         py.VM(name="test-join", static_ip="192.0.2.11", memory_mib=10240, vcpu=4),
+        "TESTTOKEN123abc",
+    )
+    # Exercise the OPTIONAL branches too. A guard that only covers the default
+    # path is half a guard: the pullSecret indentation bug was caught only
+    # because the private-artifact path was tested, and the storage-disk branch
+    # would otherwise render empty on BOTH sides and "match".
+    ok &= compare(
+        "node WITH a Longhorn disk (ADR-050)",
+        py.VM(name="test-store", static_ip="192.0.2.12", storage_disk_gb=200),
         "TESTTOKEN123abc",
     )
     if not ok:

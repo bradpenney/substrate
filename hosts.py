@@ -45,6 +45,14 @@ class VM:
     # waste one and starve the other.
     memory_mib: int | None = None
     vcpu: int | None = None
+    # Dedicated SECOND disk for Longhorn (ADR-050), in GB. 0/None = none.
+    #
+    # Deliberately separate from the root disk. Longhorn sharing a filesystem
+    # with etcd means a volume that fills the disk can stall the control plane —
+    # storage pressure should degrade storage, not consensus. It also survives
+    # the node lifecycle better: nodes are destroyed and rebuilt on every Kairos
+    # release, and a data disk can be reattached rather than rebuilt.
+    storage_disk_gb: int | None = None
 
 
 @dataclass
@@ -93,6 +101,7 @@ def _build_hosts() -> list[Host]:
                 bootstrap=bool(cfg.get("bootstrap", False)),
                 memory_mib=cfg.get("memory_mib"),
                 vcpu=cfg.get("vcpu"),
+                storage_disk_gb=cfg.get("storage_disk_gb"),
             )
         )
     return list(hosts.values())
@@ -130,6 +139,9 @@ KAIROS_ISO_URL = _CFG["kairos"]["iso_url"]
 KAIROS_ISO_SHA256 = _CFG["kairos"]["iso_sha256"]
 
 K0S_ARGS = list(_CFG["k0s"]["args"])
+# Empty string when no load balancer is configured, so provision.py can
+# simply test truthiness rather than branching on presence.
+CONTROL_PLANE_VIP = (_CFG.get("control_plane") or {}).get("vip") or ""
 
 # Join tokens are generated fresh on each provisioning run and baked into
 # each joining node's seed ISO, so nodes join on first boot with no
@@ -141,6 +153,9 @@ K0S_TOKEN_EXPIRY = _CFG["k0s"]["token_expiry"]
 VM_MEMORY_MIB = _CFG["defaults"]["memory_mib"]
 VM_VCPU = _CFG["defaults"]["vcpu"]
 VM_DISK_GB = _CFG["defaults"]["disk_gb"]
+# Default size of the dedicated Longhorn disk. 0 = do not attach one,
+# which keeps the change inert until storage is actually rolled out.
+VM_STORAGE_DISK_GB = int(_CFG["defaults"].get("storage_disk_gb", 0) or 0)
 
 ISO_POOL = _CFG["libvirt"]["iso_pool"]
 ISO_POOL_PATH = _CFG["libvirt"]["iso_pool_path"]

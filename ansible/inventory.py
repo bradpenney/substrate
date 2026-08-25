@@ -98,6 +98,9 @@ def build() -> dict:
             "static_ip": ncfg["ip"],
             "memory_mib": ncfg.get("memory_mib", defaults["memory_mib"]),
             "vcpu": ncfg.get("vcpu", defaults["vcpu"]),
+            # ADR-050. Falls back to the fleet default, then to 0 (no disk).
+            "storage_disk_gb": ncfg.get(
+                "storage_disk_gb", defaults.get("storage_disk_gb", 0) or 0),
         }
 
     hostvars = {**hypervisor_hosts, **node_vars}
@@ -123,10 +126,14 @@ def build() -> dict:
                 "kairos_iso_url": cfg["kairos"]["iso_url"],
                 "kairos_iso_sha256": cfg["kairos"]["iso_sha256"],
                 "k0s_args": list(cfg["k0s"]["args"]),
+            # Empty string when no LB is configured — Jinja tests truthiness.
+            "control_plane_vip": (cfg.get("control_plane") or {}).get("vip") or "",
                 "k0s_token_expiry": cfg["k0s"]["token_expiry"],
                 "vm_memory_mib": defaults["memory_mib"],
                 "vm_vcpu": defaults["vcpu"],
                 "vm_disk_gb": defaults["disk_gb"],
+            # ADR-050: dedicated Longhorn disk. 0 = do not attach one.
+            "vm_storage_disk_gb": int(cfg["defaults"].get("storage_disk_gb", 0) or 0),
                 "iso_pool": cfg["libvirt"]["iso_pool"],
                 "iso_pool_path": cfg["libvirt"]["iso_pool_path"],
                 # GitOps bootstrap (ADR-018). The pull secret is pre-rendered

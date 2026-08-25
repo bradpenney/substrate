@@ -116,6 +116,33 @@ def _validate(cfg: dict) -> None:
                 f"e.g. user@10.0.0.5"
             )
 
+    # The control-plane VIP must not collide with any node address.
+    #
+    # Caught during the ADR-046 retopology: renumbering the nodes silently put
+    # a node on the VIP. Nothing would have failed at provisioning time — the
+    # VM would boot fine and keepalived would later ARP for an address a live
+    # host already answers for, producing intermittent, extremely confusing
+    # control-plane failures. Cheap to check, miserable to debug.
+    cp = cfg.get("control_plane") or {}
+    vip = cp.get("vip")
+    if vip:
+        clash = [n for n, c in cfg["nodes"].items() if c.get("ip") == vip]
+        if clash:
+            raise SystemExit(
+                f"site.yml: control_plane.vip {vip} is also assigned to "
+                f"node(s) {', '.join(clash)}.\n"
+                f"  The VIP floats between hypervisors and must not be a node "
+                f"address."
+            )
+        for h, hc in cfg["hypervisors"].items():
+            for field in ("ssh_target", "peer_target"):
+                t = hc.get(field) or ""
+                if vip in t:
+                    raise SystemExit(
+                        f"site.yml: control_plane.vip {vip} appears in "
+                        f"hypervisor '{h}' {field}."
+                    )
+
     bootstraps = [n for n, c in cfg["nodes"].items() if c.get("bootstrap")]
     if len(bootstraps) != 1:
         raise SystemExit(

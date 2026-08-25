@@ -99,6 +99,8 @@
           --vcpus {{ vcpu | default(vm_vcpu) }}
           --cpu host-passthrough
           --disk pool={{ hostvars[hypervisor].disk_pool }},size={{ vm_disk_gb }},bus=virtio
+          {% set _sd = storage_disk_gb | default(vm_storage_disk_gb) | int %}
+          {%- if _sd > 0 %} --disk pool={{ hostvars[hypervisor].disk_pool }},size={{ _sd }},bus=virtio{% endif %}
           --cdrom {{ iso_pool_path }}/kairos-hadron-k0s.iso
           --disk device=cdrom,bus=sata,path={{ iso_pool_path }}/{{ inventory_hostname }}-cloudinit.iso
           --network bridge={{ network_bridge }},model=virtio

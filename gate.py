@@ -108,6 +108,35 @@ def kubectl(args: str, timeout: int = 60) -> subprocess.CompletedProcess:
 # ------------------------------------------------------------- part 1: wipe
 
 
+def orphaned_vms() -> list:
+    """VMs present on a hypervisor that site.yml no longer declares.
+
+    `wipe` iterates site.yml, so a node REMOVED from site.yml is never
+    destroyed — it just keeps running. That is genuinely dangerous rather than
+    untidy: the orphan still holds the old cluster's PKI and an etcd
+    membership, still answers on the LAN, and will happily try to participate
+    in a cluster that has been rebuilt underneath it.
+
+    Found during the ADR-046 retopology, where s1-vm3 stopped being declared
+    and would otherwise have survived a full wipe-and-rebuild.
+
+    Returns [(host, domain_name)].
+    """
+    declared = {v.name for _, v in all_vms()}
+    found = []
+    for host in provision.HOSTS:
+        res = provision.run(
+            host, ["virsh", "-c", "qemu:///system", "list", "--all", "--name"],
+            check=False)
+        for line in (getattr(res, "stdout", "") or "").splitlines():
+            name = line.strip()
+            # Only ever consider names this tooling could have created; never
+            # offer to destroy something unrelated running on a hypervisor.
+            if name and name not in declared and re.match(r"^s\d+-vm\d+$", name):
+                found.append((host, name))
+    return found
+
+
 def wipe(dry_run: bool = False) -> None:
     """Destroy the entire fleet, leaving nothing that a rebuild could inherit.
 
@@ -144,6 +173,23 @@ def wipe(dry_run: bool = False) -> None:
     """
     label = "DRY RUN — would destroy" if dry_run else "DESTROYING"
     print(f"=== {label} {len(all_vms())} VMs ===")
+
+    orphans = orphaned_vms()
+    if orphans:
+        print(f"\n  {len(orphans)} ORPHAN(S) — on a hypervisor but not in site.yml:")
+        for host, name in orphans:
+            print(f"    {host.name}: {name}")
+        print("  These hold the old cluster's PKI and etcd membership. Leaving")
+        print("  them running while rebuilding produces a node that believes it")
+        print("  belongs to a cluster that no longer exists.")
+        if not dry_run:
+            for host, name in orphans:
+                print(f"  destroying orphan {name} on {host.name}...")
+                provision.run(host, ["virsh", "-c", "qemu:///system", "destroy", name],
+                              check=False)
+                provision.run(host, ["virsh", "-c", "qemu:///system", "undefine",
+                                     name, "--nvram"], check=False)
+        print()
 
     for host, vm in all_vms():
         exists = provision.vm_exists(host, vm)
@@ -190,7 +236,7 @@ def wipe(dry_run: bool = False) -> None:
 
 
 def verify() -> bool:
-    """Assert the three documented gate criteria. Returns True only if all pass.
+    """Assert the documented gate criteria. Returns True only if all pass.
 
     Every check runs even if an earlier one fails, so a single run reports the
     full picture rather than making the operator fix-and-rerun to discover the
@@ -203,11 +249,65 @@ def verify() -> bool:
         "cluster DNS resolving": _check_dns(),
         # Added after a passing run left Flux unverified — see _check_flux().
         "flux reconciling": _check_flux(),
+        # Fifth criterion (ADR-044). The other four all passed on a cluster
+        # whose admission webhooks were entirely non-functional.
+        "api-server -> pod tunnel": _check_apiserver_tunnel(),
     }
     print("\n=== gate results ===")
     for name, ok in results.items():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
     return all(results.values())
+
+
+def _check_apiserver_tunnel() -> bool:
+    """Every API server must be able to reach the pod network — not just one.
+
+    THE CHECK THAT WAS MISSING. Four criteria passed on a cluster where no
+    admission webhook worked, `kubectl logs` failed, `exec` failed, and
+    `port-forward` failed. Nodes were Ready, system pods healthy, DNS resolving,
+    Flux reconciling — because none of those traverse the API-server-to-pod
+    tunnel. See ADR-044.
+
+    Testing through the load-balanced VIP is NOT sufficient: it round-robins, so
+    a single probe may land on a healthy controller and report success while the
+    other four are broken. That is precisely how this hid for weeks. Each API
+    server is therefore addressed DIRECTLY, one at a time.
+
+    Reading a pod's logs is the cheapest operation that actually crosses the
+    tunnel, so it is the probe.
+    """
+    print("--- api-server -> pod tunnel (every controller) ---")
+    pod = subprocess.run(
+        ["kubectl", "-n", "kube-system", "get", "pods",
+         "-l", "k8s-app=kube-dns", "-o", "jsonpath={.items[0].metadata.name}"],
+        capture_output=True, text=True, timeout=60).stdout.strip()
+    if not pod:
+        pod = subprocess.run(
+            ["kubectl", "-n", "kube-system", "get", "pods",
+             "-o", "jsonpath={.items[0].metadata.name}"],
+            capture_output=True, text=True, timeout=60).stdout.strip()
+    if not pod:
+        print("  no kube-system pod to probe with")
+        return False
+
+    ok = True
+    for _, vm in sorted(all_vms(), key=lambda x: x[1].static_ip):
+        r = subprocess.run(
+            ["kubectl", f"--server=https://{vm.static_ip}:6443",
+             "-n", "kube-system", "logs", pod, "--tail=1", "--limit-bytes=256"],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            print(f"  [ok  ] {vm.name:<8} {vm.static_ip}")
+        else:
+            ok = False
+            err = (r.stderr or "").strip().splitlines()
+            hint = err[-1][:90] if err else "unknown error"
+            print(f"  [FAIL] {vm.name:<8} {vm.static_ip}  {hint}")
+            if "No agent available" in (r.stderr or ""):
+                print("         konnectivity agents are not registered with this")
+                print("         controller — the ADR-044 failure. Check that the")
+                print("         load balancer DISTRIBUTES across all controllers.")
+    return ok
 
 
 def _check_nodes() -> bool:
@@ -628,6 +728,128 @@ def healthy_nodes() -> list[str]:
     return sorted(n for n, ready in states.items() if ready)
 
 
+def _etcd_members(vm) -> set:
+    """Member names k0s reports. Empty set on failure (caller treats as unhealthy)."""
+    r = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+         f"{provision.ADMIN_USER}@{vm.static_ip}", "sudo k0s etcd member-list"],
+        capture_output=True, text=True, timeout=45)
+    if r.returncode != 0:
+        return set()
+    try:
+        return set((json.loads(r.stdout.strip().splitlines()[-1])).get("members", {}))
+    except Exception:
+        return set()
+
+
+def wait_etcd_healthy(expected_names, timeout: int = 300) -> bool:
+    """Block until etcd membership matches AND every API server's etcd is serving.
+
+    WHY THIS EXISTS
+    The between-node gate used to check Kubernetes health only — nodes Ready,
+    system pods healthy. Those pass while etcd is mid-election or a member is
+    missing, because the API server keeps serving from the surviving quorum.
+    A roll that continues on that basis removes a second member from a cluster
+    that has not finished absorbing the first removal.
+
+    That is not hypothetical: it is what broke the first unattended roll. Three
+    membership changes in seven minutes, `k0s token create` timed out, and the
+    roll stopped mid-fleet.
+
+    TWO signals, because neither alone is sufficient:
+
+      1. MEMBERSHIP — the rejoined node is actually back in the member list.
+         k0s only exposes `member-list`, so this is the membership half.
+      2. SERVING — `/healthz/etcd` from EVERY API server, addressed directly.
+         Checked per-controller rather than through the VIP: the load balancer
+         round-robins, so one probe can hit a healthy controller and report
+         success while others are not serving. Same reasoning as the tunnel
+         check (ADR-044).
+    """
+    want = set(expected_names)
+    deadline = time.time() + timeout
+    last = ""
+    while time.time() < deadline:
+        members = _etcd_members(bootstrap_vm())
+        if members == want:
+            unhealthy = []
+            for _, vm in all_vms():
+                r = subprocess.run(
+                    ["kubectl", f"--server=https://{vm.static_ip}:6443",
+                     "get", "--raw", "/healthz/etcd"],
+                    capture_output=True, text=True, timeout=30)
+                if r.returncode != 0 or "ok" not in r.stdout.lower():
+                    unhealthy.append(vm.name)
+            if not unhealthy:
+                print(f"    etcd healthy — {len(members)} members, all serving")
+                return True
+            last = f"etcd not serving on: {', '.join(unhealthy)}"
+        else:
+            missing = want - members
+            extra = members - want
+            last = "membership " + (f"missing {', '.join(sorted(missing))}" if missing else "") \
+                   + (f" unexpected {', '.join(sorted(extra))}" if extra else "")
+        time.sleep(10)
+    print(f"    etcd did NOT become healthy within {timeout}s — {last}")
+    return False
+
+
+def wait_longhorn_healthy(timeout: int = 900) -> bool:
+    """Block until every Longhorn volume is healthy and nothing is rebuilding.
+
+    No-op when Longhorn is not installed, so this is safe to call unconditionally.
+
+    WHY IT MATTERS DURING A ROLL
+    Replacing a node destroys its replicas. Longhorn rebuilds them elsewhere,
+    which takes minutes and moves real data. Every other gate criterion passes
+    throughout — nodes Ready, pods healthy, etcd fine — because none of them can
+    see replica health. Replace the next node before the rebuild finishes and a
+    volume drops below replica quorum. On a two-replica volume that is data loss,
+    not degradation.
+
+    The timeout is generous (15 min) because rebuild time scales with volume
+    size, and halting a roll is far cheaper than losing a volume.
+    """
+    probe = subprocess.run(
+        ["kubectl", "get", "crd", "volumes.longhorn.io"],
+        capture_output=True, text=True, timeout=30)
+    if probe.returncode != 0:
+        return True  # Longhorn not installed — nothing to wait for
+
+    deadline = time.time() + timeout
+    last = ""
+    while time.time() < deadline:
+        r = subprocess.run(
+            ["kubectl", "-n", "longhorn-system", "get", "volumes.longhorn.io",
+             "-o", "json"], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            try:
+                items = json.loads(r.stdout).get("items", [])
+            except Exception:
+                items = None
+            if items is not None:
+                bad = []
+                for v in items:
+                    name = v["metadata"]["name"]
+                    st = v.get("status") or {}
+                    rob = (st.get("robustness") or "unknown").lower()
+                    # `degraded` means a replica is missing or rebuilding.
+                    # `faulted` means the volume is already unusable.
+                    if rob not in ("healthy",):
+                        # A detached volume has no replicas to be healthy about.
+                        if (st.get("state") or "").lower() == "detached":
+                            continue
+                        bad.append(f"{name}={rob}")
+                if not bad:
+                    print(f"    longhorn healthy — {len(items)} volume(s), no rebuilds in flight")
+                    return True
+                last = ", ".join(bad[:4])
+        time.sleep(15)
+    print(f"    longhorn volumes did NOT become healthy within {timeout}s — {last}")
+    return False
+
+
 def roll(target: str | None = None) -> bool:
     """Replace nodes ONE AT A TIME onto the currently-pinned Kairos image.
 
@@ -712,6 +934,22 @@ def roll(target: str | None = None) -> bool:
         provision.wait_for_nodes_ready(bootstrap_vm(), expected)
         if not _check_system_pods():
             print(f"ROLL HALTED: system pods did not settle after replacing {vm.name}")
+            return False
+
+        # Kubernetes health is NOT cluster health. Both of the checks below pass
+        # through the gaps the criteria above cannot see — and both have a real
+        # failure behind them (etcd) or a predicted one (Longhorn). Neither is
+        # optional before touching the NEXT node.
+        if not wait_etcd_healthy(expected):
+            print(f"ROLL HALTED: etcd did not return to health after replacing {vm.name}")
+            print("  Continuing would remove a second member from a cluster that has")
+            print("  not absorbed the first removal — how the first unattended roll broke.")
+            return False
+
+        if not wait_longhorn_healthy():
+            print(f"ROLL HALTED: Longhorn replicas still rebuilding after {vm.name}")
+            print("  Replacing the next node now can drop a volume below replica")
+            print("  quorum. That is data loss, not degradation.")
             return False
 
         # ASSERT THE OUTCOME, don't assume it. "Healthy" is not "updated" — the
