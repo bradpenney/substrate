@@ -145,6 +145,12 @@ CONTROL_PLANE_VIP = (_CFG.get("control_plane") or {}).get("vip") or ""
 # ADR-055. Empty client_id/client_secret disables ESO bootstrap entirely.
 EXTERNAL_SECRETS = dict(_CFG.get("external_secrets") or {})
 
+# API server hardening: secrets-at-rest encryption and audit logging (ADR-066).
+API_HARDENING = dict(_CFG.get("api_hardening") or {})
+
+# Public endpoint the daily posture check verifies (ADR-073).
+POSTURE = dict(_CFG.get("posture") or {})
+
 # Join tokens are generated fresh on each provisioning run and baked into
 # each joining node's seed ISO, so nodes join on first boot with no
 # post-provisioning SSH step. Long enough for a full fleet build in one

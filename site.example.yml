@@ -108,9 +108,48 @@ k0s:
   args:
     - "--enable-worker"
     - "--no-taints"
+    # Selects the workerProfile of the same name from the rendered k0s.yaml
+    # (ADR-064). Without this flag the profile is applied to NOTHING: k0s only
+    # reads a worker profile when a worker explicitly asks for it by name, so
+    # the reservation would sit in the config looking correct while the
+    # scheduler carried on overcommitting the node.
+    - "--profile=homelab"
   # Long enough for a full fleet build in one session, short enough that a
   # stale token in an old ISO fails loudly rather than silently working.
   token_expiry: 24h
+
+# --- API server hardening (ADR-066) ---
+api_hardening:
+  # 32 random bytes, base64. Encrypts Secrets at rest in etcd.
+  # Generate with:
+  #   python3 -c 'import os,base64;print(base64.b64encode(os.urandom(32)).decode())'
+  #
+  # ⚠️ THIS KEY IS THE ONLY WAY TO READ YOUR OWN SECRETS. It must be identical
+  # on every controller and must survive a rebuild -- lose it and every Secret
+  # in an etcd snapshot is unrecoverable ciphertext. site.yml is gitignored and
+  # covered by the nightly backup, which is what makes that safe.
+  #
+  # Rotate by putting a NEW key first in the list and keeping the old one
+  # second, then rewriting every Secret so it is re-encrypted under the new key:
+  #   kubectl get secrets -A -o json | kubectl replace -f -
+  # Only then can the old key be dropped.
+  secrets_encryption_key: "REPLACE-ME-32-random-bytes-base64"
+
+  # Audit log destination. "-" means stdout, which journald captures.
+  # Deliberately not a file: the nodes run an immutable OS where most of the
+  # filesystem is read-only, and a log path that silently fails to write is
+  # worse than no audit log at all -- it looks like one.
+  audit_log_path: "-"
+  audit_log_maxage: "30"
+
+# --- posture check (ADR-073) ---
+posture:
+  # The public hostname to verify, and the origin address that must REFUSE a
+  # direct connection. Both live here rather than in the script because this
+  # file is gitignored and `substrate` is a public repository — the WAN address
+  # is exactly the kind of detail that should not be published.
+  public_hostname: hello.example.com
+  origin_ip: ""   # your WAN address; leave empty to skip the origin-lock check
 
 libvirt:
   iso_pool: isos

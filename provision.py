@@ -44,6 +44,7 @@ from hosts import (
     K0S_ARGS,
     CONTROL_PLANE_VIP,
     EXTERNAL_SECRETS,
+    API_HARDENING,
     VM_MEMORY_MIB,
     VM_VCPU,
     VM_DISK_GB,
@@ -257,6 +258,100 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     # `--proxy-server-host` becomes the VIP, and HAProxy then spreads their
     # connections across every konnectivity server instead of pinning all of
     # them to whichever controller happened to write the DaemonSet last.
+    # --- API server hardening (ADR-066) ---
+    #
+    # Two controls that both live on kube-apiserver flags, and both fail
+    # SILENTLY when misconfigured: a bad encryption config means Secrets keep
+    # being written in plaintext, and a bad audit path means no log appears.
+    # Neither surfaces as an error in `kubectl`.
+    _ah = API_HARDENING or {}
+    api_extra_args = {}
+    hardening_files = ""
+
+    _enc_key = (_ah.get("secrets_encryption_key") or "").strip()
+    if _enc_key:
+        api_extra_args["encryption-provider-config"] = "/etc/k0s/encryption.yaml"
+        # `secretbox` (XSalsa20-Poly1305) rather than aescbc, whose CBC padding
+        # makes it the weaker choice, or aesgcm, which requires rotation every
+        # ~200k writes to stay safe with a static key.
+        #
+        # `identity` LAST is what lets the API server still read Secrets that
+        # were written before encryption existed. Putting it first would silently
+        # disable encryption while looking configured.
+        hardening_files += f"""        - path: /etc/k0s/encryption.yaml
+          permissions: 0600
+          content: |
+            apiVersion: apiserver.config.k8s.io/v1
+            kind: EncryptionConfiguration
+            resources:
+              - resources:
+                  - secrets
+                providers:
+                  - secretbox:
+                      keys:
+                        - name: key1
+                          secret: {_enc_key}
+                  - identity: {{}}
+"""
+
+    _audit_path = (_ah.get("audit_log_path") or "").strip()
+    if _audit_path:
+        api_extra_args["audit-policy-file"] = "/etc/k0s/audit-policy.yaml"
+        api_extra_args["audit-log-path"] = _audit_path
+        api_extra_args["audit-log-maxage"] = str(_ah.get("audit_log_maxage", "30"))
+        # Levels, from the top down. Order matters: the FIRST matching rule wins,
+        # so the noise-suppression rules have to come before the catch-all.
+        hardening_files += """        - path: /etc/k0s/audit-policy.yaml
+          permissions: 0644
+          content: |
+            apiVersion: audit.k8s.io/v1
+            kind: Policy
+            # Never log request or response BODIES for these: the body is the
+            # secret. Metadata still records who touched what, and when.
+            omitStages:
+              - RequestReceived
+            rules:
+              - level: Metadata
+                resources:
+                  - group: ""
+                    resources: ["secrets", "configmaps"]
+                  - group: "authentication.k8s.io"
+                    resources: ["tokenreviews"]
+              # Anything that changes who can do what, in full. This is the
+              # record that answers "how did they get that access".
+              - level: RequestResponse
+                resources:
+                  - group: "rbac.authorization.k8s.io"
+                    resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+                  - group: "certificates.k8s.io"
+                    resources: ["certificatesigningrequests"]
+              # Code execution inside the cluster.
+              - level: RequestResponse
+                resources:
+                  - group: ""
+                    resources: ["pods/exec", "pods/attach", "pods/portforward"]
+              # Drop the constant read chatter from the control plane itself,
+              # which would otherwise bury everything above it.
+              - level: None
+                users: ["system:kube-scheduler", "system:kube-controller-manager", "system:apiserver"]
+                verbs: ["get", "list", "watch"]
+              - level: None
+                userGroups: ["system:nodes"]
+                verbs: ["get", "list", "watch"]
+              - level: None
+                nonResourceURLs: ["/healthz*", "/readyz*", "/livez*", "/version", "/metrics"]
+              # Everything that changes state.
+              - level: RequestResponse
+                verbs: ["create", "update", "patch", "delete", "deletecollection"]
+              # Everything else: who, what, when -- but not the payload.
+              - level: Metadata
+"""
+
+    extra_args_yaml = ""
+    if api_extra_args:
+        extra_args_yaml = "\n                extraArgs:\n" + "\n".join(
+            f"                  {k}: \"{v}\"" for k, v in sorted(api_extra_args.items()))
+
     k0s_config_yaml = ""
     if CONTROL_PLANE_VIP:
         args.append("--config /etc/k0s/k0s.yaml")
@@ -274,7 +369,46 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
               api:
                 externalAddress: {CONTROL_PLANE_VIP}
                 sans:
-                  - {CONTROL_PLANE_VIP}
+                  - {CONTROL_PLANE_VIP}{extra_args_yaml}
+              # --- node resource reservation (ADR-064) ---
+              #
+              # Every node here is controller AND worker, so kube-apiserver,
+              # etcd, the scheduler and the controller-manager all run as HOST
+              # PROCESSES. The kubelet does not account for them, so without a
+              # reservation the scheduler believes the whole machine is
+              # available for pods.
+              #
+              # Measured on s2-vm3 (a 3.9Gi node) before this existed:
+              #   node working set   2333Mi
+              #   sum of pod working sets  482Mi
+              #   -> 1850Mi of host processes, against 100Mi reserved.
+              #
+              # The scheduler saw 3808Mi of allocatable memory on a node with
+              # roughly 1958Mi genuinely free. Filling that gap means an OOM,
+              # and on this topology etcd is one of the processes competing for
+              # the last page — a scheduling decision becomes a quorum event.
+              #
+              # 2048Mi total reservation, a little above the 1850Mi measured,
+              # rounded rather than fitted. These are deliberately SANE
+              # DEFAULTS, not tuned figures: revisit once metrics are being
+              # collected and the real high-water mark across all five nodes is
+              # known, rather than the single sample above.
+              #
+              # evictionHard gives the kubelet room to act before the kernel
+              # OOM killer does, which picks its victim by score, not by
+              # importance.
+              workerProfiles:
+                - name: homelab
+                  values:
+                    systemReserved:
+                      cpu: 200m
+                      memory: 768Mi
+                    kubeReserved:
+                      cpu: 300m
+                      memory: 1280Mi
+                    evictionHard:
+                      memory.available: 300Mi
+                      nodefs.available: 10%
 """
 
     # --- dedicated Longhorn disk (ADR-050) ---
@@ -467,7 +601,7 @@ stages:
             Address={vm.static_ip}/24
             Gateway={GATEWAY}
 {dns_yaml}
-{k0s_config_yaml}{storage_disk_yaml}{eso_yaml}{token_file_yaml}        - path: /etc/ssh/sshd_config.d/99-hardening.conf
+{k0s_config_yaml}{hardening_files}{storage_disk_yaml}{eso_yaml}{token_file_yaml}        - path: /etc/ssh/sshd_config.d/99-hardening.conf
           permissions: 0644
           content: |
             # Key-only auth. Kairos's example cloud-config sets a guessable
@@ -494,6 +628,41 @@ stages:
               distribution:
                 version: {flux["distribution_version"]}
                 registry: ghcr.io/fluxcd
+              # EXPLICIT component set. Left unset, flux-operator installs its
+              # default four, which includes helm-controller.
+              #
+              # helm-controller is deliberately absent. Nothing here uses Helm
+              # at runtime — every component is vendored upstream YAML — so it
+              # reconciled nothing (`helmreleases` = 0) while holding
+              # cluster-admin through the cluster-reconciler-flux-system
+              # binding. Dropping it removes a cluster-admin subject and a
+              # running Deployment for no loss of function.
+              #
+              # notification-controller is kept: flux-operator writes FluxReport
+              # through it. It is the next candidate if that stops being true —
+              # Alerts, Providers and Receivers are all currently zero.
+              components:
+                - source-controller
+                - kustomize-controller
+                - notification-controller
+              # flux-operator OWNS the flux-system Namespace and sets only
+              # `warn`, never `enforce` -- so after ADR-063 removed our
+              # duplicate declaration, the namespace was left with no Pod
+              # Security enforcement at all. This patch is how the owner is
+              # asked to set it, rather than fighting it for the object.
+              kustomize:
+                patches:
+                  - target:
+                      kind: Namespace
+                      name: flux-system
+                    patch: |
+                      apiVersion: v1
+                      kind: Namespace
+                      metadata:
+                        name: flux-system
+                        labels:
+                          pod-security.kubernetes.io/enforce: baseline
+                          pod-security.kubernetes.io/enforce-version: latest
               sync:
                 kind: OCIRepository
                 url: oci://{flux["oci_repository"]}

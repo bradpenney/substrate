@@ -142,6 +142,16 @@ def build() -> dict:
                 # wrong would fail at node boot rather than in CI.
                 "flux": cfg["flux"],
                 "flux_pull_secret_b64": _pull_secret_b64(cfg["flux"]),
+                # External Secrets bootstrap credential (ADR-055). Absent from
+                # the Ansible path until 2026-08-26, which check_render.py
+                # caught: an Ansible-built cluster came up with no Infisical
+                # credentials, so cert-manager could not solve DNS-01 and the
+                # PV backups had no remote — the exact silent failure the
+                # bootstrap manifest exists to prevent.
+                "external_secrets": cfg.get("external_secrets") or {},
+                # API server hardening: secrets-at-rest encryption key and
+                # audit log settings (ADR-066).
+                "api_hardening": cfg.get("api_hardening") or {},
                 # Lifecycle timeouts (seconds).
                 "install_wait_timeout": 900,
                 "ssh_wait_timeout": 300,

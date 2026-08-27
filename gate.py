@@ -313,12 +313,12 @@ def _check_apiserver_tunnel() -> bool:
     return ok
 
 
-# Secrets the platform cannot function without, and which no manifest creates.
+# Credentials the platform cannot function without, checked through the
+# ExternalSecret that produces each one rather than by reading the Secret.
 #
-# Each is a (namespace, name, reason) that must exist and be non-empty. Keep
-# this list SHORT and only for things whose absence breaks the platform — it is
-# a gate, not an inventory.
-REQUIRED_SECRETS = [
+# Keep this list SHORT and only for things whose absence breaks the platform —
+# it is a gate, not an inventory.
+REQUIRED_EXTERNAL_SECRETS = [
     ("cert-manager", "cloudflare-api-token",
      "cert-manager cannot solve DNS-01 — NO certificate will ever issue"),
     ("pv-backup", "rclone-config",
@@ -327,7 +327,7 @@ REQUIRED_SECRETS = [
 
 
 def _check_required_secrets() -> bool:
-    """Assert hand-created secrets survived the rebuild.
+    """Assert the credentials the platform depends on are being delivered.
 
     WHY THIS EXISTS
     Two rebuilds on 2026-08-25 produced clusters that could not issue
@@ -337,37 +337,52 @@ def _check_required_secrets() -> bool:
 
     Nothing surfaced it because the failure is silent by construction:
     cert-manager retries forever rather than erroring, and a backup that never
-    runs produces no signal at all. The absence of a secret is invisible unless
-    something looks for it.
+    runs produces no signal at all.
 
-    This is the stop-gap. ADR-055's External Secrets Operator is the real fix —
-    at which point this check becomes a regression test rather than a crutch.
+    WHY THIS READS THE EXTERNALSECRET AND NOT THE SECRET (ADR-071)
+    Two reasons, and the second is the better one.
+
+    1. The gate no longer needs permission to read Secrets, so it runs under the
+       scoped `platform-viewer` identity instead of requiring cluster-admin.
+       A check that demands the most dangerous credential on the cluster in
+       order to run is a check that will be run as root forever.
+
+    2. It is a STRONGER assertion. A Secret is a snapshot: once written it stays
+       readable even if the pipeline that produced it has been broken for weeks —
+       a revoked Infisical credential leaves the old Secret sitting there,
+       looking perfectly healthy. `Ready=True` on the ExternalSecret means the
+       operator authenticated and refreshed it, which is the thing actually
+       required for the NEXT rebuild to work.
     """
-    print("--- required secrets ---")
+    print("--- required credentials ---")
     ok = True
-    for ns, name, why in REQUIRED_SECRETS:
+    for ns, name, why in REQUIRED_EXTERNAL_SECRETS:
         r = subprocess.run(
-            ["kubectl", "-n", ns, "get", "secret", name, "-o", "json"],
+            ["kubectl", "-n", ns, "get", "externalsecret", name, "-o", "json"],
             capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
             ok = False
-            print(f"  [MISSING] {ns}/{name}")
+            print(f"  [MISSING] {ns}/{name} — no ExternalSecret")
             print(f"            {why}")
             continue
         try:
-            data = json.loads(r.stdout).get("data") or {}
+            status = json.loads(r.stdout).get("status") or {}
         except Exception:
-            data = {}
-        # Present but empty is as broken as absent, and looks healthier.
-        if not data or not any(v for v in data.values()):
+            status = {}
+        ready = next((c for c in (status.get("conditions") or [])
+                      if c.get("type") == "Ready"), None)
+        if not ready or ready.get("status") != "True":
             ok = False
-            print(f"  [EMPTY  ] {ns}/{name} exists but carries no data")
+            reason = (ready or {}).get("reason", "no Ready condition")
+            print(f"  [STALE  ] {ns}/{name} is not syncing ({reason})")
             print(f"            {why}")
+            print("            The Secret may still exist and still look fine.")
         else:
-            print(f"  [ok     ] {ns}/{name}  ({len(data)} key(s))")
+            when = status.get("refreshTime", "unknown")
+            print(f"  [ok     ] {ns}/{name}  (last refreshed {when})")
     if not ok:
-        print("  These are created OUT OF BAND and do not survive a rebuild.")
-        print("  See ADR-055 — this is why the rebuild guarantee is not yet true.")
+        print("  Delivered by External Secrets from Infisical (ADR-055).")
+        print("  A failure here means the next rebuild produces a broken cluster.")
     return ok
 
 
