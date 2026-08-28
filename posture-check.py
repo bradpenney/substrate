@@ -158,6 +158,62 @@ def check_no_standing_grant() -> None:
 
 EXPECTED_POLICIES = {"require-pss-labels", "workload-hygiene"}
 
+# Units whose failure means something on this host stopped protecting the
+# cluster. Not an inventory of every timer -- only the ones whose silence is
+# dangerous.
+WATCHED_UNITS = [
+    "hypervisor-update.service",
+    "nextcloud-backup.service",
+    "ddns-cloudflare.service",
+    "homelab-update.service",
+    # NOT posture-check.service itself. Watching yourself deadlocks: one failure
+    # marks the unit failed, the next run then fails BECAUSE it is failed, and it
+    # can never clear -- the unit only leaves the failed state by succeeding.
+    # Caught by running it while it happened to be in that state.
+]
+
+
+def check_failed_units() -> None:
+    """Catch host-side automation that has quietly stopped working.
+
+    WHY THIS EXISTS
+    `hypervisor-update.service` failed five nights running -- the host applied
+    no updates and never rebooted -- and nobody knew, because that unit had no
+    OnFailure= wired. It was found by reading the journal for an unrelated
+    reason.
+
+    Two of the units below had broken notification paths at the time this was
+    written: one had no OnFailure at all, another had it in the [Service]
+    section where systemd silently ignores it. Both are fixed, but the lesson is
+    that per-unit alerting is something you can forget to add. This check does
+    not depend on remembering.
+    """
+    r = subprocess.run(["systemctl", "is-system-running"],
+                       capture_output=True, text=True)
+    for unit in WATCHED_UNITS:
+        s = subprocess.run(["systemctl", "is-failed", unit],
+                           capture_output=True, text=True).stdout.strip()
+        if s == "failed":
+            when = subprocess.run(
+                ["systemctl", "show", unit, "-p", "ExecMainExitTimestamp",
+                 "--value"], capture_output=True, text=True).stdout.strip()
+            failures.append(f"systemd unit {unit} is FAILED (since {when or 'unknown'})")
+    # A failed unit is a finding, not a footnote. This previously recorded
+    # unwatched failures as a NOTE, so the run could print "all invariants hold"
+    # while systemd was sitting in a degraded state -- a contradiction that
+    # teaches the reader to distrust the summary line.
+    deg = r.stdout.strip()
+    if deg == "degraded":
+        n = subprocess.run(["systemctl", "list-units", "--state=failed",
+                            "--no-legend", "--plain"],
+                           capture_output=True, text=True).stdout.strip().splitlines()
+        others = [l.split()[0] for l in n if l.split() and l.split()[0] not in WATCHED_UNITS]
+        if others:
+            failures.append("systemd is degraded; failed units not on the watch "
+                            f"list: {', '.join(others[:5])}")
+    if not any("systemd unit" in f for f in failures):
+        notes.append(f"host units: {len(WATCHED_UNITS)} watched, none failed")
+
 
 def check_admission_policies() -> None:
     """The admission policies must still exist AND still be enforcing.
@@ -182,17 +238,96 @@ def check_admission_policies() -> None:
         notes.append(f"admission: {len(have)} policies, {len(denying)} enforcing Deny")
 
 
+# The other hypervisor. It runs the same nightly maintenance but has no
+# notification path of its own -- no notify.sh, no ntfy topic -- and duplicating
+# the topic onto a second host would mean two copies of a secret to rotate.
+# Watching it from here keeps ONE alerting path for both machines.
+PEER = os.environ.get("POSTURE_PEER", "brad@192.168.2.101")
+PEER_UNITS = ["hypervisor-update.service"]
+
+
+def check_peer_units() -> None:
+    """Assert the peer hypervisor's maintenance is not silently failing.
+
+    server2's `hypervisor-update` had been aborting nightly since Aug 25 with a
+    stale kubeconfig -- the identical fault as server1, found only because
+    someone went looking. It has no OnFailure of its own, so nothing on that host
+    could ever have reported it.
+    """
+    for unit in PEER_UNITS:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", PEER,
+             f"systemctl is-failed {unit}"],
+            capture_output=True, text=True, timeout=30)
+        state = r.stdout.strip()
+        if state == "failed":
+            failures.append(f"peer {PEER.split('@')[-1]}: {unit} is FAILED")
+        elif not state:
+            # Unreachable is worth knowing, but it is not a security finding --
+            # do not fail the whole check because a host is briefly rebooting.
+            notes.append(f"peer {PEER.split('@')[-1]}: unreachable, {unit} not checked")
+        else:
+            notes.append(f"peer {PEER.split('@')[-1]}: {unit} {state}")
+
+
 def check_flux() -> None:
     d = kubectl("get", "kustomization", "-n", "flux-system")
     if not d:
         return
-    bad = [k["metadata"]["name"] for k in d["items"]
-           if not any(c.get("type") == "Ready" and c.get("status") == "True"
-                      for c in (k.get("status", {}).get("conditions") or []))]
+    # Ready=False is NOT the same as broken. Flux sets it while a
+    # reconciliation is in flight, so a check that fires on Ready!=True reports
+    # a failure whenever it happens to run mid-reconcile. That happened on the
+    # first run after adding signature verification -- a false alarm, and a
+    # daily false alarm is how an alert gets ignored.
+    #
+    # Treat progressing states as healthy; only a terminal failure counts.
+    PROGRESSING = {"Progressing", "ProgressingWithRetry", "DependencyNotReady",
+                   "ReconciliationSucceeded", "Unknown"}
+    bad = []
+    for k in d["items"]:
+        conds = k.get("status", {}).get("conditions") or []
+        ready = next((c for c in conds if c.get("type") == "Ready"), None)
+        if ready is None:
+            bad.append(f"{k['metadata']['name']} (no Ready condition)")
+        elif ready.get("status") != "True":
+            reason = ready.get("reason", "")
+            if reason in PROGRESSING or ready.get("status") == "Unknown":
+                notes.append(f"flux: {k['metadata']['name']} reconciling ({reason})")
+            else:
+                bad.append(f"{k['metadata']['name']} ({reason})")
     if bad:
         failures.append(f"Flux Kustomizations not Ready: {', '.join(bad)}")
     else:
         notes.append(f"flux: {len(d['items'])} kustomizations reconciling")
+
+
+def check_source_verified() -> None:
+    """The config artifact's signature must still be verified on every pull.
+
+    `spec.verify` can be removed from the OCIRepository without anything
+    breaking -- Flux keeps reconciling perfectly, just without checking who
+    produced the artifact. The failure is invisible by construction, which is
+    exactly the kind that needs an external assertion.
+    """
+    d = kubectl("get", "ocirepository", "flux-system", "-n", "flux-system")
+    if not d:
+        return
+    verify = (d.get("spec") or {}).get("verify")
+    if not verify:
+        failures.append("the config artifact is NO LONGER signature-verified "
+                        "(spec.verify removed from the OCIRepository)")
+        return
+    if not verify.get("matchOIDCIdentity"):
+        failures.append("cosign verification has no matchOIDCIdentity — it would "
+                        "accept ANY valid Sigstore signature, including an attacker's")
+        return
+    cond = next((c for c in (d.get("status", {}).get("conditions") or [])
+                 if c.get("type") == "SourceVerified"), None)
+    if not cond or cond.get("status") != "True":
+        failures.append(f"artifact signature NOT verified: "
+                        f"{(cond or {}).get('message', 'no SourceVerified condition')}")
+    else:
+        notes.append("supply chain: artifact signature verified against the pinned identity")
 
 
 def check_credentials() -> None:
@@ -259,6 +394,7 @@ def main() -> int:
     KUBECTL = _find_kubectl()
     for check in (check_pod_security, check_default_deny, check_cluster_admin,
                   check_no_standing_grant, check_admission_policies, check_flux,
+                  check_failed_units, check_peer_units, check_source_verified,
                   check_credentials,
                   check_origin_lock):
         try:

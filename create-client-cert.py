@@ -37,8 +37,17 @@ from cryptography.x509.oid import NameOID
 
 FORBIDDEN_GROUPS = {"system:masters", "system:nodes", "system:node-admins"}
 
+# Minting an identity means creating AND approving a CertificateSigningRequest.
+# The scoped day-to-day identity deliberately cannot do either -- a role able to
+# issue certificates is a role able to mint itself a better one. So this is one
+# of the few operations that still reaches for the break-glass certificate, and
+# naming the context here makes that explicit rather than implicit (ADR-071).
+BREAK_GLASS_CONTEXT = "break-glass"
+
 
 def sh(args: list[str], **kw) -> str:
+    if args and args[0] == "kubectl":
+        args = [args[0], f"--context={BREAK_GLASS_CONTEXT}"] + args[1:]
     r = subprocess.run(args, capture_output=True, text=True, **kw)
     if r.returncode:
         sys.exit(f"command failed: {' '.join(args)}\n{r.stderr.strip()}")
@@ -124,6 +133,9 @@ def main() -> int:
     ctx = args.context or args.user
     cluster = sh(["kubectl", "config", "view", "--minify",
                   "-o", "jsonpath={.clusters[0].name}"]).strip()
+    # NOTE: set-credentials/set-context below write to the LOCAL kubeconfig.
+    # They are `kubectl config` operations, not API calls, so the break-glass
+    # context prefix is harmless -- it selects which entry is read, not who acts.
     sh(["kubectl", "config", "set-credentials", args.user,
         f"--client-certificate={crt_path}", f"--client-key={key_path}", "--embed-certs=true"])
     sh(["kubectl", "config", "set-context", ctx,

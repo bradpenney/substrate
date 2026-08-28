@@ -323,6 +323,37 @@ stages:
                         labels:
                           pod-security.kubernetes.io/enforce: baseline
                           pod-security.kubernetes.io/enforce-version: latest
+                  # Verify the config artifact's cosign signature before Flux
+                  # will reconcile it (ADR-069). `spec.verify` belongs on the
+                  # OCIRepository, which flux-operator generates from
+                  # `spec.sync` -- and `sync` has no verify field, so it is
+                  # patched in here.
+                  #
+                  # ⚠️ matchOIDCIdentity is the load-bearing part. `provider:
+                  # cosign` ALONE accepts any valid Sigstore signature, including
+                  # one an attacker produced with their own GitHub account.
+                  # Pinning the issuer AND the subject is what ties the artifact
+                  # to this repository's workflow on this branch.
+                  #
+                  # ⚠️ ORDERING ON A REBUILD: this makes Flux refuse an unsigned
+                  # artifact. The publish workflow must be signing before a
+                  # rebuild runs, or the new cluster will never reconcile
+                  # anything and the cause will look like a registry problem.
+                  - target:
+                      kind: OCIRepository
+                      name: flux-system
+                    patch: |
+                      apiVersion: source.toolkit.fluxcd.io/v1
+                      kind: OCIRepository
+                      metadata:
+                        name: flux-system
+                        namespace: flux-system
+                      spec:
+                        verify:
+                          provider: cosign
+                          matchOIDCIdentity:
+                            - issuer: "^https://token\\.actions\\.githubusercontent\\.com$"
+                              subject: "^https://github\\.com/bradpenney/substrate_config/\\.github/workflows/publish\\.yaml@refs/heads/main$"
               sync:
                 kind: OCIRepository
                 url: oci://{{ flux.oci_repository }}
