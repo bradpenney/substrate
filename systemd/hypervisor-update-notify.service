@@ -1,0 +1,11 @@
+[Unit]
+Description=Notify when the nightly hypervisor update fails
+Documentation=https://github.com/bradpenney/substrate
+
+[Service]
+Type=oneshot
+# Runs as root, not as the admin user: this must work on every hypervisor, and
+# only server1 has a ~/homelab checkout. The notifier is installed by
+# deploy_updates.py to a path that exists on all of them.
+ExecStart=/usr/local/bin/homelab-notify.sh "Hypervisor Update Failed" \
+  "Nightly update aborted on %H - the host has NOT rebooted or patched. Check: journalctl -u hypervisor-update.service -n 40"

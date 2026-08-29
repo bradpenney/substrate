@@ -166,6 +166,15 @@ WATCHED_UNITS = [
     "nextcloud-backup.service",
     "ddns-cloudflare.service",
     "homelab-update.service",
+    # These three have no OnFailure= of their own, so this is their ONLY
+    # coverage. Until 2026-08-28 they had neither, and auto-roll had already
+    # failed unnoticed on Aug 26 ("Could not resolve hostname github.com") --
+    # the unit that rolls the fleet onto patched images, silently not running.
+    # Checking is-failed rather than pushing per-run keeps the noise down: a
+    # transient blip self-clears on the next run, a real outage stays failed.
+    "auto-roll.service",
+    "gcal-sync.service",
+    "nextcloud-cron.service",
     # NOT posture-check.service itself. Watching yourself deadlocks: one failure
     # marks the unit failed, the next run then fails BECAUSE it is failed, and it
     # can never clear -- the unit only leaves the failed state by succeeding.
@@ -251,8 +260,11 @@ def check_peer_units() -> None:
 
     server2's `hypervisor-update` had been aborting nightly since Aug 25 with a
     stale kubeconfig -- the identical fault as server1, found only because
-    someone went looking. It has no OnFailure of its own, so nothing on that host
-    could ever have reported it.
+    someone went looking. It had no OnFailure of its own, so nothing on that host
+    could report it; as of 2026-08-28 it does (deploy_updates.py now ships
+    hypervisor-update-notify.service to every hypervisor). This check stays as
+    the second layer: it catches a host whose own notifier is broken or whose
+    ntfy topic is unreachable.
     """
     for unit in PEER_UNITS:
         r = subprocess.run(

@@ -8,18 +8,40 @@ timer each time, which is what you want when the repo is the source of truth.
 Installs per host:
   /usr/local/bin/hypervisor-update.sh     nightly updates + gated reboot
   /usr/local/bin/hypervisor-uncordon.sh   un-cordon nodes after a reboot
+  /usr/local/bin/homelab-notify.sh        ntfy push notifier used by OnFailure=
   /etc/homelab/update.env                 PEER_HOST + KUBECONFIG_PATH
+  /etc/homelab/notify.env                 NTFY_TOPIC (0600, root-only)
   /etc/homelab/kubeconfig                 cluster access for the health gate
-  systemd: hypervisor-update.{service,timer}, hypervisor-uncordon.service
+  systemd: hypervisor-update.{service,timer}, hypervisor-uncordon.service,
+           hypervisor-update-notify.service
   kubectl (from the upstream k8s release, needed by both scripts)
 
-Run from server1: `python3 deploy_updates.py`
+NTFY_TOPIC is read from the environment, falling back to ~/homelab/.env on the
+machine you run this from. It is never stored in this repo. Without it the
+notifier is still installed but will refuse to send, and the deploy says so.
+
+All privileged work on a host happens in ONE `sudo` invocation. The previous
+design made ~15 separate `sudo` calls over SSH, which cannot authenticate on a
+host that requires a password: sudo 1.9 keys its timestamp to the tty, and every
+`ssh` gets a fresh pty, so each call would prompt independently and a BatchMode
+connection could not prompt at all. Only the local host worked, and only because
+it inherited the caller's tty. Now the files are staged unprivileged into a 0700
+temp dir and a single installer script is run under one `sudo` — so a password
+is asked for at most once per host, and no NOPASSWD rule is needed anywhere.
+
+Run from server1, from an interactive terminal (sudo may prompt):
+    python3 deploy_updates.py
+Do NOT run it under `sudo`: as root it would SSH as root, which has no key.
 """
 
 from __future__ import annotations
 
+import io
+import shlex
 import subprocess
 import sys
+import tarfile
+import time
 from pathlib import Path
 
 from hosts import HOSTS, Host, ADMIN_USER
@@ -29,7 +51,10 @@ KUBECTL_URL = "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
 
 
 def run(host: Host, argv: list[str], check: bool = True, input_text: str | None = None):
-    import shlex
+    """Run an UNPRIVILEGED command on the host and capture its output.
+
+    Never use this for anything needing sudo — that is what apply() is for.
+    """
     if host.ssh_target is None:
         cmd = argv
     else:
@@ -40,22 +65,101 @@ def run(host: Host, argv: list[str], check: bool = True, input_text: str | None 
     return result
 
 
-def put_file_text(host: Host, content: str, remote: str, mode: str) -> None:
-    """Write text to a root-owned path on the host."""
-    import shlex
-    inner = f"sudo tee {shlex.quote(remote)} >/dev/null && sudo chmod {mode} {shlex.quote(remote)}"
+def stage_bytes(host: Host, data: bytes, remote: str) -> None:
+    """Write bytes to an unprivileged path on the host (no sudo)."""
     if host.ssh_target is None:
-        cmd = ["bash", "-c", inner]
-    else:
-        cmd = ["ssh", "-o", "BatchMode=yes", host.ssh_target, inner]
-    result = subprocess.run(cmd, capture_output=True, text=True, input=content)
+        Path(remote).write_bytes(data)
+        return
+    cmd = ["ssh", "-o", "BatchMode=yes", host.ssh_target,
+           f"cat > {shlex.quote(remote)}"]
+    result = subprocess.run(cmd, input=data, capture_output=True)
     if result.returncode != 0:
-        raise RuntimeError(f"[{host.name}] writing {remote} failed:\n{result.stderr}")
+        raise RuntimeError(
+            f"[{host.name}] staging {remote} failed:\n{result.stderr.decode(errors='replace')}")
 
 
-def put_file(host: Host, local: Path, remote: str, mode: str) -> None:
-    """Copy a local repo file to a root-owned path on the host."""
-    put_file_text(host, local.read_text(), remote, mode)
+def build_payload(files: list[tuple[bytes, str, int]]) -> bytes:
+    """Tar the install set, with every entry owned by root and mode-pinned.
+
+    Modes travel in the archive rather than being chmod'd afterwards, so the
+    secret files are never briefly world-readable at their destination.
+
+    mtime is stamped with the deploy time, not left at TarInfo's default of 0 —
+    that default landed every deployed file dated 1969, which silently defeats
+    `ls -lt`, `find -newer`, incremental backups, and any "what changed on this
+    host recently" question. Deploy time is also the more useful answer than the
+    repo file's mtime: it dates the event, and generated files like update.env
+    have no source mtime at all.
+    """
+    stamp = int(time.time())
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for data, arcname, mode in files:
+            info = tarfile.TarInfo(arcname)
+            info.size = len(data)
+            info.mode = mode
+            info.mtime = stamp
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+INSTALLER = """#!/bin/bash
+# Generated by deploy_updates.py. Everything privileged happens here, once.
+set -euo pipefail
+umask 022
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+install -d -m 0755 /etc/homelab
+tar -xzpf "$HERE/payload.tar.gz" -C /
+
+if ! command -v kubectl >/dev/null 2>&1; then
+    echo "  installing kubectl..."
+    curl -fsSL -o /usr/local/bin/kubectl "__KUBECTL_URL__"
+    chmod 0755 /usr/local/bin/kubectl
+else
+    echo "  kubectl already present"
+fi
+
+systemctl daemon-reload
+systemctl enable --now hypervisor-update.timer >/dev/null
+systemctl enable hypervisor-uncordon.service >/dev/null
+
+echo "  update.timer:    $(systemctl is-enabled hypervisor-update.timer)"
+echo "  uncordon:        $(systemctl is-enabled hypervisor-uncordon.service)"
+echo "  OnFailure:       $(systemctl show -p OnFailure --value hypervisor-update.service)"
+echo "  notify.env:      $(stat -c '%a %U' /etc/homelab/notify.env 2>/dev/null || echo 'ABSENT - failures will not notify')"
+echo "  kubeconfig:      $(stat -c '%a %U' /etc/homelab/kubeconfig)"
+"""
+
+
+def apply(host: Host, files: list[tuple[bytes, str, int]]) -> None:
+    """Stage the payload unprivileged, then run ONE privileged installer.
+
+    The sudo step is deliberately not output-captured: a captured prompt is an
+    invisible prompt, and the run would look like a hang.
+    """
+    staging = run(host, ["mktemp", "-d", "/tmp/substrate-deploy.XXXXXX"]).stdout.strip()
+    if not staging:
+        raise RuntimeError(f"[{host.name}] could not create a staging directory")
+    try:
+        run(host, ["chmod", "700", staging])
+        stage_bytes(host, build_payload(files), f"{staging}/payload.tar.gz")
+        stage_bytes(host, INSTALLER.replace("__KUBECTL_URL__", KUBECTL_URL).encode(),
+                    f"{staging}/install.sh")
+        run(host, ["chmod", "600", f"{staging}/payload.tar.gz"])
+
+        inner = f"sudo bash {shlex.quote(staging)}/install.sh"
+        if host.ssh_target is None:
+            cmd = ["bash", "-c", inner]
+        else:
+            # -t so sudo can prompt on a real pty; no BatchMode, for the same reason.
+            cmd = ["ssh", "-t", host.ssh_target, inner]
+        if subprocess.run(cmd).returncode != 0:
+            raise RuntimeError(f"[{host.name}] installer failed")
+    finally:
+        run(host, ["rm", "-rf", staging], check=False)
 
 
 def peer_of(host: Host) -> Host | None:
@@ -102,6 +206,27 @@ def fetch_kubeconfig() -> str:
     return result.stdout
 
 
+def ntfy_topic() -> str | None:
+    """Resolve NTFY_TOPIC from the environment, else from ~/homelab/.env.
+
+    Deliberately not stored in this repo: an ntfy topic is a capability URL, so
+    anyone holding it can publish to it.
+    """
+    import os
+
+    topic = os.environ.get("NTFY_TOPIC")
+    if topic:
+        return topic.strip()
+
+    env_file = Path.home() / "homelab" / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "NTFY_TOPIC":
+                return value.strip().strip("'\"") or None
+    return None
+
+
 def deploy(host: Host, kubeconfig: str) -> None:
     peer = peer_of(host)
     if peer is None:
@@ -110,35 +235,39 @@ def deploy(host: Host, kubeconfig: str) -> None:
 
     print(f"=== {host.name} (peer: {peer.name}) ===")
 
-    run(host, ["sudo", "mkdir", "-p", "/etc/homelab"])
-
-    # kubectl — both scripts need it for the health gate and cordon/uncordon.
-    if run(host, ["which", "kubectl"], check=False).returncode != 0:
-        print(f"[{host.name}] installing kubectl...")
-        run(host, ["sudo", "curl", "-fsSL", "-o", "/usr/local/bin/kubectl", KUBECTL_URL])
-        run(host, ["sudo", "chmod", "0755", "/usr/local/bin/kubectl"])
-    else:
-        print(f"[{host.name}] kubectl already present")
-
-    put_file(host, REPO / "hypervisor-update.sh", "/usr/local/bin/hypervisor-update.sh", "0755")
-    put_file(host, REPO / "hypervisor-uncordon.sh", "/usr/local/bin/hypervisor-uncordon.sh", "0755")
-
-    # Cluster credentials for the health gate. Root-only: it's cluster-admin.
-    put_file_text(host, kubeconfig, "/etc/homelab/kubeconfig", "0600")
-
     env = (
         f"PEER_HOST={peer_ssh_target(host, peer)}\n"
         f"KUBECONFIG_PATH=/etc/homelab/kubeconfig\n"
     )
-    put_file_text(host, env, "/etc/homelab/update.env", "0644")
+
+    files: list[tuple[bytes, str, int]] = [
+        ((REPO / "hypervisor-update.sh").read_bytes(),
+         "usr/local/bin/hypervisor-update.sh", 0o755),
+        ((REPO / "hypervisor-uncordon.sh").read_bytes(),
+         "usr/local/bin/hypervisor-uncordon.sh", 0o755),
+        ((REPO / "notify.sh").read_bytes(),
+         "usr/local/bin/homelab-notify.sh", 0o755),
+        # Cluster credentials for the health gate. Root-only: it's cluster-admin.
+        (kubeconfig.encode(), "etc/homelab/kubeconfig", 0o600),
+        (env.encode(), "etc/homelab/update.env", 0o644),
+    ]
 
     for unit in ("hypervisor-update.service", "hypervisor-update.timer",
-                 "hypervisor-uncordon.service"):
-        put_file(host, REPO / "systemd" / unit, f"/etc/systemd/system/{unit}", "0644")
+                 "hypervisor-uncordon.service",
+                 "hypervisor-update-notify.service"):
+        files.append(((REPO / "systemd" / unit).read_bytes(),
+                      f"etc/systemd/system/{unit}", 0o644))
 
-    run(host, ["sudo", "systemctl", "daemon-reload"])
-    run(host, ["sudo", "systemctl", "enable", "--now", "hypervisor-update.timer"])
-    run(host, ["sudo", "systemctl", "enable", "hypervisor-uncordon.service"])
+    # 0600 and separate from update.env: that file is world-readable and holds
+    # nothing sensitive, while the ntfy topic is a publish capability.
+    topic = ntfy_topic()
+    if topic:
+        files.append((f"NTFY_TOPIC={topic}\n".encode(), "etc/homelab/notify.env", 0o600))
+    else:
+        print(f"[{host.name}] WARNING: no NTFY_TOPIC found (env or ~/homelab/.env).")
+        print(f"[{host.name}]          hypervisor-update failures will NOT notify.")
+
+    apply(host, files)
     print(f"[{host.name}] deployed")
 
 

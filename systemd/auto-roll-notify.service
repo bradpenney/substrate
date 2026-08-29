@@ -1,0 +1,10 @@
+[Unit]
+Description=Notify when the fleet image roll fails
+Documentation=https://github.com/bradpenney/substrate
+
+[Service]
+Type=oneshot
+# Root, unlike auto-roll.service itself: the notifier reads /etc/homelab/notify.env,
+# which is 0600 root because an ntfy topic is a publish capability.
+ExecStart=/usr/local/bin/homelab-notify.sh "Fleet Image Roll Failed" \
+  "auto-roll aborted on %H - nodes may NOT be on the pinned image. Check: journalctl -u auto-roll.service -n 40"

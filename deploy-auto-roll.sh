@@ -109,8 +109,24 @@ echo "  [+] /usr/local/sbin/auto-roll.sh"
 sed "s/__ADMIN_USER__/$ADMIN_USER/g" "$SRC_DIR/systemd/auto-roll.service" \
     > /etc/systemd/system/auto-roll.service
 install -m 0644 "$SRC_DIR/systemd/auto-roll.timer" /etc/systemd/system/auto-roll.timer
+install -m 0644 "$SRC_DIR/systemd/auto-roll-notify.service" \
+    /etc/systemd/system/auto-roll-notify.service
 chmod 0644 /etc/systemd/system/auto-roll.service
 echo "  [+] systemd units installed"
+
+# auto-roll.service now has OnFailure=auto-roll-notify.service, and that unit
+# execs the notifier that deploy_updates.py installs. Without it the alert path
+# is a dangling reference that only shows up as a journal line at 3am, on the
+# one night it was needed.
+if [[ ! -x /usr/local/bin/homelab-notify.sh ]]; then
+    echo "  [!] WARNING: /usr/local/bin/homelab-notify.sh is missing."
+    echo "      auto-roll failures will NOT notify. Run deploy_updates.py first."
+elif [[ ! -r /etc/homelab/notify.env ]]; then
+    echo "  [!] WARNING: /etc/homelab/notify.env is missing."
+    echo "      auto-roll failures will NOT notify. Run deploy_updates.py first."
+else
+    echo "  [+] notifier present — auto-roll failures will alert"
+fi
 
 systemctl daemon-reload
 systemctl enable --now auto-roll.timer

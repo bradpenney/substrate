@@ -1,8 +1,16 @@
 [Unit]
+# Bounded retries, so a transient failure does not become an alert. Failed
+# 2026-08-26 04:50 with "ssh: Could not resolve hostname github.com" -- a DNS
+# blip on the git fetch, before any node was touched -- and nothing reported it
+# because this unit had neither OnFailure= nor a place in posture-check's watch
+# list. Both are fixed now.
+StartLimitIntervalSec=600
+StartLimitBurst=3
 Description=Roll k0s nodes onto a newly-pinned Kairos image
 Documentation=https://github.com/bradpenney/substrate
 After=network-online.target libvirtd.service
 Wants=network-online.target
+OnFailure=auto-roll-notify.service
 
 [Service]
 Type=oneshot
@@ -19,5 +27,11 @@ EnvironmentFile=/etc/substrate/auto-roll.env
 ExecStart=/usr/local/sbin/auto-roll.sh
 # A full fleet roll is ~5 nodes x 2-3 min, plus settle time between each.
 TimeoutStartSec=3600
+# Safe to re-enter: auto-roll.sh takes an flock so two runs cannot overlap, and
+# it advances the state file only on a SUCCESSFUL roll -- a failed roll is left
+# for the next cycle by design. This just makes that next cycle 90s away rather
+# than 20 minutes, which is what turns a DNS blip into a non-event.
+Restart=on-failure
+RestartSec=90
 StandardOutput=journal
 StandardError=journal

@@ -1,6 +1,12 @@
 [Unit]
 Description=Nightly hypervisor updates (reboots only when required and safe)
 Documentation=https://github.com/bradpenney/substrate
+# This unit failed five nights running on server1 -- no updates applied, no
+# reboot -- and nothing said so, because there was no OnFailure at all. Found by
+# reading the journal for an unrelated reason. Added 2026-08-27; moved into this
+# repo 2026-08-28, since deploy_updates.py would otherwise overwrite the live
+# fix on the next run and restore the silence.
+OnFailure=hypervisor-update-notify.service
 After=network-online.target libvirtd.service
 Wants=network-online.target
 
