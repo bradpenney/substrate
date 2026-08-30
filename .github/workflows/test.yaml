@@ -7,6 +7,10 @@ name: test
 on:
   push:
     branches: [main]
+    # The badge step commits coverage.svg back to main. A GITHUB_TOKEN push
+    # cannot trigger a workflow anyway, but stating it here means the next
+    # reader does not have to know that rule to be sure there is no loop.
+    paths-ignore: [coverage.svg]
   pull_request:
   workflow_dispatch:
 
@@ -17,6 +21,12 @@ jobs:
   pytest:
     name: unit & regression
     runs-on: ubuntu-latest
+    # The workflow default is `contents: read`; the badge step pushes to the
+    # orphan `badges` branch, so this ONE job needs write. Scoped to the job
+    # rather than raised workflow-wide: lint, shell and ansible have no reason
+    # to be able to write to the repository.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,16 +38,14 @@ jobs:
         # itself was fine.
         run: python -m pip install --quiet pytest pytest-cov pyyaml jinja2 cryptography pydantic
       - name: Run the suite
-        # --cov-fail-under is a RATCHET, not a target. Most of what is uncovered
-        # here drives real hosts over ssh/kubectl; driving that to 100% would mean
-        # mocking every subprocess and asserting that the code calls the commands
-        # it calls. posture-check.py reads 0% and runs nightly against a live
-        # cluster; gate.py reads 18% and is exercised by every rebuild. The number
-        # exists to stop REGRESSION, and the badge says "unit coverage" so it is
-        # not mistaken for how much of this system is tested.
-        # No --cov-config=/dev/null: that bypassed .coveragerc, which omits
-        # tests/. Counting the test files inflated the total from 35% to 54%
-        # without covering a line of substrate — a coverage figure is only
+        # No global --cov-fail-under: the gate is PER MODULE, in the next step.
+        # A single number over the whole repo hides the thing that matters —
+        # the orchestration modules drive real hosts over ssh/kubectl and are
+        # covered by `gate.py rebuild`, not by unit tests, so averaging them
+        # against the logic modules produces a figure that means nothing.
+        # No --cov-config=/dev/null either: that bypassed .coveragerc, which
+        # omits tests/. Counting the test files inflated the total from 35% to
+        # 54% without covering a line of substrate — a coverage figure is only
         # meaningful against an honest denominator.
         run: |
           python -m pytest tests/ -v \
@@ -48,38 +56,56 @@ jobs:
         # to 95% would mean stubbing a hypervisor and asserting the code calls
         # the commands it calls; they are covered by `gate.py rebuild` instead.
         run: python3 .github/scripts/check_coverage.py coverage.json
-      - name: Publish the logic-coverage badge
-        # Self-contained on purpose: no Codecov, no third-party upload, no extra
-        # token. Coverage data is a map of the codebase, and there is no reason to
-        # hand it to a service when a two-colour SVG on a branch does the job.
-        # Pushed to an orphan `badges` branch so it cannot retrigger this workflow.
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          PCT=$(python3 -c "import json;print(round(json.load(open('coverage.json'))['totals']['percent_covered']))")
-          python3 .github/scripts/make_coverage_badge.py "$PCT" > /tmp/coverage.svg
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin badges:badges 2>/dev/null || git checkout --orphan badges
-          git checkout badges 2>/dev/null || true
-          git rm -rf --cached . >/dev/null 2>&1 || true
-          find . -maxdepth 1 ! -name . ! -name .git ! -name coverage.svg -exec rm -rf {} + 2>/dev/null || true
-          cp /tmp/coverage.svg coverage.svg
-          git add coverage.svg
-          git commit -m "logic coverage: ${PCT}%" 2>/dev/null || { echo "unchanged"; exit 0; }
-          git push origin badges
-
       - name: Assert no real site config is committed
         # site.yml carries addresses, an admin identity and credentials. The
         # fixture exists so the suite never needs it; this makes that structural
         # rather than a matter of remembering.
+        #
+        # MUST run BEFORE the badge step. That step switches to the orphan
+        # `badges` branch and deletes every file in the working tree, so after
+        # it there is no site.yml to find on a main push and this check passes
+        # vacuously — it only ever meant anything on pull requests, where the
+        # badge step is skipped.
         run: |
           if [ -f site.yml ]; then
             echo "::error::site.yml is committed — it must stay gitignored (ADR-012)"
             exit 1
           fi
+
+      - name: Publish the logic-coverage badge
+        # Self-contained on purpose: no Codecov, no third-party upload, no extra
+        # token. Coverage data is a map of the codebase, and there is no reason
+        # to hand it to a service when a two-colour SVG does the job.
+        #
+        # COMMITTED TO main AND REFERENCED BY RELATIVE PATH, not pushed to an
+        # orphan `badges` branch. The branch version rendered as the plain text
+        # "logic coverage" in the README, because this repo is PRIVATE: GitHub's
+        # image proxy fetches raw.githubusercontent.com anonymously and gets a
+        # 404. A relative path is resolved against the repo itself, so it
+        # renders for anyone who can see the repo — private today, public later
+        # — with no host that has to be told who we are.
+        #
+        # Pushing here cannot loop: pushes made with GITHUB_TOKEN do not trigger
+        # workflows. The paths-ignore on the push trigger says so explicitly
+        # rather than relying on a reader knowing that rule.
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          # logic-coverage.txt is written by check_coverage.py in the step
+          # above. Reading coverage.json's global total here instead published
+          # 58% under a badge that says "logic coverage" — the logic figure is
+          # 99%. The badge must report the number it is named after.
+          PCT=$(cat logic-coverage.txt)
+          python3 .github/scripts/make_coverage_badge.py "$PCT" > coverage.svg
+          if git diff --quiet -- coverage.svg; then
+            echo "coverage badge unchanged at ${PCT}%"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage.svg
+          git commit -m "logic coverage: ${PCT}%"
+          git push origin HEAD:main
 
   lint:
     name: lint & format

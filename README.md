@@ -1,14 +1,31 @@
 # substrate
 
-[![tests](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/test.yaml?branch=main&label=tests&logo=pytest&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
-[![logic coverage](https://raw.githubusercontent.com/bradpenney/substrate/badges/coverage.svg)](#what-is-tested)
+<!-- WHEN THIS REPO GOES PUBLIC: rewire the three workflow-status badges to
+shields.io. They are on GitHub's native badge endpoint only because shields.io
+reads the GitHub API anonymously and cannot see a private repo (ADR-092) — it
+renders "repo or workflow not found". GitHub's own endpoint works while private
+but is fixed-style: no custom label, no logo, no colour, so it does not match
+the rest of this row. Restore these three:
+
+  [![tests](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/test.yaml?branch=main&label=tests&logo=pytest&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
+  [![bump-kairos](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-kairos.yaml?branch=main&label=kairos%20bump&logo=githubactions&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-kairos.yaml)
+  [![bump-flux-operator](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-flux-operator.yaml?branch=main&label=flux%20bump&logo=flux&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-flux-operator.yaml)
+
+The coverage badge needs NO change: a relative path to the committed
+coverage.svg works in both visibility states and depends on no external host.
+Verify after flipping by fetching every badge URL and reading the SVG <title> —
+a 200 means shields answered, not that it answered with a status.
+-->
+
+[![tests](https://github.com/bradpenney/substrate/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
+[![logic coverage](coverage.svg)](#what-is-tested)
 [![pylint](https://img.shields.io/badge/pylint-10.00%2F10-brightgreen?logo=python&logoColor=white)](.pylintrc)
 [![code style: black](https://img.shields.io/badge/code%20style-black-000000)](https://github.com/psf/black)
 [![shellcheck](https://img.shields.io/badge/shellcheck-style%20clean-4EAA25?logo=gnubash&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
 [![rebuild](https://img.shields.io/badge/destroy%20%26%20rebuild-verified%20both%20methods-success)](#the-gate)
-[![SELinux](https://img.shields.io/badge/SELinux-enforcing-red)](#security-posture)
-[![bump-kairos](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-kairos.yaml?branch=main&label=kairos%20bump&logo=githubactions&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-kairos.yaml)
-[![bump-flux-operator](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-flux-operator.yaml?branch=main&label=flux%20bump&logo=flux&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-flux-operator.yaml)
+[![SELinux](https://img.shields.io/badge/SELinux-enforcing-success)](#security-posture)
+[![kairos bump](https://github.com/bradpenney/substrate/actions/workflows/bump-kairos.yaml/badge.svg?branch=main)](https://github.com/bradpenney/substrate/actions/workflows/bump-kairos.yaml)
+[![flux bump](https://github.com/bradpenney/substrate/actions/workflows/bump-flux-operator.yaml/badge.svg?branch=main)](https://github.com/bradpenney/substrate/actions/workflows/bump-flux-operator.yaml)
 [![k0s](https://img.shields.io/badge/k0s-1.36-0F1689?logo=kubernetes&logoColor=white)](https://k0sproject.io)
 [![Kairos](https://img.shields.io/badge/Kairos-v4.2.0-6E4AFF)](https://kairos.io)
 [![Flux](https://img.shields.io/badge/GitOps-Flux%20via%20OCI-5468FF?logo=flux&logoColor=white)](https://fluxcd.io)

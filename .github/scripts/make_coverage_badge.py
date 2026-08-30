@@ -6,11 +6,14 @@ There is no reason to hand that to Codecov or Coveralls when the badge is two
 rectangles and some text. Self-contained also means no extra token to store,
 and nothing that stops working when a service changes its free tier.
 
-The label is "unit coverage", NOT "coverage". Most of what is uncovered in this
-repo drives real hosts over ssh and kubectl; posture-check.py reads 0% and runs
-nightly against a live cluster, gate.py reads 18% and is exercised by every
-rebuild. A bare "coverage" badge would invite chasing a number that measures
-lines executed by pytest, not whether the system works.
+The label is "logic coverage", NOT "coverage", and it must match what the
+workflow actually feeds in: the per-module logic figure from
+check_coverage.py, not coverage.json's global total. The two differ by ~40
+points, because the orchestration modules drive real hosts over ssh and kubectl
+and are covered by `gate.py rebuild` rather than by pytest. A bare "coverage"
+badge would invite chasing a number that measures lines executed by pytest, not
+whether the system works — and a badge whose label and source disagree is worse
+still, since it looks precise while reporting something else.
 
 Usage:  make_coverage_badge.py <percent>  > coverage.svg
 """
@@ -19,7 +22,7 @@ from __future__ import annotations
 
 import sys
 
-LABEL = "unit coverage"
+LABEL = "logic coverage"
 
 
 def colour(pct: int) -> str:
