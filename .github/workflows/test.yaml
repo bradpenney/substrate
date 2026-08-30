@@ -23,9 +23,43 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install test dependencies
-        run: python -m pip install --quiet pytest pyyaml jinja2
+        run: python -m pip install --quiet pytest pytest-cov pyyaml jinja2
       - name: Run the suite
-        run: python -m pytest tests/ -v
+        # --cov-fail-under is a RATCHET, not a target. Most of what is uncovered
+        # here drives real hosts over ssh/kubectl; driving that to 100% would mean
+        # mocking every subprocess and asserting that the code calls the commands
+        # it calls. posture-check.py reads 0% and runs nightly against a live
+        # cluster; gate.py reads 18% and is exercised by every rebuild. The number
+        # exists to stop REGRESSION, and the badge says "unit coverage" so it is
+        # not mistaken for how much of this system is tested.
+        run: |
+          python -m pytest tests/ -v \
+            --cov=. --cov-config=/dev/null \
+            --cov-report=term --cov-report=json:coverage.json \
+            --cov-fail-under=38
+      - name: Publish the unit-coverage badge
+        # Self-contained on purpose: no Codecov, no third-party upload, no extra
+        # token. Coverage data is a map of the codebase, and there is no reason to
+        # hand it to a service when a two-colour SVG on a branch does the job.
+        # Pushed to an orphan `badges` branch so it cannot retrigger this workflow.
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PCT=$(python3 -c "import json;print(round(json.load(open('coverage.json'))['totals']['percent_covered']))")
+          python3 .github/scripts/make_coverage_badge.py "$PCT" > /tmp/coverage.svg
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin badges:badges 2>/dev/null || git checkout --orphan badges
+          git checkout badges 2>/dev/null || true
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          find . -maxdepth 1 ! -name . ! -name .git ! -name coverage.svg -exec rm -rf {} + 2>/dev/null || true
+          cp /tmp/coverage.svg coverage.svg
+          git add coverage.svg
+          git commit -m "unit coverage: ${PCT}%" 2>/dev/null || { echo "unchanged"; exit 0; }
+          git push origin badges
+
       - name: Assert no real site config is committed
         # site.yml carries addresses, an admin identity and credentials. The
         # fixture exists so the suite never needs it; this makes that structural
@@ -35,6 +69,34 @@ jobs:
             echo "::error::site.yml is committed — it must stay gitignored (ADR-012)"
             exit 1
           fi
+
+  lint:
+    name: lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install linters and the imports they resolve
+        # pylint follows imports, so the runtime dependencies have to be present
+        # or it reports import-error for code that is fine.
+        run: python -m pip install --quiet pylint black pyyaml jinja2 cryptography
+
+      - name: black
+        # --check only: CI reports drift, it does not rewrite the repo. A
+        # formatter that edits on the server makes the local copy wrong.
+        run: black --check --diff --line-length 88 *.py tests/*.py .github/scripts/*.py
+
+      - name: pylint (10.00/10 required)
+        # SOURCE only. Test files legitimately trip pytest idioms — fixtures
+        # shadowing names, exercising private helpers — and chasing them would
+        # mean weakening the rules that apply to the code that runs in anger.
+        # Every disable in .pylintrc is justified in place.
+        env:
+          SUBSTRATE_SITE_FILE: ${{ github.workspace }}/tests/fixtures/site.yml
+          HOMELAB_SSH_PUBLIC_KEY: "ssh-ed25519 AAAATESTKEYONLY ci@fixture"
+        run: pylint *.py --fail-under=10
 
   shellcheck:
     name: shell
@@ -72,6 +134,12 @@ jobs:
         # found at rebuild time — 13 minutes in, mid-wipe — rather than here.
         env:
           SUBSTRATE_SITE_FILE: ${{ github.workspace }}/tests/fixtures/site.yml
+          # hosts.py resolves the admin SSH key at import time and refuses to
+          # guess if it cannot find one. tests/conftest.py sets this for pytest;
+          # the ansible job needs the same, and not having it is why this job
+          # failed while pytest passed. A dummy is correct here — nothing is
+          # provisioned, only parsed.
+          HOMELAB_SSH_PUBLIC_KEY: "ssh-ed25519 AAAATESTKEYONLY ci@fixture"
         run: |
           set -euo pipefail
           python3 ansible/inventory.py --list > /dev/null

@@ -1,0 +1,19 @@
+# Coverage measures the SOURCE, not the tests.
+#
+# Running `--cov=.` counted tests/ in the total. Those files sit near 100% by
+# construction — a test file is executed when it runs — so including them
+# inflated the figure from 35% to 54% without a single extra line of substrate
+# being covered. A coverage target is only meaningful against an honest
+# denominator.
+[run]
+source = .
+omit =
+    tests/*
+    .venv/*
+    .github/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise SystemExit

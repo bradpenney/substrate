@@ -11,9 +11,9 @@ import hosts
 def test_fixture_topology():
     assert len(hosts.HOSTS) == 2
     assert sum(len(h.vms) for h in hosts.HOSTS) == 5
-    assert sum(1 for h in hosts.HOSTS for v in h.vms if v.bootstrap) == 1, (
-        "exactly one VM in the fleet may be the bootstrap controller"
-    )
+    assert (
+        sum(1 for h in hosts.HOSTS for v in h.vms if v.bootstrap) == 1
+    ), "exactly one VM in the fleet may be the bootstrap controller"
 
 
 def test_peer_target_is_written_from_the_peers_point_of_view():

@@ -74,7 +74,9 @@ def run(host: Host, argv: list[str], check: bool = True, input_text: str | None 
     quoting/heredoc bugs hit repeatedly earlier in this build with both HCL
     and Ansible YAML."""
     if host.ssh_target is None:
-        result = subprocess.run(argv, capture_output=True, text=True, input=input_text)
+        result = subprocess.run(
+            argv, capture_output=True, text=True, input=input_text, check=False
+        )
     else:
         remote_cmd = shlex.join(argv)
         result = subprocess.run(
@@ -82,6 +84,7 @@ def run(host: Host, argv: list[str], check: bool = True, input_text: str | None 
             capture_output=True,
             text=True,
             input=input_text,
+            check=False,
         )
     if check and result.returncode != 0:
         raise RuntimeError(
@@ -92,8 +95,13 @@ def run(host: Host, argv: list[str], check: bool = True, input_text: str | None 
 
 
 def write_file(host: Host, path: str, content: str) -> None:
+    """Write text to a path on the host, creating parent directories.
+
+    Goes through run() so the local and remote cases stay identical — the
+    provisioner drives one hypervisor it runs on and one it reaches by SSH, and
+    every place those diverge has been a bug."""
     if host.ssh_target is None:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return
     # Deliberately NOT going through run()'s shlex.join() here: that
@@ -107,13 +115,22 @@ def write_file(host: Host, path: str, content: str) -> None:
         capture_output=True,
         text=True,
         input=content,
+        check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"[{host.name}] write_file failed for {path}\nstderr: {result.stderr}")
+        raise RuntimeError(
+            f"[{host.name}] write_file failed for {path}\nstderr: {result.stderr}"
+        )
 
 
 def vm_exists(host: Host, vm: VM) -> bool:
-    result = run(host, ["virsh", "-c", "qemu:///system", "dominfo", vm.name], check=False)
+    """Whether libvirt already knows about this domain.
+
+    Distinct from "is it running": a defined-but-off domain still owns its name
+    and disks, so creating over it fails in a confusing way."""
+    result = run(
+        host, ["virsh", "-c", "qemu:///system", "dominfo", vm.name], check=False
+    )
     return result.returncode == 0
 
 
@@ -131,8 +148,10 @@ def preflight(host: Host) -> None:
     infrastructure never exposes.
     """
     missing = [
-        t for t in REQUIRED_TOOLS
-        if run(host, ["sh", "-c", f"command -v {t} >/dev/null"], check=False).returncode != 0
+        t
+        for t in REQUIRED_TOOLS
+        if run(host, ["sh", "-c", f"command -v {t} >/dev/null"], check=False).returncode
+        != 0
     ]
     if missing:
         raise RuntimeError(
@@ -148,7 +167,11 @@ def ensure_disk_pool(host: Host) -> None:
     raw LVs) carved from spare VG space; server1 has no LVM at all (single
     btrfs NVMe) so it uses the stock dir pool.
     """
-    result = run(host, ["virsh", "-c", "qemu:///system", "pool-info", host.disk_pool], check=False)
+    result = run(
+        host,
+        ["virsh", "-c", "qemu:///system", "pool-info", host.disk_pool],
+        check=False,
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"[{host.name}] disk pool {host.disk_pool!r} does not exist — create it before provisioning"
@@ -163,18 +186,26 @@ def ensure_disk_pool(host: Host) -> None:
     # rather than as a manual afterthought.
     path = run(
         host,
-        ["sh", "-c", f"virsh -c qemu:///system pool-dumpxml {host.disk_pool} | sed -n 's:.*<path>\\(.*\\)</path>.*:\\1:p'"],
+        [
+            "sh",
+            "-c",
+            f"virsh -c qemu:///system pool-dumpxml {host.disk_pool} | sed -n 's:.*<path>\\(.*\\)</path>.*:\\1:p'",
+        ],
         check=False,
     ).stdout.strip()
     if not path:
-        print(f"[{host.name}] WARNING: could not determine pool path; skipping no-CoW setup")
+        print(
+            f"[{host.name}] WARNING: could not determine pool path; skipping no-CoW setup"
+        )
         return
     # `sudo` is required for BOTH the check and the change: the pool dir is
     # root-owned 0711, so an unprivileged `lsattr` returns "Permission denied"
     # rather than the flags. Without sudo here the check silently never
     # matches and chattr is re-run on every single provisioning pass.
     already = run(
-        host, ["sh", "-c", f"sudo lsattr -d {path} 2>/dev/null | cut -d' ' -f1"], check=False
+        host,
+        ["sh", "-c", f"sudo lsattr -d {path} 2>/dev/null | cut -d' ' -f1"],
+        check=False,
     ).stdout
     if "C" in already:
         print(f"[{host.name}] {path} already no-CoW")
@@ -184,21 +215,46 @@ def ensure_disk_pool(host: Host) -> None:
     if res.returncode != 0:
         # Not fatal — VMs will still work, just with CoW fragmentation — but
         # it must be visible rather than swallowed.
-        print(f"[{host.name}] WARNING: chattr +C failed on {path}: {res.stderr.strip()}")
+        print(
+            f"[{host.name}] WARNING: chattr +C failed on {path}: {res.stderr.strip()}"
+        )
 
 
 def ensure_iso_pool(host: Host) -> None:
-    result = run(host, ["virsh", "-c", "qemu:///system", "pool-info", ISO_POOL], check=False)
+    """Make sure the ISO pool exists and is started.
+
+    Separate from the disk pool because the two differ per host — the disk pool
+    may be LVM or a directory, while ISOs are always a plain directory that
+    qemu must be able to read."""
+    result = run(
+        host, ["virsh", "-c", "qemu:///system", "pool-info", ISO_POOL], check=False
+    )
     if result.returncode == 0:
         return
     print(f"[{host.name}] defining ISO pool {ISO_POOL!r}...")
-    run(host, ["virsh", "-c", "qemu:///system", "pool-define-as", ISO_POOL, "dir", "--target", ISO_POOL_PATH])
+    run(
+        host,
+        [
+            "virsh",
+            "-c",
+            "qemu:///system",
+            "pool-define-as",
+            ISO_POOL,
+            "dir",
+            "--target",
+            ISO_POOL_PATH,
+        ],
+    )
     run(host, ["virsh", "-c", "qemu:///system", "pool-build", ISO_POOL])
     run(host, ["virsh", "-c", "qemu:///system", "pool-start", ISO_POOL])
     run(host, ["virsh", "-c", "qemu:///system", "pool-autostart", ISO_POOL])
 
 
 def ensure_kairos_iso(host: Host) -> None:
+    """Download the pinned Kairos ISO if absent, and verify its checksum.
+
+    The tag makes it readable; the CHECKSUM is what makes a rebuild months from
+    now install the same bytes."""
     dest = f"{ISO_POOL_PATH}/kairos-hadron-k0s.iso"
     result = run(host, ["sha256sum", dest], check=False)
     if result.returncode == 0 and result.stdout.split()[0] == KAIROS_ISO_SHA256:
@@ -237,14 +293,20 @@ def ensure_kairos_iso(host: Host) -> None:
 
 
 def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
+    """Build the Kairos cloud-config for one VM.
+
+    Every Kairos trap lives here and they all fail SILENTLY -- see the comments
+    at each site. ansible/check_render.py asserts this stays byte-identical to
+    the Jinja template used by the other bootstrap implementation."""
     # Deliberately flush-left (not indented to match this function's own
     # Python indentation) — a triple-quoted string reproduces exactly what's
     # between the quotes, with no dedent magic. Writing this indented to
     # "look nice" next to the surrounding code would silently break the
     # cloud-config, the exact bug hit earlier with an HCL heredoc.
     args = list(K0S_ARGS)
-    storage_gb = (vm.storage_disk_gb if vm.storage_disk_gb is not None
-                  else VM_STORAGE_DISK_GB)
+    storage_gb = (
+        vm.storage_disk_gb if vm.storage_disk_gb is not None else VM_STORAGE_DISK_GB
+    )
 
     # --- control-plane load balancer (ADR-045) ---
     #
@@ -350,7 +412,8 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     extra_args_yaml = ""
     if api_extra_args:
         extra_args_yaml = "\n                extraArgs:\n" + "\n".join(
-            f"                  {k}: \"{v}\"" for k, v in sorted(api_extra_args.items()))
+            f'                  {k}: "{v}"' for k, v in sorted(api_extra_args.items())
+        )
 
     k0s_config_yaml = ""
     if CONTROL_PLANE_VIP:
@@ -520,9 +583,19 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     if flux.get("ghcr_token"):
         # The ONE irreducible bootstrap credential (ADR-019): Flux needs it to
         # pull the private config artifact, before External Secrets exists.
-        import base64 as _b64, json as _json
-        docker_cfg = _json.dumps({"auths": {registry: {"auth": _b64.b64encode(
-            f"{flux['ghcr_username']}:{flux['ghcr_token']}".encode()).decode()}}})
+        import base64 as _b64
+
+        docker_cfg = json.dumps(
+            {
+                "auths": {
+                    registry: {
+                        "auth": _b64.b64encode(
+                            f"{flux['ghcr_username']}:{flux['ghcr_token']}".encode()
+                        ).decode()
+                    }
+                }
+            }
+        )
         b64 = _b64.b64encode(docker_cfg.encode()).decode()
         # 16 spaces: pullSecret is a SIBLING of kind/url/ref/path under `sync:`.
         # At 12 it lands outside the sync block and the FluxInstance is
@@ -744,6 +817,11 @@ stages:
 
 
 def build_seed_iso(host: Host, vm: VM, join_token: str | None = None) -> None:
+    """Render the cloud-config and build the seed ISO for one VM.
+
+    The ISO is the ONLY channel into a Kairos node: the installed system has no
+    SSH management path by design (ADR-025), so anything the node needs to know
+    has to be on this disk before it first boots."""
     user_data = render_cloud_config(vm, join_token)
     write_file(host, f"/tmp/{vm.name}-user-data", user_data)
     write_file(host, f"/tmp/{vm.name}-meta-data", "")
@@ -751,13 +829,20 @@ def build_seed_iso(host: Host, vm: VM, join_token: str | None = None) -> None:
         host,
         [
             "mkisofs",
-            "-output", f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso",
-            "-volid", "cidata", "-joliet", "-rock", "-graft-points",
+            "-output",
+            f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso",
+            "-volid",
+            "cidata",
+            "-joliet",
+            "-rock",
+            "-graft-points",
             f"user-data=/tmp/{vm.name}-user-data",
             f"meta-data=/tmp/{vm.name}-meta-data",
         ],
     )
-    run(host, ["chmod", "0644", f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso"], check=False)
+    run(
+        host, ["chmod", "0644", f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso"], check=False
+    )
 
 
 def booted_from_disk(ip: str) -> bool:
@@ -777,18 +862,33 @@ def booted_from_disk(ip: str) -> bool:
     """
     result = subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            f"{ADMIN_USER}@{ip}", "cat /proc/cmdline",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            f"{ADMIN_USER}@{ip}",
+            "cat /proc/cmdline",
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     return result.returncode == 0 and "COS_ACTIVE" in result.stdout
 
 
-def wait_for_install(ip: str, timeout: int = INSTALL_WAIT_TIMEOUT, interval: int = SSH_WAIT_INTERVAL) -> bool:
-    """Wait for the VM to be running the installed system (not live media)."""
+def wait_for_install(
+    ip: str, timeout: int = INSTALL_WAIT_TIMEOUT, interval: int = SSH_WAIT_INTERVAL
+) -> bool:
+    """Block until the installer finishes.
+
+    Kairos POWERS OFF when the install completes; it does not reboot. Waiting
+    for a reboot that never comes is a hang with no error, which is why this
+    watches for the domain to stop rather than for the node to answer."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if booted_from_disk(ip):
@@ -798,12 +898,22 @@ def wait_for_install(ip: str, timeout: int = INSTALL_WAIT_TIMEOUT, interval: int
 
 
 def domain_state(host: Host, vm: VM) -> str:
-    result = run(host, ["virsh", "-c", "qemu:///system", "domstate", vm.name], check=False)
+    """libvirt's state string for a domain, or empty if it does not exist.
+
+    Empty rather than raising: callers use this to decide whether to create,
+    and "not there" is the normal case on a fresh build."""
+    result = run(
+        host, ["virsh", "-c", "qemu:///system", "domstate", vm.name], check=False
+    )
     return result.stdout.strip()
 
 
-def wait_for_installer_finish(host: Host, vm: VM, timeout: int = INSTALL_WAIT_TIMEOUT,
-                              interval: int = SSH_WAIT_INTERVAL) -> bool:
+def wait_for_installer_finish(
+    host: Host,
+    vm: VM,
+    timeout: int = INSTALL_WAIT_TIMEOUT,
+    interval: int = SSH_WAIT_INTERVAL,
+) -> bool:
     """Wait for the Kairos installer to finish, which it signals by POWERING
     THE VM OFF — not by rebooting into the installed system.
 
@@ -830,14 +940,27 @@ def set_boot_disk_first(host: Host, vm: VM) -> None:
     and take effect on the next start.
     """
     print(f"[{host.name}] setting {vm.name} to boot from disk first (post-install)...")
-    run(host, ["virt-xml", "-c", "qemu:///system", vm.name, "--edit", "--boot", "hd,cdrom,menu=off"])
+    run(
+        host,
+        [
+            "virt-xml",
+            "-c",
+            "qemu:///system",
+            vm.name,
+            "--edit",
+            "--boot",
+            "hd,cdrom,menu=off",
+        ],
+    )
     # Survive a hypervisor reboot. Without this a host restart (including the
     # nightly-update reboots) silently leaves the cluster down — libvirtd
     # comes back but the domains don't.
     run(host, ["virsh", "-c", "qemu:///system", "autostart", vm.name])
     run(host, ["virsh", "-c", "qemu:///system", "start", vm.name])
     if not wait_for_install(vm.static_ip, timeout=SSH_WAIT_TIMEOUT):
-        raise RuntimeError(f"[{host.name}] {vm.name} did not come up from disk after boot-order change")
+        raise RuntimeError(
+            f"[{host.name}] {vm.name} did not come up from disk after boot-order change"
+        )
     print(f"[{host.name}] {vm.name} booted into the installed system")
 
 
@@ -858,23 +981,42 @@ def etcd_prune(bootstrap_host: Host, bootstrap_vm: VM, dead_vm: VM) -> None:
     """
     result = subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            f"{ADMIN_USER}@{bootstrap_vm.static_ip}", "sudo k0s etcd member-list",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            f"{ADMIN_USER}@{bootstrap_vm.static_ip}",
+            "sudo k0s etcd member-list",
         ],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0 or dead_vm.static_ip not in result.stdout:
         return
     print(f"[{bootstrap_host.name}] pruning stale etcd member for {dead_vm.name}...")
     subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             f"{ADMIN_USER}@{bootstrap_vm.static_ip}",
             f"sudo k0s etcd leave --peer-address {dead_vm.static_ip}",
         ],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -892,8 +1034,11 @@ def disk_volume_paths(host: Host, vm: VM) -> list[str]:
     separately-managed media and must never be deleted as part of tearing down
     one VM.
     """
-    result = run(host, ["virsh", "-c", "qemu:///system", "domblklist", vm.name, "--details"],
-                 check=False)
+    result = run(
+        host,
+        ["virsh", "-c", "qemu:///system", "domblklist", vm.name, "--details"],
+        check=False,
+    )
     paths = []
     for line in result.stdout.splitlines():
         fields = line.split()
@@ -934,8 +1079,19 @@ def destroy_and_undefine(host: Host, vm: VM) -> None:
     run(host, ["virsh", "-c", "qemu:///system", "destroy", vm.name], check=False)
     run(host, ["virsh", "-c", "qemu:///system", "undefine", vm.name], check=False)
     for path in disks:
-        run(host, ["virsh", "-c", "qemu:///system", "vol-delete", "--pool", host.disk_pool, path],
-            check=False)
+        run(
+            host,
+            [
+                "virsh",
+                "-c",
+                "qemu:///system",
+                "vol-delete",
+                "--pool",
+                host.disk_pool,
+                path,
+            ],
+            check=False,
+        )
 
 
 def reconcile_existing(host: Host, vm: VM) -> None:
@@ -945,7 +1101,9 @@ def reconcile_existing(host: Host, vm: VM) -> None:
     drift. Two things matter for a cluster that must survive host reboots:
     autostart being set, and the VM actually running.
     """
-    info = run(host, ["virsh", "-c", "qemu:///system", "dominfo", vm.name], check=False).stdout
+    info = run(
+        host, ["virsh", "-c", "qemu:///system", "dominfo", vm.name], check=False
+    ).stdout
     if "Autostart:" in info and "disable" in info.split("Autostart:")[1].split("\n")[0]:
         print(f"[{host.name}] {vm.name}: enabling autostart (was disabled)")
         run(host, ["virsh", "-c", "qemu:///system", "autostart", vm.name], check=False)
@@ -957,46 +1115,78 @@ def reconcile_existing(host: Host, vm: VM) -> None:
         if wait_for_install(vm.static_ip, timeout=SSH_WAIT_TIMEOUT):
             print(f"[{host.name}] {vm.name} is up")
         else:
-            print(f"[{host.name}] WARNING: {vm.name} started but did not become reachable")
+            print(
+                f"[{host.name}] WARNING: {vm.name} started but did not become reachable"
+            )
     else:
         print(f"[{host.name}] {vm.name} already running")
 
 
-def create_vm(host: Host, vm: VM, join_token: str | None = None,
-              bootstrap_pair: tuple[Host, VM] | None = None) -> None:
+def create_vm(
+    host: Host,
+    vm: VM,
+    join_token: str | None = None,
+    bootstrap_pair: tuple[Host, VM] | None = None,
+) -> None:
+    """Create, install and boot one VM, retrying a failed install.
+
+    Retries because the Kairos installer is not perfectly reliable — a failed
+    attempt leaves a defined domain and its disks behind, so each retry cleans
+    up first. Boot order is flipped to disk-first only AFTER something is
+    installed, or the node would boot the installer again forever."""
     if vm_exists(host, vm):
         reconcile_existing(host, vm)
         return
 
     # Per-VM override, else the fleet default. 0 means no second disk at all.
-    storage_gb = vm.storage_disk_gb if vm.storage_disk_gb is not None else VM_STORAGE_DISK_GB
+    storage_gb = (
+        vm.storage_disk_gb if vm.storage_disk_gb is not None else VM_STORAGE_DISK_GB
+    )
 
     for attempt in range(1, CREATE_RETRIES + 1):
-        print(f"[{host.name}] creating {vm.name} (attempt {attempt}/{CREATE_RETRIES})"
-              + (f" with a {storage_gb}GB storage disk" if storage_gb else "") + "...")
+        print(
+            f"[{host.name}] creating {vm.name} (attempt {attempt}/{CREATE_RETRIES})"
+            + (f" with a {storage_gb}GB storage disk" if storage_gb else "")
+            + "..."
+        )
         build_seed_iso(host, vm, join_token)
         run(
             host,
             [
                 "virt-install",
-                "--connect", "qemu:///system",
-                "--name", vm.name,
-                "--memory", str(vm.memory_mib or VM_MEMORY_MIB),
-                "--vcpus", str(vm.vcpu or VM_VCPU),
-                "--cpu", "host-passthrough",
-                "--disk", f"pool={host.disk_pool},size={VM_DISK_GB},bus=virtio",
+                "--connect",
+                "qemu:///system",
+                "--name",
+                vm.name,
+                "--memory",
+                str(vm.memory_mib or VM_MEMORY_MIB),
+                "--vcpus",
+                str(vm.vcpu or VM_VCPU),
+                "--cpu",
+                "host-passthrough",
+                "--disk",
+                f"pool={host.disk_pool},size={VM_DISK_GB},bus=virtio",
                 # Dedicated Longhorn disk (ADR-050), attached as vdb when sized.
                 # Omitted entirely when 0, so this is inert until storage rolls
                 # out — and a node built without it is not silently different,
                 # because Longhorn simply finds no disk to claim.
-                *(["--disk", f"pool={host.disk_pool},size={storage_gb},bus=virtio"]
-                  if storage_gb else []),
-                "--cdrom", f"{ISO_POOL_PATH}/kairos-hadron-k0s.iso",
-                "--disk", f"device=cdrom,bus=sata,path={ISO_POOL_PATH}/{vm.name}-cloudinit.iso",
-                "--network", f"bridge={NETWORK_BRIDGE},model=virtio",
-                "--os-variant", "generic",
-                "--graphics", "none",
-                "--console", "pty,target_type=serial",
+                *(
+                    ["--disk", f"pool={host.disk_pool},size={storage_gb},bus=virtio"]
+                    if storage_gb
+                    else []
+                ),
+                "--cdrom",
+                f"{ISO_POOL_PATH}/kairos-hadron-k0s.iso",
+                "--disk",
+                f"device=cdrom,bus=sata,path={ISO_POOL_PATH}/{vm.name}-cloudinit.iso",
+                "--network",
+                f"bridge={NETWORK_BRIDGE},model=virtio",
+                "--os-variant",
+                "generic",
+                "--graphics",
+                "none",
+                "--console",
+                "pty,target_type=serial",
                 "--noautoconsole",
             ],
         )
@@ -1010,13 +1200,17 @@ def create_vm(host: Host, vm: VM, join_token: str | None = None,
         # the wrong point in the VM lifecycle — was the real cause of what
         # looked for a long time like intermittent/tool-specific flakiness.
         # The disk-first ordering is applied AFTER install completes, below.
-        print(f"[{host.name}] waiting for {vm.name} installer to finish (VM powers itself off)...")
+        print(
+            f"[{host.name}] waiting for {vm.name} installer to finish (VM powers itself off)..."
+        )
         if wait_for_installer_finish(host, vm):
             print(f"[{host.name}] {vm.name} install complete")
             set_boot_disk_first(host, vm)
             return
 
-        print(f"[{host.name}] {vm.name} install did not complete within {INSTALL_WAIT_TIMEOUT}s — destroying and retrying")
+        print(
+            f"[{host.name}] {vm.name} install did not complete within {INSTALL_WAIT_TIMEOUT}s — destroying and retrying"
+        )
         destroy_and_undefine(host, vm)
         # A failed joining node may already have registered itself in etcd
         # before dying. Left behind, that ghost member permanently breaks
@@ -1024,7 +1218,9 @@ def create_vm(host: Host, vm: VM, join_token: str | None = None,
         if bootstrap_pair is not None:
             etcd_prune(bootstrap_pair[0], bootstrap_pair[1], vm)
 
-    raise RuntimeError(f"[{host.name}] {vm.name} failed to come up after {CREATE_RETRIES} attempts")
+    raise RuntimeError(
+        f"[{host.name}] {vm.name} failed to come up after {CREATE_RETRIES} attempts"
+    )
 
 
 def node_ready_states(bootstrap_vm: VM) -> dict[str, bool] | None:
@@ -1041,12 +1237,21 @@ def node_ready_states(bootstrap_vm: VM) -> dict[str, bool] | None:
     """
     result = subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            f"{ADMIN_USER}@{bootstrap_vm.static_ip}", "sudo k0s kubectl get nodes -o json",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            f"{ADMIN_USER}@{bootstrap_vm.static_ip}",
+            "sudo k0s kubectl get nodes -o json",
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         return None
@@ -1060,14 +1265,19 @@ def node_ready_states(bootstrap_vm: VM) -> dict[str, bool] | None:
         if not name:
             continue
         conditions = node.get("status", {}).get("conditions", [])
-        ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+        ready = any(
+            c.get("type") == "Ready" and c.get("status") == "True" for c in conditions
+        )
         states[name] = ready
     return states
 
 
-def wait_for_nodes_ready(bootstrap_vm: VM, expected: list[str],
-                         timeout: int = NODE_READY_TIMEOUT,
-                         interval: int = SSH_WAIT_INTERVAL) -> None:
+def wait_for_nodes_ready(
+    bootstrap_vm: VM,
+    expected: list[str],
+    timeout: int = NODE_READY_TIMEOUT,
+    interval: int = SSH_WAIT_INTERVAL,
+) -> None:
     """Block until every expected node is registered AND Ready.
 
     Why this exists: create_vm() returns as soon as a VM is running its
@@ -1134,9 +1344,15 @@ def refresh_client_access(bootstrap_vm: VM, node_ips: list[str]) -> None:
     print("=== refreshing client access (known_hosts + kubeconfig) ===")
 
     for ip in node_ips:
-        subprocess.run(["ssh-keygen", "-R", ip], capture_output=True, text=True)
-        scan = subprocess.run(["ssh-keyscan", "-t", "ed25519", ip],
-                              capture_output=True, text=True)
+        subprocess.run(
+            ["ssh-keygen", "-R", ip], capture_output=True, text=True, check=False
+        )
+        scan = subprocess.run(
+            ["ssh-keyscan", "-t", "ed25519", ip],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if scan.returncode == 0 and scan.stdout.strip():
             known_hosts = Path.home() / ".ssh" / "known_hosts"
             known_hosts.parent.mkdir(mode=0o700, exist_ok=True)
@@ -1146,18 +1362,32 @@ def refresh_client_access(bootstrap_vm: VM, node_ips: list[str]) -> None:
 
     result = subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            f"{ADMIN_USER}@{bootstrap_vm.static_ip}", "sudo k0s kubeconfig admin",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            f"{ADMIN_USER}@{bootstrap_vm.static_ip}",
+            "sudo k0s kubeconfig admin",
         ],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     # Validate before overwriting: clobbering a working kubeconfig with an
     # error message would turn a transient fetch failure into a broken
     # workstation.
     if result.returncode != 0 or "client-certificate-data" not in result.stdout:
-        print("  WARNING: could not fetch a valid kubeconfig — leaving the existing one alone")
-        print(f"  fix manually: ssh {ADMIN_USER}@{bootstrap_vm.static_ip} 'sudo k0s kubeconfig admin' > ~/.kube/config")
+        print(
+            "  WARNING: could not fetch a valid kubeconfig — leaving the existing one alone"
+        )
+        print(
+            f"  fix manually: ssh {ADMIN_USER}@{bootstrap_vm.static_ip} 'sudo k0s kubeconfig admin' > ~/.kube/config"
+        )
         return
 
     kube_config = Path.home() / ".kube" / "config"
@@ -1171,16 +1401,23 @@ def refresh_client_access(bootstrap_vm: VM, node_ips: list[str]) -> None:
 
     # Prove it actually works rather than assuming. A kubeconfig that parses
     # but can't authenticate looks identical to a good one on disk.
-    check = subprocess.run(["kubectl", "get", "nodes", "--no-headers"],
-                           capture_output=True, text=True)
+    check = subprocess.run(
+        ["kubectl", "get", "nodes", "--no-headers"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if check.returncode == 0:
-        print(f"  kubectl verified: {len(check.stdout.strip().splitlines())} nodes visible")
+        print(
+            f"  kubectl verified: {len(check.stdout.strip().splitlines())} nodes visible"
+        )
     else:
         print(f"  WARNING: kubectl still failing: {check.stderr.strip()[:200]}")
 
 
-def wait_for_k0s_ready(vm: VM, timeout: int = SSH_WAIT_TIMEOUT,
-                       interval: int = SSH_WAIT_INTERVAL) -> bool:
+def wait_for_k0s_ready(
+    vm: VM, timeout: int = SSH_WAIT_TIMEOUT, interval: int = SSH_WAIT_INTERVAL
+) -> bool:
     """Wait until k0s on the bootstrap node can actually serve requests.
 
     COS_ACTIVE in /proc/cmdline proves the INSTALLED OS is running. It says
@@ -1199,11 +1436,21 @@ def wait_for_k0s_ready(vm: VM, timeout: int = SSH_WAIT_TIMEOUT,
     while time.time() < deadline:
         result = subprocess.run(
             [
-                "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                f"{ADMIN_USER}@{vm.static_ip}", "sudo k0s status",
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                f"{ADMIN_USER}@{vm.static_ip}",
+                "sudo k0s status",
             ],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if result.returncode == 0:
             return True
@@ -1212,6 +1459,10 @@ def wait_for_k0s_ready(vm: VM, timeout: int = SSH_WAIT_TIMEOUT,
 
 
 def find_bootstrap() -> tuple[Host, VM]:
+    """The bootstrap VM and the host carrying it.
+
+    site.yml must mark exactly one; siteconfig validates that up front, because
+    discovering it here would mean failing after the ISO has downloaded."""
     matches = [(h, v) for h in HOSTS for v in h.vms if v.bootstrap]
     if len(matches) != 1:
         raise RuntimeError(
@@ -1230,16 +1481,26 @@ def generate_join_token(host: Host, vm: VM) -> str:
     print(f"[{host.name}] generating controller join token on {vm.name}...")
     result = subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
             f"{ADMIN_USER}@{vm.static_ip}",
             f"sudo k0s token create --role controller --expiry {K0S_TOKEN_EXPIRY}",
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"failed to generate join token on {vm.name}: {result.stderr}")
+        raise RuntimeError(
+            f"failed to generate join token on {vm.name}: {result.stderr}"
+        )
     token = result.stdout.strip().splitlines()[-1].strip()
     if not token:
         raise RuntimeError(f"got an empty join token from {vm.name}")
@@ -1247,6 +1508,11 @@ def generate_join_token(host: Host, vm: VM) -> str:
 
 
 def main() -> None:
+    """Provision the whole fleet: bootstrap first, then every joining node.
+
+    Strictly ordered. The joining nodes need a token minted from the bootstrap
+    node, so parallelising this would only race for something that does not
+    exist yet."""
     bootstrap_host, bootstrap_vm = find_bootstrap()
 
     # Phase 1: the bootstrap controller must be fully up BEFORE any other
@@ -1263,7 +1529,9 @@ def main() -> None:
 
     # The bootstrap VM booting is NOT the same as k0s being ready to mint join
     # tokens. Without this, the first joiner races the control plane's startup.
-    print(f"[{bootstrap_host.name}] waiting for k0s to be ready on {bootstrap_vm.name}...")
+    print(
+        f"[{bootstrap_host.name}] waiting for k0s to be ready on {bootstrap_vm.name}..."
+    )
     if not wait_for_k0s_ready(bootstrap_vm):
         raise RuntimeError(
             f"k0s did not become ready on {bootstrap_vm.name} within {SSH_WAIT_TIMEOUT}s"
@@ -1296,8 +1564,9 @@ def main() -> None:
         ensure_iso_pool(host)
         ensure_kairos_iso(host)
         token = generate_join_token(bootstrap_host, bootstrap_vm)
-        create_vm(host, vm, join_token=token,
-                  bootstrap_pair=(bootstrap_host, bootstrap_vm))
+        create_vm(
+            host, vm, join_token=token, bootstrap_pair=(bootstrap_host, bootstrap_vm)
+        )
 
     # Phase 3: don't exit until the cluster actually reflects what was built.
     # create_vm() returns when a VM is running, which is ~45-60s before its

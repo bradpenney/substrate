@@ -21,7 +21,9 @@ FIXTURE_SITE = REPO_ROOT / "tests" / "fixtures" / "site.yml"
 # gets the fixture.
 os.environ.setdefault("SUBSTRATE_SITE_FILE", str(FIXTURE_SITE))
 # A real key here would make render_cloud_config emit a real pull secret.
-os.environ.setdefault("HOMELAB_SSH_PUBLIC_KEY", "ssh-ed25519 AAAATESTKEYONLY test@fixture")
+os.environ.setdefault(
+    "HOMELAB_SSH_PUBLIC_KEY", "ssh-ed25519 AAAATESTKEYONLY test@fixture"
+)
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -38,10 +40,12 @@ def repo_root() -> Path:
 @pytest.fixture(scope="session")
 def joining_vm():
     import hosts
+
     return next(v for h in hosts.HOSTS for v in h.vms if not v.bootstrap)
 
 
 @pytest.fixture(scope="session")
 def bootstrap_vm():
     import hosts
+
     return next(v for h in hosts.HOSTS for v in h.vms if v.bootstrap)

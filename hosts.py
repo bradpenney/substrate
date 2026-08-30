@@ -32,6 +32,13 @@ _CFG = siteconfig.load()
 
 @dataclass
 class VM:
+    """One k0s node: a libvirt domain with a fixed address.
+
+    Every field beyond name/ip is an override; None means "use the VM_* default".
+    Hosts commonly differ a lot in capacity, so uniform sizing would waste one
+    machine and starve the other.
+    """
+
     name: str
     static_ip: str
     # Exactly one VM in the whole fleet must be the bootstrap controller.
@@ -57,6 +64,13 @@ class VM:
 
 @dataclass
 class Host:
+    """One hypervisor and the VMs it carries.
+
+    Making the differences between machines DATA rather than a code branch is
+    what lets a single code path drive genuinely heterogeneous hardware -- an
+    LVM pool on one, the stock dir pool on another with no LVM at all.
+    """
+
     name: str
     # None means "run locally" (this script executes ON that host).
     # A string is an SSH target ("user@host") the script connects to.

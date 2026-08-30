@@ -25,7 +25,9 @@ def _cfg(**over):
             "n1": {"hypervisor": "hvA", "ip": "10.99.0.20", "bootstrap": True},
             "n2": {"hypervisor": "hvA", "ip": "10.99.0.21"},
         },
-        "defaults": {}, "k0s": {}, "libvirt": {},
+        "defaults": {},
+        "k0s": {},
+        "libvirt": {},
     }
     base.update(copy.deepcopy(over))
     return base
@@ -36,8 +38,10 @@ def test_the_valid_baseline_passes():
     siteconfig._validate(_cfg())
 
 
-@pytest.mark.parametrize("missing", ["admin_user", "network", "hypervisors",
-                                     "nodes", "defaults", "k0s", "libvirt"])
+@pytest.mark.parametrize(
+    "missing",
+    ["admin_user", "network", "hypervisors", "nodes", "defaults", "k0s", "libvirt"],
+)
 def test_missing_top_level_section_fails_early(missing):
     """Rather than a KeyError after the ISO has downloaded and two VMs exist."""
     cfg = _cfg()
@@ -57,8 +61,13 @@ def test_local_hypervisor_without_peer_target_is_rejected():
 
 
 def test_local_hypervisor_with_peer_target_is_accepted():
-    siteconfig._validate(_cfg(hypervisors={
-        "hvA": {"ssh_target": None, "peer_target": "operator@10.99.0.11"}}))
+    siteconfig._validate(
+        _cfg(
+            hypervisors={
+                "hvA": {"ssh_target": None, "peer_target": "operator@10.99.0.11"}
+            }
+        )
+    )
 
 
 def test_a_node_may_not_sit_on_the_control_plane_vip():
@@ -76,7 +85,9 @@ def test_a_hypervisor_may_not_be_addressed_by_the_vip():
     """Same collision, other direction: SSHing to the VIP reaches whichever host
     currently holds it, so provisioning would target a moving address."""
     with pytest.raises(SystemExit) as e:
-        siteconfig._validate(_cfg(hypervisors={"hvA": {"ssh_target": "operator@10.99.0.99"}}))
+        siteconfig._validate(
+            _cfg(hypervisors={"hvA": {"ssh_target": "operator@10.99.0.99"}})
+        )
     assert "10.99.0.99" in str(e.value)
 
 

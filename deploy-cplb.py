@@ -27,7 +27,6 @@ Usage:
 """
 
 import argparse
-import shlex
 import subprocess
 import sys
 
@@ -46,11 +45,19 @@ PORTS = [("k8s-api", 6443), ("konnectivity", 8132), ("k0s-join", 9443)]
 
 
 def controllers() -> list:
-    return sorted(((n, c["ip"]) for n, c in CFG["nodes"].items()),
-                  key=lambda x: x[1])
+    """Every controller as (name, ip), sorted by address.
+
+    Sorted so the rendered config is stable: an unordered dict would produce a
+    different file on every run and make a real change indistinguishable from
+    reordering in a diff."""
+    return sorted(((n, c["ip"]) for n, c in CFG["nodes"].items()), key=lambda x: x[1])
 
 
 def haproxy_cfg() -> str:
+    """Render haproxy.cfg: one backend entry per controller.
+
+    konnectivity needs a connection per SERVER, which a VRRP virtual IP cannot
+    provide -- that is failover, not distribution."""
     out = [
         "# Managed by substrate deploy-cplb.py — do not edit by hand.",
         "global",
@@ -100,8 +107,16 @@ def haproxy_cfg() -> str:
 
 
 def keepalived_cfg(host: str) -> str:
+    """Render keepalived.conf for one hypervisor.
+
+    Differs per host: the priority decides which node holds the VIP, so identical
+    config on both would leave them contesting it."""
     prio = (CP.get("priorities") or {}).get(host, 100)
-    state = "MASTER" if prio == max((CP.get("priorities") or {100: 100}).values()) else "BACKUP"
+    state = (
+        "MASTER"
+        if prio == max((CP.get("priorities") or {100: 100}).values())
+        else "BACKUP"
+    )
     return f"""# Managed by substrate deploy-cplb.py — do not edit by hand.
 global_defs {{
     enable_script_security
@@ -142,7 +157,9 @@ vrrp_instance CPLB {{
 
 
 def remote(host: str) -> list:
-    """Command prefix to run on a hypervisor. Empty when it is this machine."""
+    """The ssh prefix for reaching a host, or an empty list when it is local.
+
+    Returning a list lets callers build one command that works either way."""
     tgt = CFG["hypervisors"][host].get("ssh_target")
     if not tgt:
         return []
@@ -150,14 +167,22 @@ def remote(host: str) -> list:
 
 
 def run(host: str, script: str, apply: bool) -> int:
+    """Install on one host, returning the exit status.
+
+    Returns 0 WITHOUT executing when apply is False, so a dry run cannot change
+    a host even by accident."""
     cmd = remote(host) + ["sudo", "bash", "-s"]
     if not apply:
         return 0
-    p = subprocess.run(cmd, input=script, text=True)
+    p = subprocess.run(cmd, input=script, text=True, check=False)
     return p.returncode
 
 
 def install_script(host: str) -> str:
+    """The full installer for one host, with both configs embedded.
+
+    Embedded rather than copied so the whole install is one stdin stream: no
+    temporary files to clean up, and nothing left behind if it fails midway."""
     hc = haproxy_cfg().replace("'", "'\\''")
     kc = keepalived_cfg(host).replace("'", "'\\''")
     return f"""set -euo pipefail
@@ -196,22 +221,31 @@ systemctl is-active haproxy keepalived
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--apply", action="store_true", help="actually install (default: dry run)")
+    """Print the plan; install only when --apply is given.
+
+    Dry run by default. This reconfigures the control-plane load balancer, and
+    the failure mode of getting it wrong is losing the API server."""
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--apply", action="store_true", help="actually install (default: dry run)"
+    )
     args = ap.parse_args()
 
-    print(f"=== control-plane load balancer ===\n")
+    print("=== control-plane load balancer ===\n")
     print(f"  VIP        : {VIP}  on {BRIDGE}")
     print(f"  balanced   : {', '.join(f'{n}/{p}' for n, p in PORTS)}")
-    print(f"  backends   :")
+    print("  backends   :")
     for node, ip in controllers():
         print(f"      {node:<8} {ip}")
-    print(f"  hypervisors:")
+    print("  hypervisors:")
     for h in CFG["hypervisors"]:
         prio = (CP.get("priorities") or {}).get(h, 100)
-        print(f"      {h:<8} priority {prio}"
-              f"{'   <- holds the VIP by default' if prio == max((CP.get('priorities') or {}).values()) else ''}")
+        print(
+            f"      {h:<8} priority {prio}"
+            f"{'   <- holds the VIP by default' if prio == max((CP.get('priorities') or {}).values()) else ''}"
+        )
 
     if not args.apply:
         print("\n--- haproxy.cfg ---")

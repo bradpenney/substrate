@@ -17,6 +17,7 @@ Every check below is a read, so this runs as the scoped `brad` identity and
 never needs the break-glass certificate (ADR-071). A monitor that requires
 cluster-admin is a monitor that will be run as root forever.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,9 +37,9 @@ NETPOL_EXEMPT = {
 }
 # Subjects legitimately holding cluster-admin. Anything else is an alert.
 EXPECTED_CLUSTER_ADMIN = {
-    "Group/system:masters",              # the bootstrap certificate itself
+    "Group/system:masters",  # the bootstrap certificate itself
     "ServiceAccount/kustomize-controller",
-    "ServiceAccount/helm-controller",    # binding remains; the SA is gone
+    "ServiceAccount/helm-controller",  # binding remains; the SA is gone
     "ServiceAccount/flux-operator",
     "ServiceAccount/longhorn-support-bundle",
 }
@@ -60,16 +61,28 @@ def _find_kubectl() -> str:
     systemd's default PATH, so the timer would have paged every morning.
     """
     found = shutil.which("kubectl") or shutil.which(
-        "kubectl", path="/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin")
+        "kubectl", path="/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin"
+    )
     if not found:
-        sys.exit("posture-check: kubectl not found on PATH. This is a TOOLING "
-                 "failure, not a security finding — fix PATH and re-run.")
+        sys.exit(
+            "posture-check: kubectl not found on PATH. This is a TOOLING "
+            "failure, not a security finding — fix PATH and re-run."
+        )
     return found
 
 
 def kubectl(*args: str) -> dict | None:
-    r = subprocess.run([KUBECTL, f"--context={CONTEXT}", *args, "-o", "json"],
-                       capture_output=True, text=True, timeout=60)
+    """Query the cluster as JSON.
+
+    Records its OWN failure and returns None, so a caller that returns early on
+    None has still reported something rather than passing silently."""
+    r = subprocess.run(
+        [KUBECTL, f"--context={CONTEXT}", *args, "-o", "json"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
     if r.returncode:
         failures.append(f"kubectl {' '.join(args)} failed: {r.stderr.strip()[:160]}")
         return None
@@ -81,60 +94,108 @@ def kubectl(*args: str) -> dict | None:
 
 
 def check_pod_security() -> None:
-    """Every namespace must declare an enforcement level (ADR-062/063)."""
+    """Every namespace must declare a Pod Security enforcement level.
+
+    Asserts the LABEL exists, not which level it is: privileged is legitimate
+    for kube-system and k0s-autopilot. What is never legitimate is a namespace
+    with no enforcement at all, which is what a new namespace defaults to."""
     d = kubectl("get", "namespaces")
     if not d:
         return
-    missing = [n["metadata"]["name"] for n in d["items"]
-               if "pod-security.kubernetes.io/enforce" not in (n["metadata"].get("labels") or {})]
+    missing = [
+        n["metadata"]["name"]
+        for n in d["items"]
+        if "pod-security.kubernetes.io/enforce"
+        not in (n["metadata"].get("labels") or {})
+    ]
     if missing:
-        failures.append(f"namespaces with NO Pod Security enforcement: {', '.join(sorted(missing))}")
+        failures.append(
+            f"namespaces with NO Pod Security enforcement: {', '.join(sorted(missing))}"
+        )
     else:
-        notes.append(f"pod security: {len(d['items'])}/{len(d['items'])} namespaces enforced")
+        notes.append(
+            f"pod security: {len(d['items'])}/{len(d['items'])} namespaces enforced"
+        )
 
 
 def check_default_deny() -> None:
-    """Every namespace should deny ingress and egress by default (ADR-067)."""
+    """Every namespace should deny ingress and egress by default.
+
+    A policy only counts when it has an EMPTY podSelector (so it catches every
+    pod) and lists both directions. An ingress-only policy leaves egress wide
+    open, which is the half that matters for exfiltration."""
     ns = kubectl("get", "namespaces")
     np = kubectl("get", "networkpolicy", "-A")
     if not ns or not np:
         return
-    have = {p["metadata"]["namespace"] for p in np["items"]
-            if p["spec"].get("podSelector") == {}
-            and set(p["spec"].get("policyTypes") or []) >= {"Ingress", "Egress"}}
-    gaps = [n["metadata"]["name"] for n in ns["items"]
-            if n["metadata"]["name"] not in have
-            and n["metadata"]["name"] not in NETPOL_EXEMPT]
+    have = {
+        p["metadata"]["namespace"]
+        for p in np["items"]
+        if p["spec"].get("podSelector") == {}
+        and set(p["spec"].get("policyTypes") or []) >= {"Ingress", "Egress"}
+    }
+    gaps = [
+        n["metadata"]["name"]
+        for n in ns["items"]
+        if n["metadata"]["name"] not in have
+        and n["metadata"]["name"] not in NETPOL_EXEMPT
+    ]
     if gaps:
-        failures.append(f"namespaces with NO default-deny NetworkPolicy: {', '.join(sorted(gaps))}")
+        failures.append(
+            f"namespaces with NO default-deny NetworkPolicy: {', '.join(sorted(gaps))}"
+        )
     else:
         notes.append(f"network policy: {len(have)} namespaces default-deny")
 
 
 def check_cluster_admin() -> None:
-    """cluster-admin must not grow new holders without someone noticing."""
+    """cluster-admin must not grow new holders without someone noticing.
+
+    Compared against a recorded baseline. A subject that DISAPPEARED is a note
+    rather than a failure — it means the baseline is stale, not that the
+    cluster is unsafe."""
     d = kubectl("get", "clusterrolebinding")
     if not d:
         return
-    subs = {f"{s.get('kind')}/{s.get('name')}"
-            for b in d["items"] if b["roleRef"]["name"] == "cluster-admin"
-            for s in (b.get("subjects") or [])}
+    subs = {
+        f"{s.get('kind')}/{s.get('name')}"
+        for b in d["items"]
+        if b["roleRef"]["name"] == "cluster-admin"
+        for s in (b.get("subjects") or [])
+    }
     new = subs - EXPECTED_CLUSTER_ADMIN
     if new:
         failures.append(f"UNEXPECTED cluster-admin subjects: {', '.join(sorted(new))}")
     gone = EXPECTED_CLUSTER_ADMIN - subs
     if gone:
-        notes.append(f"cluster-admin subjects removed since baseline: {', '.join(sorted(gone))}")
+        notes.append(
+            f"cluster-admin subjects removed since baseline: {', '.join(sorted(gone))}"
+        )
     if not new:
         notes.append(f"cluster-admin: {len(subs)} subjects, all expected")
 
 
 def check_no_standing_grant() -> None:
-    """A JIT grant left outstanding means the reaper is not working (ADR-065)."""
+    """A JIT grant left outstanding means the reaper is not working.
+
+    The whole value of the time-boxed grant is that it expires on its own. A
+    binding with no expiry annotation is standing cluster-admin wearing the
+    name of a temporary one."""
     r = subprocess.run(
-        [KUBECTL, f"--context={CONTEXT}", "get", "clusterrolebinding",
-         "jit-platform-admin", "-o", "json"],
-        capture_output=True, text=True, timeout=60)
+        [
+            KUBECTL,
+            f"--context={CONTEXT}",
+            "get",
+            "clusterrolebinding",
+            "jit-platform-admin",
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
     if r.returncode != 0:
         notes.append("jit grant: none outstanding")
         return
@@ -147,11 +208,13 @@ def check_no_standing_grant() -> None:
         failures.append("a jit-platform-admin grant exists with NO expiry annotation")
         return
     import datetime as dt
+
     end = dt.datetime.fromisoformat(exp.replace("Z", "+00:00"))
     left = (end - dt.datetime.now(dt.timezone.utc)).total_seconds()
     if left < -300:
         failures.append(
-            f"jit grant EXPIRED at {exp} and is still present -- the reaper is not running")
+            f"jit grant EXPIRED at {exp} and is still present -- the reaper is not running"
+        )
     else:
         notes.append(f"jit grant: outstanding, expires {exp}")
 
@@ -201,29 +264,53 @@ def check_failed_units() -> None:
     that per-unit alerting is something you can forget to add. This check does
     not depend on remembering.
     """
-    r = subprocess.run(["systemctl", "is-system-running"],
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        ["systemctl", "is-system-running"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     for unit in WATCHED_UNITS:
-        s = subprocess.run(["systemctl", "is-failed", unit],
-                           capture_output=True, text=True).stdout.strip()
+        s = subprocess.run(
+            ["systemctl", "is-failed", unit],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
         if s == "failed":
             when = subprocess.run(
-                ["systemctl", "show", unit, "-p", "ExecMainExitTimestamp",
-                 "--value"], capture_output=True, text=True).stdout.strip()
-            failures.append(f"systemd unit {unit} is FAILED (since {when or 'unknown'})")
+                ["systemctl", "show", unit, "-p", "ExecMainExitTimestamp", "--value"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            failures.append(
+                f"systemd unit {unit} is FAILED (since {when or 'unknown'})"
+            )
     # A failed unit is a finding, not a footnote. This previously recorded
     # unwatched failures as a NOTE, so the run could print "all invariants hold"
     # while systemd was sitting in a degraded state -- a contradiction that
     # teaches the reader to distrust the summary line.
     deg = r.stdout.strip()
     if deg == "degraded":
-        n = subprocess.run(["systemctl", "list-units", "--state=failed",
-                            "--no-legend", "--plain"],
-                           capture_output=True, text=True).stdout.strip().splitlines()
-        others = [l.split()[0] for l in n if l.split() and l.split()[0] not in WATCHED_UNITS]
+        n = (
+            subprocess.run(
+                ["systemctl", "list-units", "--state=failed", "--no-legend", "--plain"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            .stdout.strip()
+            .splitlines()
+        )
+        others = [
+            l.split()[0] for l in n if l.split() and l.split()[0] not in WATCHED_UNITS
+        ]
         if others:
-            failures.append("systemd is degraded; failed units not on the watch "
-                            f"list: {', '.join(others[:5])}")
+            failures.append(
+                "systemd is degraded; failed units not on the watch "
+                f"list: {', '.join(others[:5])}"
+            )
     if not any("systemd unit" in f for f in failures):
         notes.append(f"host units: {len(WATCHED_UNITS)} watched, none failed")
 
@@ -242,11 +329,16 @@ def check_admission_policies() -> None:
     gone = EXPECTED_POLICIES - have
     if gone:
         failures.append(f"admission policies MISSING: {', '.join(sorted(gone))}")
-    denying = {b["spec"]["policyName"] for b in bind["items"]
-               if "Deny" in (b["spec"].get("validationActions") or [])}
+    denying = {
+        b["spec"]["policyName"]
+        for b in bind["items"]
+        if "Deny" in (b["spec"].get("validationActions") or [])
+    }
     if not denying:
-        failures.append("no admission policy binding is set to Deny -- "
-                        "every guardrail has become advisory")
+        failures.append(
+            "no admission policy binding is set to Deny -- "
+            "every guardrail has become advisory"
+        )
     elif not gone:
         notes.append(f"admission: {len(have)} policies, {len(denying)} enforcing Deny")
 
@@ -275,16 +367,33 @@ def check_selinux() -> None:
     hosts = [("this host", None), (PEER.split("@")[-1], PEER)]
     script = (
         "getenforce; "
-        "semanage permissive -l 2>/dev/null | grep -c '^[a-z]' || echo 0"
+        + "semanage permissive -l 2>/dev/null | grep -c '^[a-z]' || echo 0"
     )
     for label, target in hosts:
         if target is None:
-            r = subprocess.run(["bash", "-c", script],
-                               capture_output=True, text=True, timeout=30)
+            r = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
         else:
             r = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target,
-                 script], capture_output=True, text=True, timeout=30)
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=8",
+                    target,
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
         if r.returncode != 0 or not r.stdout.strip():
             notes.append(f"selinux: {label} unreachable, not checked")
             continue
@@ -299,7 +408,8 @@ def check_selinux() -> None:
         elif permissive:
             failures.append(
                 f"selinux: {label} is Enforcing but {permissive} domain(s) are "
-                f"permissive — a per-domain opt-out of the control")
+                f"permissive — a per-domain opt-out of the control"
+            )
         else:
             notes.append(f"selinux: {label} enforcing, no permissive domains")
 
@@ -317,9 +427,20 @@ def check_peer_units() -> None:
     """
     for unit in PEER_UNITS:
         r = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", PEER,
-             f"systemctl is-failed {unit}"],
-            capture_output=True, text=True, timeout=30)
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=8",
+                PEER,
+                f"systemctl is-failed {unit}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
         state = r.stdout.strip()
         if state == "failed":
             failures.append(f"peer {PEER.split('@')[-1]}: {unit} is FAILED")
@@ -332,6 +453,13 @@ def check_peer_units() -> None:
 
 
 def check_flux() -> None:
+    """Every Flux Kustomization must be Ready, or legitimately mid-reconcile.
+
+    PROGRESSING states are tolerated deliberately. A Kustomization that is
+    merely reconciling was once reported as broken, which turned every deploy
+    into a false alarm — and an alert that fires on normal operation is one
+    people learn to ignore. A missing Ready condition is NOT tolerated: absent
+    is not the same as healthy."""
     d = kubectl("get", "kustomization", "-n", "flux-system")
     if not d:
         return
@@ -342,8 +470,13 @@ def check_flux() -> None:
     # daily false alarm is how an alert gets ignored.
     #
     # Treat progressing states as healthy; only a terminal failure counts.
-    PROGRESSING = {"Progressing", "ProgressingWithRetry", "DependencyNotReady",
-                   "ReconciliationSucceeded", "Unknown"}
+    PROGRESSING = {
+        "Progressing",
+        "ProgressingWithRetry",
+        "DependencyNotReady",
+        "ReconciliationSucceeded",
+        "Unknown",
+    }
     bad = []
     for k in d["items"]:
         conds = k.get("status", {}).get("conditions") or []
@@ -375,33 +508,57 @@ def check_source_verified() -> None:
         return
     verify = (d.get("spec") or {}).get("verify")
     if not verify:
-        failures.append("the config artifact is NO LONGER signature-verified "
-                        "(spec.verify removed from the OCIRepository)")
+        failures.append(
+            "the config artifact is NO LONGER signature-verified "
+            "(spec.verify removed from the OCIRepository)"
+        )
         return
     if not verify.get("matchOIDCIdentity"):
-        failures.append("cosign verification has no matchOIDCIdentity — it would "
-                        "accept ANY valid Sigstore signature, including an attacker's")
+        failures.append(
+            "cosign verification has no matchOIDCIdentity — it would "
+            "accept ANY valid Sigstore signature, including an attacker's"
+        )
         return
-    cond = next((c for c in (d.get("status", {}).get("conditions") or [])
-                 if c.get("type") == "SourceVerified"), None)
+    cond = next(
+        (
+            c
+            for c in (d.get("status", {}).get("conditions") or [])
+            if c.get("type") == "SourceVerified"
+        ),
+        None,
+    )
     if not cond or cond.get("status") != "True":
-        failures.append(f"artifact signature NOT verified: "
-                        f"{(cond or {}).get('message', 'no SourceVerified condition')}")
+        failures.append(
+            f"artifact signature NOT verified: "
+            f"{(cond or {}).get('message', 'no SourceVerified condition')}"
+        )
     else:
-        notes.append("supply chain: artifact signature verified against the pinned identity")
+        notes.append(
+            "supply chain: artifact signature verified against the pinned identity"
+        )
 
 
 def check_credentials() -> None:
-    """ExternalSecrets must still be SYNCING, not merely have left a Secret behind."""
+    """Every ExternalSecret must still be syncing.
+
+    A secret that stopped syncing keeps working until whatever it holds is
+    rotated, so the failure is invisible right up until it is urgent."""
     d = kubectl("get", "externalsecret", "-A")
     if not d:
         return
-    stale = [f"{e['metadata']['namespace']}/{e['metadata']['name']}" for e in d["items"]
-             if not any(c.get("type") == "Ready" and c.get("status") == "True"
-                        for c in (e.get("status", {}).get("conditions") or []))]
+    stale = [
+        f"{e['metadata']['namespace']}/{e['metadata']['name']}"
+        for e in d["items"]
+        if not any(
+            c.get("type") == "Ready" and c.get("status") == "True"
+            for c in (e.get("status", {}).get("conditions") or [])
+        )
+    ]
     if stale:
-        failures.append(f"ExternalSecrets not syncing (the Secret may still look fine): "
-                        f"{', '.join(stale)}")
+        failures.append(
+            f"ExternalSecrets not syncing (the Secret may still look fine): "
+            f"{', '.join(stale)}"
+        )
     else:
         notes.append(f"credentials: {len(d['items'])} external secrets syncing")
 
@@ -423,10 +580,29 @@ def check_origin_lock() -> None:
         return
 
     def curl(*extra: str) -> str:
-        r = subprocess.run(["curl", "-sk", "-o", "/dev/null", "-m", "12",
-                            "-w", "%{http_code}", *extra,
-                            f"https://{hostname}"],
-                           capture_output=True, text=True)
+        """Fetch the public URL and return the HTTP status as a string.
+
+        `-k` because the direct-to-origin probe deliberately bypasses the proxy and
+        will present a certificate for the wrong name; the status code is the
+        answer being sought, not the TLS chain. `000` means the connection never
+        completed, which is the DESIRED result for the bypass attempt."""
+        r = subprocess.run(
+            [
+                "curl",
+                "-sk",
+                "-o",
+                "/dev/null",
+                "-m",
+                "12",
+                "-w",
+                "%{http_code}",
+                *extra,
+                f"https://{hostname}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         return r.stdout.strip()
 
     through = curl()
@@ -442,7 +618,8 @@ def check_origin_lock() -> None:
     if direct == "200":
         failures.append(
             "ORIGIN LOCK BROKEN: the ingress answers a direct connection that "
-            "bypasses Cloudflare (ADR-070)")
+            "bypasses Cloudflare (ADR-070)"
+        )
     else:
         notes.append(f"origin lock: direct bypass refused ({direct or 'no response'})")
 
@@ -451,13 +628,29 @@ KUBECTL = ""
 
 
 def main() -> int:
-    global KUBECTL
+    """Run every invariant and report.
+
+    Each check is wrapped so one raising cannot hide the others — a single bug
+    must not silence the whole monitor. The non-zero exit is what fires
+    OnFailure and sends the notification."""
+    # KUBECTL is resolved once here and read by every check. Threading it
+    # through a dozen call sites would obscure them to satisfy a linter.
+    global KUBECTL  # pylint: disable=global-statement
     KUBECTL = _find_kubectl()
-    for check in (check_pod_security, check_default_deny, check_cluster_admin,
-                  check_no_standing_grant, check_admission_policies, check_flux,
-                  check_failed_units, check_peer_units, check_source_verified,
-                  check_credentials, check_selinux,
-                  check_origin_lock):
+    for check in (
+        check_pod_security,
+        check_default_deny,
+        check_cluster_admin,
+        check_no_standing_grant,
+        check_admission_policies,
+        check_flux,
+        check_failed_units,
+        check_peer_units,
+        check_source_verified,
+        check_credentials,
+        check_selinux,
+        check_origin_lock,
+    ):
         try:
             check()
         except Exception as e:  # a check that crashes must not hide the others

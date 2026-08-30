@@ -1,6 +1,9 @@
 # substrate
 
 [![tests](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/test.yaml?branch=main&label=tests&logo=pytest&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
+[![logic coverage](https://raw.githubusercontent.com/bradpenney/substrate/badges/coverage.svg)](#what-is-tested)
+[![pylint](https://img.shields.io/badge/pylint-10.00%2F10-brightgreen?logo=python&logoColor=white)](.pylintrc)
+[![code style: black](https://img.shields.io/badge/code%20style-black-000000)](https://github.com/psf/black)
 [![shellcheck](https://img.shields.io/badge/shellcheck-style%20clean-4EAA25?logo=gnubash&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
 [![rebuild](https://img.shields.io/badge/destroy%20%26%20rebuild-verified%20both%20methods-success)](#the-gate)
 [![SELinux](https://img.shields.io/badge/SELinux-enforcing-red)](#security-posture)
@@ -137,6 +140,41 @@ found while building this were controls that were installed and *not working*.
 The test suite's specification is the bug log. When something breaks, the fix
 ships with the test that would have caught it; tests written against imagined
 failures become decoration, tests written against real ones do not.
+
+**The coverage badge says "logic coverage" deliberately.** It measures lines
+executed by `pytest`, which is not the same as how much of this system is
+tested. `posture-check.py` reads 0% and runs nightly against a live cluster;
+`gate.py` reads 18% and is exercised end to end by every rebuild; the static
+rules over the systemd units contribute nothing to the number and catch defects
+that shipped. Most of what is uncovered drives real hosts over ssh and kubectl,
+where a unit test would assert only that the code calls the commands it calls.
+
+Coverage is enforced **per module** rather than as one global number: 95% on the
+logic modules, and the orchestration reported but not gated, because driving
+`virsh` and `ssh` to 95% would mean stubbing a hypervisor and asserting that the
+code calls the commands it calls. Logic sits at 99%.
+
+### Lint and format
+
+`pylint` is a **10.00/10 hard gate on the source**. Every disable in
+`.pylintrc` is justified in place, and the rule applied throughout is that a
+check is silenced only where the code is right and pylint's model of it is
+wrong — anything it found that was a genuine defect was fixed rather than
+suppressed. That included 45 `subprocess.run` calls given an explicit
+`check=False`, three text files opened without an encoding, an unchained
+`raise`, and a duplicate import.
+
+Test files are deliberately **not** held to 10/10: pytest idioms — fixtures
+shadowing names, tests exercising private helpers — would otherwise force
+weakening the rules that apply to the code that runs in anger.
+
+`black` owns formatting, including line length. Two tools disagreeing about the
+same property means one must yield, and the formatter is the one that can
+actually fix it.
+
+**Every function and class in the source carries a multi-line docstring** — 103
+of them, no one-liners. The house style is to say why the code is shaped the way
+it is, not to restate its name.
 
 ## Design notes
 

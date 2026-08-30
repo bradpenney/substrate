@@ -69,6 +69,6 @@ def test_the_regex_actually_matches_the_shell_form(repo_root):
     path = repo_root / "hypervisor-update.sh"
     if not path.exists():
         pytest.skip("hypervisor-update.sh not present")
-    assert "SSH_USER" in _required_vars(path), (
-        "the ${VAR:?} detector matched nothing — this suite would silently stop checking"
-    )
+    assert "SSH_USER" in _required_vars(
+        path
+    ), "the ${VAR:?} detector matched nothing — this suite would silently stop checking"

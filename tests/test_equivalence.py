@@ -28,8 +28,11 @@ def test_implementations_agree(repo_root, script, why):
         pytest.skip(f"{script} not present")
     result = subprocess.run(
         [sys.executable, str(path)],
-        cwd=repo_root, capture_output=True, text=True,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
         env={**os.environ, "PYTHONPATH": str(repo_root)},
+        check=False,
     )
     assert result.returncode == 0, f"{why}\n{result.stdout}\n{result.stderr}"
 
@@ -40,10 +43,19 @@ def test_ansible_template_covers_every_hardening_feature(repo_root):
     this for the fixture's shape; this catches a feature that is conditional and
     therefore absent from the rendered sample entirely."""
     py = (repo_root / "provision.py").read_text()
-    j2 = (repo_root / "ansible/roles/k0s_node/templates/cloud-config.yaml.j2").read_text()
+    j2 = (
+        repo_root / "ansible/roles/k0s_node/templates/cloud-config.yaml.j2"
+    ).read_text()
     features = [
-        "workerProfiles", "systemReserved", "kubeReserved", "evictionHard",
-        "encryption-provider-config", "audit-policy-file", "matchOIDCIdentity",
+        "workerProfiles",
+        "systemReserved",
+        "kubeReserved",
+        "evictionHard",
+        "encryption-provider-config",
+        "audit-policy-file",
+        "matchOIDCIdentity",
     ]
     missing = [f for f in features if f in py and f not in j2]
-    assert not missing, f"present in provision.py but absent from the Ansible template: {missing}"
+    assert (
+        not missing
+    ), f"present in provision.py but absent from the Ansible template: {missing}"

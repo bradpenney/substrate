@@ -54,7 +54,10 @@ def main() -> int:
 
     current = k0s_version(args.current_url)
     if current is None:
-        print("could not parse the CURRENT k0s version — refusing to guess", file=sys.stderr)
+        print(
+            "could not parse the CURRENT k0s version — refusing to guess",
+            file=sys.stderr,
+        )
         return 1
 
     candidates = []
@@ -71,25 +74,37 @@ def main() -> int:
             candidates.append((version, url))
 
     if not candidates:
-        print("no matching hadron/standard/amd64/generic k0s ISO in this release", file=sys.stderr)
+        print(
+            "no matching hadron/standard/amd64/generic k0s ISO in this release",
+            file=sys.stderr,
+        )
         return 1
 
     version, url = max(candidates)
     cur_s, new_s = ".".join(map(str, current)), ".".join(map(str, version))
 
     if version < current:
-        print(f"REFUSING: best available k0s is {new_s}, older than the running {cur_s}. "
-              f"Kubernetes has no supported downgrade path.", file=sys.stderr)
+        print(
+            f"REFUSING: best available k0s is {new_s}, older than the running {cur_s}. "
+            f"Kubernetes has no supported downgrade path.",
+            file=sys.stderr,
+        )
         return 1
 
     if version[:2] == current[:2]:
         print(f"patch upgrade: k0s {cur_s} -> {new_s}", file=sys.stderr)
     elif version[1] - current[1] == 1:
-        print(f"MINOR upgrade: k0s {cur_s} -> {new_s} — review release notes", file=sys.stderr)
+        print(
+            f"MINOR upgrade: k0s {cur_s} -> {new_s} — review release notes",
+            file=sys.stderr,
+        )
     elif version[1] > current[1] + 1:
-        print(f"REFUSING: k0s {cur_s} -> {new_s} skips a minor version. "
-              f"Kubernetes supports at most +1 minor per upgrade; roll through "
-              f"the intermediate release first.", file=sys.stderr)
+        print(
+            f"REFUSING: k0s {cur_s} -> {new_s} skips a minor version. "
+            f"Kubernetes supports at most +1 minor per upgrade; roll through "
+            f"the intermediate release first.",
+            file=sys.stderr,
+        )
         return 1
 
     print(url)

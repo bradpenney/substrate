@@ -59,23 +59,34 @@ def run(host: Host, argv: list[str], check: bool = True, input_text: str | None 
         cmd = argv
     else:
         cmd = ["ssh", "-o", "BatchMode=yes", host.ssh_target, shlex.join(argv)]
-    result = subprocess.run(cmd, capture_output=True, text=True, input=input_text)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, input=input_text, check=False
+    )
     if check and result.returncode != 0:
         raise RuntimeError(f"[{host.name}] {argv} failed:\n{result.stderr}")
     return result
 
 
 def stage_bytes(host: Host, data: bytes, remote: str) -> None:
-    """Write bytes to an unprivileged path on the host (no sudo)."""
+    """Write bytes to an unprivileged path on the host.
+
+    Deliberately NOT privileged: staging happens as the ordinary user so that
+    the single sudo can be spent on the installer alone (ADR-078)."""
     if host.ssh_target is None:
         Path(remote).write_bytes(data)
         return
-    cmd = ["ssh", "-o", "BatchMode=yes", host.ssh_target,
-           f"cat > {shlex.quote(remote)}"]
-    result = subprocess.run(cmd, input=data, capture_output=True)
+    cmd = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        host.ssh_target,
+        f"cat > {shlex.quote(remote)}",
+    ]
+    result = subprocess.run(cmd, input=data, capture_output=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(
-            f"[{host.name}] staging {remote} failed:\n{result.stderr.decode(errors='replace')}")
+            f"[{host.name}] staging {remote} failed:\n{result.stderr.decode(errors='replace')}"
+        )
 
 
 def build_payload(files: list[tuple[bytes, str, int]]) -> bytes:
@@ -146,8 +157,11 @@ def apply(host: Host, files: list[tuple[bytes, str, int]]) -> None:
     try:
         run(host, ["chmod", "700", staging])
         stage_bytes(host, build_payload(files), f"{staging}/payload.tar.gz")
-        stage_bytes(host, INSTALLER.replace("__KUBECTL_URL__", KUBECTL_URL).encode(),
-                    f"{staging}/install.sh")
+        stage_bytes(
+            host,
+            INSTALLER.replace("__KUBECTL_URL__", KUBECTL_URL).encode(),
+            f"{staging}/install.sh",
+        )
         run(host, ["chmod", "600", f"{staging}/payload.tar.gz"])
 
         inner = f"sudo bash {shlex.quote(staging)}/install.sh"
@@ -156,13 +170,18 @@ def apply(host: Host, files: list[tuple[bytes, str, int]]) -> None:
         else:
             # -t so sudo can prompt on a real pty; no BatchMode, for the same reason.
             cmd = ["ssh", "-t", host.ssh_target, inner]
-        if subprocess.run(cmd).returncode != 0:
+        if subprocess.run(cmd, check=False).returncode != 0:
             raise RuntimeError(f"[{host.name}] installer failed")
     finally:
         run(host, ["rm", "-rf", staging], check=False)
 
 
 def peer_of(host: Host) -> Host | None:
+    """The other hypervisor, or None on a single-host fleet.
+
+    None is handled by the caller as "skip": the nightly reboot gate needs a
+    peer to ask, and installing a gate that can never find one would produce a
+    check that always passes."""
     others = [h for h in HOSTS if h.name != host.name]
     return others[0] if others else None
 
@@ -180,10 +199,15 @@ def peer_ssh_target(host: Host, peer: Host) -> str:
         return peer.peer_target
     raise RuntimeError(
         f"{peer.name} runs locally (ssh_target: null) and has no `peer_target` "
-        f"in site.yml, so {host.name} has no way to reach it")
+        f"in site.yml, so {host.name} has no way to reach it"
+    )
 
 
 def bootstrap_ip() -> str:
+    """Address of the bootstrap controller.
+
+    That node is where the admin kubeconfig comes from, since the cluster has
+    no other management path."""
     for h in HOSTS:
         for vm in h.vms:
             if vm.bootstrap:
@@ -192,14 +216,29 @@ def bootstrap_ip() -> str:
 
 
 def fetch_kubeconfig() -> str:
+    """Fetch the admin kubeconfig from the bootstrap node.
+
+    Refuses output that does not look like a kubeconfig: a zero exit with junk on
+    stdout would otherwise be written to both hypervisors and fail the nightly
+    health gate with something unrelated-looking."""
     ip = bootstrap_ip()
     result = subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            f"{ADMIN_USER}@{ip}", "sudo k0s kubeconfig admin",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            f"{ADMIN_USER}@{ip}",
+            "sudo k0s kubeconfig admin",
         ],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0 or "server:" not in result.stdout:
         raise RuntimeError(f"could not fetch kubeconfig from {ip}: {result.stderr}")
@@ -228,9 +267,15 @@ def ntfy_topic() -> str | None:
 
 
 def deploy(host: Host, kubeconfig: str) -> None:
+    """Install the nightly-update machinery on one hypervisor.
+
+    Builds the complete file plan first, then hands it to apply() so every
+    privileged action happens in a single sudo."""
     peer = peer_of(host)
     if peer is None:
-        print(f"[{host.name}] SKIP: no peer hypervisor — the reboot safety gate needs one")
+        print(
+            f"[{host.name}] SKIP: no peer hypervisor — the reboot safety gate needs one"
+        )
         return
 
     print(f"=== {host.name} (peer: {peer.name}) ===")
@@ -252,28 +297,43 @@ def deploy(host: Host, kubeconfig: str) -> None:
     )
 
     files: list[tuple[bytes, str, int]] = [
-        ((REPO / "hypervisor-update.sh").read_bytes(),
-         "usr/local/bin/hypervisor-update.sh", 0o755),
-        ((REPO / "hypervisor-uncordon.sh").read_bytes(),
-         "usr/local/bin/hypervisor-uncordon.sh", 0o755),
-        ((REPO / "notify.sh").read_bytes(),
-         "usr/local/bin/homelab-notify.sh", 0o755),
+        (
+            (REPO / "hypervisor-update.sh").read_bytes(),
+            "usr/local/bin/hypervisor-update.sh",
+            0o755,
+        ),
+        (
+            (REPO / "hypervisor-uncordon.sh").read_bytes(),
+            "usr/local/bin/hypervisor-uncordon.sh",
+            0o755,
+        ),
+        ((REPO / "notify.sh").read_bytes(), "usr/local/bin/homelab-notify.sh", 0o755),
         # Cluster credentials for the health gate. Root-only: it's cluster-admin.
         (kubeconfig.encode(), "etc/homelab/kubeconfig", 0o600),
         (env.encode(), "etc/homelab/update.env", 0o644),
     ]
 
-    for unit in ("hypervisor-update.service", "hypervisor-update.timer",
-                 "hypervisor-uncordon.service",
-                 "hypervisor-update-notify.service"):
-        files.append(((REPO / "systemd" / unit).read_bytes(),
-                      f"etc/systemd/system/{unit}", 0o644))
+    for unit in (
+        "hypervisor-update.service",
+        "hypervisor-update.timer",
+        "hypervisor-uncordon.service",
+        "hypervisor-update-notify.service",
+    ):
+        files.append(
+            (
+                (REPO / "systemd" / unit).read_bytes(),
+                f"etc/systemd/system/{unit}",
+                0o644,
+            )
+        )
 
     # 0600 and separate from update.env: that file is world-readable and holds
     # nothing sensitive, while the ntfy topic is a publish capability.
     topic = ntfy_topic()
     if topic:
-        files.append((f"NTFY_TOPIC={topic}\n".encode(), "etc/homelab/notify.env", 0o600))
+        files.append(
+            (f"NTFY_TOPIC={topic}\n".encode(), "etc/homelab/notify.env", 0o600)
+        )
     else:
         print(f"[{host.name}] WARNING: no NTFY_TOPIC found (env or ~/homelab/.env).")
         print(f"[{host.name}]          hypervisor-update failures will NOT notify.")
@@ -283,6 +343,10 @@ def deploy(host: Host, kubeconfig: str) -> None:
 
 
 def main() -> None:
+    """Deploy to every hypervisor, fetching the kubeconfig once.
+
+    Fetched once rather than per host so both machines get byte-identical
+    credentials — two fetches could straddle a cluster change."""
     kubeconfig = fetch_kubeconfig()
     for host in HOSTS:
         deploy(host, kubeconfig)

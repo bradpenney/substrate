@@ -1,0 +1,87 @@
+# pylint configuration. The gate is 10.00/10, so every disable here is a
+# deliberate, justified decision rather than noise suppression.
+#
+# The rule applied throughout: disable a check only where the code is RIGHT and
+# pylint's model of it is wrong. Anything pylint found that was a genuine defect
+# was fixed in the source, not silenced here.
+
+[MAIN]
+# The CLIs are executable scripts with hyphens in their names — `jit-admin.py`,
+# `create-client-cert.py`. They are invoked as commands, never imported as
+# modules, so the filename is a UX decision and not an identifier.
+ignore-patterns =
+
+[MESSAGES CONTROL]
+disable =
+# --- structural: the dual shell/Python entry point --------------------------
+# gate.py and provision.py begin with
+#     #!/bin/sh
+#     "exec" "$(cd $(dirname $0); pwd)/.venv/bin/python3" "-u" "$0" "$@"
+# which is simultaneously a valid shell command and a valid Python string
+# expression. It is what lets these run as ./gate.py without the caller knowing
+# where the venv is. pylint sees a stray string followed by late imports.
+    pointless-string-statement,
+    wrong-import-position,
+
+# --- structural: hyphenated CLI filenames -----------------------------------
+# `create-client-cert.py` cannot be a module name, and is never imported as one.
+    invalid-name,
+
+# --- deliberate: a check that crashes must not hide the others --------------
+# posture-check.py wraps each invariant in `except Exception` ON PURPOSE. One
+# check raising must be recorded and the remaining invariants still evaluated,
+# or a single bug silences the whole monitor. Narrowing this would defeat it.
+    broad-exception-caught,
+
+# --- deliberate: lazy and local imports -------------------------------------
+# Imports inside functions here are avoiding import cycles or keeping a heavy
+# dependency out of the startup path of a script that may not need it.
+    import-outside-toplevel,
+
+# --- shape of the code, not a defect ----------------------------------------
+# These are provisioning scripts: a function that builds a cloud-config or walks
+# a fleet legitimately has many branches and locals. Splitting them to satisfy a
+# counter would make them harder to follow, not easier.
+    too-many-lines,
+    too-many-locals,
+    too-many-branches,
+    too-many-return-statements,
+    too-many-nested-blocks,
+    too-many-statements,
+    too-many-arguments,
+    too-many-positional-arguments,
+
+# --- duplicate-code ---------------------------------------------------------
+# The two bootstrap implementations are SUPPOSED to look alike; check_render.py
+# asserts they produce byte-identical output. Flagging that similarity as a
+# defect inverts the design.
+    duplicate-code,
+
+# --- line length is black's job -------------------------------------------
+# black formats this repo at 88 and deliberately does NOT split string
+# literals, so the remaining long lines are all message strings it chose to
+# leave alone. Having two tools disagree about the same property means one of
+# them must yield, and the formatter is the one that can actually fix it.
+    line-too-long,
+
+# --- pytest idioms, for tests/ ---------------------------------------------
+# pylint resolves ONE rcfile per run, so the test rules live here rather than in
+# tests/.pylintrc (which was silently ignored and left tests at 7.25/10).
+#
+# A fixture argument intentionally shadows the fixture function's name — that is
+# how pytest injects it, and there is no way to write a fixture without it.
+    redefined-outer-name,
+# Tests deliberately exercise private helpers: _unhealthy_pods, _find_kubectl,
+# _validate. Those ARE the units under test; refusing to touch them would mean
+# testing only the public surface of scripts that barely have one.
+    protected-access,
+# Stub callables must match the signature of what they replace, which usually
+# means accepting arguments they ignore.
+    unused-argument,
+
+[REPORTS]
+score = yes
+
+[FORMAT]
+# Matches black, which formats this repo.
+max-line-length = 88

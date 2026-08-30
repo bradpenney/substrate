@@ -29,12 +29,12 @@ from pathlib import Path
 
 try:
     import yaml
-except ImportError:  # pragma: no cover
+except ImportError as e:  # pragma: no cover
     raise SystemExit(
         "PyYAML is required. Use the repo venv:\n"
         "  python3 -m venv .venv && .venv/bin/pip install ansible-core\n"
         "  .venv/bin/python3 provision.py"
-    )
+    ) from e
 
 REPO_ROOT = Path(__file__).resolve().parent
 # site.yml normally lives beside the code, but a DEPLOYED copy (the auto-roll
@@ -60,12 +60,17 @@ def load_versions() -> dict:
     distinction was drawn.
     """
     if not VERSIONS_FILE.is_file():
-        raise SystemExit(f"Missing {VERSIONS_FILE} — pinned versions live there, not in site.yml")
+        raise SystemExit(
+            f"Missing {VERSIONS_FILE} — pinned versions live there, not in site.yml"
+        )
     return yaml.safe_load(VERSIONS_FILE.read_text())
 
 
 def load() -> dict:
-    """Read and validate site.yml, merged with the pinned versions."""
+    """Load and validate site.yml.
+
+    Validation happens here rather than at first use so a malformed config
+    fails immediately, not after the ISO has downloaded and two VMs exist."""
     if not SITE_FILE.is_file():
         raise SystemExit(
             f"No site configuration found at {SITE_FILE}.\n"
@@ -74,19 +79,22 @@ def load() -> dict:
             f"  It holds your addresses and usernames, and is gitignored."
         )
 
-    cfg = yaml.safe_load(SITE_FILE.read_text())
+    cfg = yaml.safe_load(SITE_FILE.read_text(encoding="utf-8"))
     versions = load_versions()
 
     # Pinned versions are merged in so callers see one config object, but they
     # come from a different (committed) file — see load_versions().
     cfg["kairos"] = versions["kairos"]
-    cfg.setdefault("flux", {}).update({
-        "operator_version": versions["flux_operator"]["version"],
-        "operator_sha256": versions["flux_operator"]["sha256"],
-        "operator_url": versions["flux_operator"]["url"].format(
-            version=versions["flux_operator"]["version"]),
-        "distribution_version": versions["flux_distribution"]["version"],
-    })
+    cfg.setdefault("flux", {}).update(
+        {
+            "operator_version": versions["flux_operator"]["version"],
+            "operator_sha256": versions["flux_operator"]["sha256"],
+            "operator_url": versions["flux_operator"]["url"].format(
+                version=versions["flux_operator"]["version"]
+            ),
+            "distribution_version": versions["flux_distribution"]["version"],
+        }
+    )
 
     _validate(cfg)
     return cfg
@@ -99,8 +107,15 @@ def _validate(cfg: dict) -> None:
     two VMs exist is a genuinely annoying failure mode, so the shape is checked
     up front.
     """
-    for key in ("admin_user", "network", "hypervisors", "nodes", "defaults",
-                "k0s", "libvirt"):
+    for key in (
+        "admin_user",
+        "network",
+        "hypervisors",
+        "nodes",
+        "defaults",
+        "k0s",
+        "libvirt",
+    ):
         if key not in cfg:
             raise SystemExit(f"site.yml is missing the top-level '{key}' section")
 
@@ -157,8 +172,10 @@ def _validate(cfg: dict) -> None:
     # Warn rather than fail — it's the operator's cluster.
     count = len(cfg["nodes"])
     if count % 2 == 0:
-        print(f"site.yml WARNING: {count} nodes is an EVEN count. etcd wants an "
-              f"odd number for clean quorum — consider {count - 1} or {count + 1}.")
+        print(
+            f"site.yml WARNING: {count} nodes is an EVEN count. etcd wants an "
+            f"odd number for clean quorum — consider {count - 1} or {count + 1}."
+        )
 
     for name, node in cfg["nodes"].items():
         hv = node.get("hypervisor")
@@ -208,11 +225,12 @@ def resolve_ssh_public_key() -> str:
             f"  set ${SSH_PUBLIC_KEY_FILE_ENV} to a different .pub file, or\n"
             f"  generate one: ssh-keygen -t ed25519"
         )
-    key = path.read_text().strip()
+    key = path.read_text(encoding="utf-8").strip()
     # Fail loudly rather than baking a private key or junk into every node's
     # authorized_keys, where it surfaces much later as "SSH just doesn't work"
     # on a freshly built cluster.
-    if not key.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-",
-                           "sk-ssh-", "sk-ecdsa-")):
+    if not key.startswith(
+        ("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-")
+    ):
         raise SystemExit(f"{path} does not look like an SSH public key: {key[:40]!r}")
     return key

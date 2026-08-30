@@ -23,7 +23,9 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / ".github/scripts/select_kairos_asset.py"
+SCRIPT = (
+    Path(__file__).resolve().parent.parent / ".github/scripts/select_kairos_asset.py"
+)
 
 
 def iso(k0s: str, flavour: str = "kairos-hadron-v0.5.1-standard-amd64-generic") -> str:
@@ -35,7 +37,10 @@ def run(assets, current_url):
     release = {"assets": [{"browser_download_url": u} for u in assets]}
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--current-url", current_url],
-        input=json.dumps(release), capture_output=True, text=True,
+        input=json.dumps(release),
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -101,8 +106,15 @@ def test_ignores_non_iso_assets():
 def test_survives_control_characters_in_the_release_body():
     """GitHub release bodies contain raw control characters that Python's strict
     JSON parser rejects but jq tolerates — hence strict=False."""
-    release = {"body": "notes\x07with\x01control chars",
-               "assets": [{"browser_download_url": iso("1.36.4")}]}
-    r = subprocess.run([sys.executable, str(SCRIPT), "--current-url", CURRENT],
-                       input=json.dumps(release), capture_output=True, text=True)
+    release = {
+        "body": "notes\x07with\x01control chars",
+        "assets": [{"browser_download_url": iso("1.36.4")}],
+    }
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "--current-url", CURRENT],
+        input=json.dumps(release),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert r.returncode == 0, r.stderr

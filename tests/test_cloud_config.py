@@ -29,11 +29,13 @@ def test_cosign_identity_regex_keeps_its_double_backslashes(joining_vm):
     match silently widens — a supply-chain control that still reports healthy.
     """
     out = provision.render_cloud_config(joining_vm, "TEST-TOKEN")
-    identity_lines = [l for l in out.splitlines() if "matchOIDCIdentity" in l or "issuer:" in l]
+    identity_lines = [
+        l for l in out.splitlines() if "matchOIDCIdentity" in l or "issuer:" in l
+    ]
     assert identity_lines, "no OIDC identity pinning found in the rendered config"
-    assert any("\\." in l for l in identity_lines), (
-        "issuer regex lost its escaped dots — the identity match has widened"
-    )
+    assert any(
+        "\\." in l for l in identity_lines
+    ), "issuer regex lost its escaped dots — the identity match has widened"
 
 
 def test_join_token_is_written_via_stages_not_write_files(joining_vm):
@@ -67,11 +69,15 @@ def test_stages_permissions_are_unquoted_octal(joining_vm):
     contradictory rules — so assert the one this file actually uses.
     """
     out = provision.render_cloud_config(joining_vm, "TEST-TOKEN")
-    perms = [l.strip() for l in out.splitlines() if l.strip().startswith("permissions:")]
+    perms = [
+        l.strip() for l in out.splitlines() if l.strip().startswith("permissions:")
+    ]
     assert perms, "no permissions entries rendered"
     for line in perms:
         value = line.split("permissions:", 1)[1].strip()
-        assert not value.startswith(("\"", "'")), f"quoted permission would be ignored: {line}"
+        assert not value.startswith(
+            ('"', "'")
+        ), f"quoted permission would be ignored: {line}"
 
 
 def test_secret_files_are_not_world_readable(joining_vm):
@@ -126,9 +132,8 @@ def test_k0s_autopilot_pod_security_is_declared_in_the_k0s_stack(joining_vm):
     assert body is not None, "the namespace-labels stack was not rendered"
     labels = body["metadata"]["labels"]
     assert body["kind"] == "Namespace" and body["metadata"]["name"] == "k0s-autopilot"
-    assert labels["pod-security.kubernetes.io/enforce"] == "privileged", (
-        "autopilot updates node binaries and needs host access, like kube-system"
-    )
+    assert (
+        labels["pod-security.kubernetes.io/enforce"] == "privileged"
+    ), "autopilot updates node binaries and needs host access, like kube-system"
     assert labels["pod-security.kubernetes.io/warn"] == "baseline"
     assert labels["pod-security.kubernetes.io/audit"] == "baseline"
-

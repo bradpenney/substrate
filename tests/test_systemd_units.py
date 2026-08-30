@@ -64,9 +64,9 @@ def test_onfailure_is_declared_in_the_unit_section(repo_root):
     for unit in _units(repo_root):
         secs = _sections(unit)
         in_service = [v for k, v in secs.get("Service", []) if k == "OnFailure"]
-        assert not in_service, (
-            f"{unit.name}: OnFailure in [Service] is ignored by systemd — move it to [Unit]"
-        )
+        assert (
+            not in_service
+        ), f"{unit.name}: OnFailure in [Service] is ignored by systemd — move it to [Unit]"
 
 
 def test_onfailure_targets_are_shipped_by_this_repo(repo_root):
@@ -77,9 +77,9 @@ def test_onfailure_targets_are_shipped_by_this_repo(repo_root):
         for key, value in _sections(unit).get("Unit", []):
             if key == "OnFailure":
                 for target in value.split():
-                    assert target in names, (
-                        f"{unit.name}: OnFailure={target} is not shipped by this repo"
-                    )
+                    assert (
+                        target in names
+                    ), f"{unit.name}: OnFailure={target} is not shipped by this repo"
 
 
 def test_fleet_wide_units_do_not_reference_the_homelab_checkout(repo_root):
@@ -106,9 +106,9 @@ def test_admin_user_stays_a_placeholder(repo_root):
     body = unit.read_text()
     for key, value in _sections(unit).get("Service", []):
         if key in ("User", "Group"):
-            assert value == "__ADMIN_USER__", (
-                f"auto-roll.service {key}={value} — a real identity leaked into the repo"
-            )
+            assert (
+                value == "__ADMIN_USER__"
+            ), f"auto-roll.service {key}={value} — a real identity leaked into the repo"
 
 
 def test_units_that_retry_also_bound_their_retries(repo_root):
@@ -116,10 +116,12 @@ def test_units_that_retry_also_bound_their_retries(repo_root):
     permanent fault, and each entry into the failed state fires OnFailure again."""
     for unit in _units(repo_root):
         secs = _sections(unit)
-        restarts = [v for k, v in secs.get("Service", []) if k == "Restart" and v != "no"]
+        restarts = [
+            v for k, v in secs.get("Service", []) if k == "Restart" and v != "no"
+        ]
         if not restarts:
             continue
         unit_keys = {k for k, _ in secs.get("Unit", [])}
-        assert "StartLimitBurst" in unit_keys, (
-            f"{unit.name}: Restart={restarts[0]} without StartLimitBurst is unbounded"
-        )
+        assert (
+            "StartLimitBurst" in unit_keys
+        ), f"{unit.name}: Restart={restarts[0]} without StartLimitBurst is unbounded"

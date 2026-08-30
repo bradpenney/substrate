@@ -11,7 +11,6 @@ import time
 
 import deploy_updates
 
-
 FILES = [
     (b"#!/bin/bash\necho hi\n", "usr/local/bin/thing.sh", 0o755),
     (b"NTFY_TOPIC=fake\n", "etc/homelab/notify.env", 0o600),
@@ -64,7 +63,9 @@ def test_modes_survive_a_real_extraction():
         subprocess.run(["tar", "-xzpf", "-", "-C", d], input=blob, check=True)
         for _, arcname, mode in FILES:
             actual = os.stat(os.path.join(d, arcname)).st_mode & 0o777
-            assert actual == mode, f"{arcname}: extracted {oct(actual)}, expected {oct(mode)}"
+            assert (
+                actual == mode
+            ), f"{arcname}: extracted {oct(actual)}, expected {oct(mode)}"
 
 
 def test_ntfy_topic_prefers_the_environment(monkeypatch):

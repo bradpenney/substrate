@@ -80,10 +80,22 @@ SYSTEM_NAMESPACES = ["kube-system"]
 
 
 def all_vms() -> list[tuple[provision.Host, provision.VM]]:
+    """Every (host, vm) pair in the fleet, flattened.
+
+    Most gate operations act on VMs but need the host to reach them — libvirt
+    lives on the hypervisor, not the node. Returning pairs keeps that
+    association explicit rather than looking the host up again at each call
+    site and getting it wrong once."""
     return [(h, v) for h in HOSTS for v in h.vms]
 
 
 def bootstrap_vm() -> provision.VM:
+    """The VM that forms the cluster.
+
+    It comes up first and alone; every other node joins using a token minted
+    from it. This matters only during the INITIAL build — once the cluster is
+    formed all five are equal controllers, and losing the bootstrap node is no
+    different from losing any other."""
     return provision.find_bootstrap()[1]
 
 
@@ -97,11 +109,22 @@ def kubectl(args: str, timeout: int = 60) -> subprocess.CompletedProcess:
     """
     return subprocess.run(
         [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            f"{provision.ADMIN_USER}@{bootstrap_vm().static_ip}", f"sudo k0s kubectl {args}",
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            f"{provision.ADMIN_USER}@{bootstrap_vm().static_ip}",
+            f"sudo k0s kubectl {args}",
         ],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
 
 
@@ -126,8 +149,10 @@ def orphaned_vms() -> list:
     found = []
     for host in provision.HOSTS:
         res = provision.run(
-            host, ["virsh", "-c", "qemu:///system", "list", "--all", "--name"],
-            check=False)
+            host,
+            ["virsh", "-c", "qemu:///system", "list", "--all", "--name"],
+            check=False,
+        )
         for line in (getattr(res, "stdout", "") or "").splitlines():
             name = line.strip()
             # Only ever consider names this tooling could have created; never
@@ -185,10 +210,16 @@ def wipe(dry_run: bool = False) -> None:
         if not dry_run:
             for host, name in orphans:
                 print(f"  destroying orphan {name} on {host.name}...")
-                provision.run(host, ["virsh", "-c", "qemu:///system", "destroy", name],
-                              check=False)
-                provision.run(host, ["virsh", "-c", "qemu:///system", "undefine",
-                                     name, "--nvram"], check=False)
+                provision.run(
+                    host,
+                    ["virsh", "-c", "qemu:///system", "destroy", name],
+                    check=False,
+                )
+                provision.run(
+                    host,
+                    ["virsh", "-c", "qemu:///system", "undefine", name, "--nvram"],
+                    check=False,
+                )
         print()
 
     for host, vm in all_vms():
@@ -223,8 +254,12 @@ def wipe(dry_run: bool = False) -> None:
     for _, vm in all_vms():
         print(f"  {'would clear' if dry_run else 'clearing'} {vm.static_ip}")
         if not dry_run:
-            subprocess.run(["ssh-keygen", "-R", vm.static_ip],
-                           capture_output=True, text=True)
+            subprocess.run(
+                ["ssh-keygen", "-R", vm.static_ip],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
     if dry_run:
         print("\nDRY RUN — nothing was changed.")
@@ -281,14 +316,38 @@ def _check_apiserver_tunnel() -> bool:
     """
     print("--- api-server -> pod tunnel (every controller) ---")
     pod = subprocess.run(
-        ["kubectl", "-n", "kube-system", "get", "pods",
-         "-l", "k8s-app=kube-dns", "-o", "jsonpath={.items[0].metadata.name}"],
-        capture_output=True, text=True, timeout=60).stdout.strip()
+        [
+            "kubectl",
+            "-n",
+            "kube-system",
+            "get",
+            "pods",
+            "-l",
+            "k8s-app=kube-dns",
+            "-o",
+            "jsonpath={.items[0].metadata.name}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    ).stdout.strip()
     if not pod:
         pod = subprocess.run(
-            ["kubectl", "-n", "kube-system", "get", "pods",
-             "-o", "jsonpath={.items[0].metadata.name}"],
-            capture_output=True, text=True, timeout=60).stdout.strip()
+            [
+                "kubectl",
+                "-n",
+                "kube-system",
+                "get",
+                "pods",
+                "-o",
+                "jsonpath={.items[0].metadata.name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        ).stdout.strip()
     if not pod:
         print("  no kube-system pod to probe with")
         return False
@@ -296,9 +355,21 @@ def _check_apiserver_tunnel() -> bool:
     ok = True
     for _, vm in sorted(all_vms(), key=lambda x: x[1].static_ip):
         r = subprocess.run(
-            ["kubectl", f"--server=https://{vm.static_ip}:6443",
-             "-n", "kube-system", "logs", pod, "--tail=1", "--limit-bytes=256"],
-            capture_output=True, text=True, timeout=60)
+            [
+                "kubectl",
+                f"--server=https://{vm.static_ip}:6443",
+                "-n",
+                "kube-system",
+                "logs",
+                pod,
+                "--tail=1",
+                "--limit-bytes=256",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
         if r.returncode == 0:
             print(f"  [ok  ] {vm.name:<8} {vm.static_ip}")
         else:
@@ -319,10 +390,16 @@ def _check_apiserver_tunnel() -> bool:
 # Keep this list SHORT and only for things whose absence breaks the platform —
 # it is a gate, not an inventory.
 REQUIRED_EXTERNAL_SECRETS = [
-    ("cert-manager", "cloudflare-api-token",
-     "cert-manager cannot solve DNS-01 — NO certificate will ever issue"),
-    ("pv-backup", "rclone-config",
-     "the PV backup CronJobs cannot reach the remote — NO backup will run"),
+    (
+        "cert-manager",
+        "cloudflare-api-token",
+        "cert-manager cannot solve DNS-01 — NO certificate will ever issue",
+    ),
+    (
+        "pv-backup",
+        "rclone-config",
+        "the PV backup CronJobs cannot reach the remote — NO backup will run",
+    ),
 ]
 
 
@@ -359,7 +436,11 @@ def _check_required_secrets() -> bool:
     for ns, name, why in REQUIRED_EXTERNAL_SECRETS:
         r = subprocess.run(
             ["kubectl", "-n", ns, "get", "externalsecret", name, "-o", "json"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
         if r.returncode != 0:
             ok = False
             print(f"  [MISSING] {ns}/{name} — no ExternalSecret")
@@ -369,8 +450,10 @@ def _check_required_secrets() -> bool:
             status = json.loads(r.stdout).get("status") or {}
         except Exception:
             status = {}
-        ready = next((c for c in (status.get("conditions") or [])
-                      if c.get("type") == "Ready"), None)
+        ready = next(
+            (c for c in (status.get("conditions") or []) if c.get("type") == "Ready"),
+            None,
+        )
         if not ready or ready.get("status") != "True":
             ok = False
             reason = (ready or {}).get("reason", "no Ready condition")
@@ -387,6 +470,11 @@ def _check_required_secrets() -> bool:
 
 
 def _check_nodes() -> bool:
+    """Assert every expected node is registered and Ready.
+
+    Checks against the fleet defined in site.yml rather than against whatever
+    happens to be present, so a node that silently never joined is a failure
+    rather than a smaller cluster that looks healthy."""
     expected = [v.name for _, v in all_vms()]
     try:
         provision.wait_for_nodes_ready(bootstrap_vm(), expected)
@@ -549,7 +637,6 @@ def _check_dns() -> bool:
     return resolved
 
 
-
 def _check_flux() -> bool:
     """Assert Flux is actually reconciling, not merely installed.
 
@@ -580,19 +667,31 @@ def _check_flux() -> bool:
         return False
 
     if not items:
-        print("  Flux is installed but has NO Kustomizations — nothing is being reconciled")
+        print(
+            "  Flux is installed but has NO Kustomizations — nothing is being reconciled"
+        )
         return False
 
     deadline = time.time() + PODS_READY_TIMEOUT
     while time.time() < deadline:
-        items = json.loads(kubectl("get kustomization -A -o json").stdout).get("items", [])
+        items = json.loads(kubectl("get kustomization -A -o json").stdout).get(
+            "items", []
+        )
         bad = []
         for k in items:
             name = f"{k['metadata']['namespace']}/{k['metadata']['name']}"
-            ready = next((c for c in k.get("status", {}).get("conditions", [])
-                          if c.get("type") == "Ready"), None)
+            ready = next(
+                (
+                    c
+                    for c in k.get("status", {}).get("conditions", [])
+                    if c.get("type") == "Ready"
+                ),
+                None,
+            )
             if not ready or ready.get("status") != "True":
-                bad.append(f"{name}: {(ready or {}).get('message', 'no Ready condition')[:80]}")
+                bad.append(
+                    f"{name}: {(ready or {}).get('message', 'no Ready condition')[:80]}"
+                )
         if not bad:
             revs = {k["status"].get("lastAppliedRevision", "?") for k in items}
             print(f"  {len(items)} Kustomizations reconciled")
@@ -638,7 +737,7 @@ def rebuild(method: str = "python") -> bool:
     # changing directory.
     if cwd:
         argv = [str(Path(__file__).parent / argv[0])] + argv[1:]
-    result = subprocess.run(argv, cwd=cwd)
+    result = subprocess.run(argv, cwd=cwd, check=False)
     if result.returncode != 0:
         print(f"\nGATE FAILED: {method} bootstrap exited {result.returncode}")
         return False
@@ -651,7 +750,9 @@ def rebuild(method: str = "python") -> bool:
         # run at different times — and compared later without a single command
         # ever destroying the cluster twice.
         save_fingerprint(method)
-        print(f"\nWhen you've done the other method too:  ./gate.py compare python ansible")
+        print(
+            "\nWhen you've done the other method too:  ./gate.py compare python ansible"
+        )
     return ok
 
 
@@ -674,23 +775,32 @@ def cluster_fingerprint() -> dict:
         meta = node.get("metadata", {})
         status = node.get("status", {})
         nodes[meta.get("name")] = {
-            "ready": any(c.get("type") == "Ready" and c.get("status") == "True"
-                         for c in status.get("conditions", [])),
+            "ready": any(
+                c.get("type") == "Ready" and c.get("status") == "True"
+                for c in status.get("conditions", [])
+            ),
             "kubelet_version": status.get("nodeInfo", {}).get("kubeletVersion"),
             "os_image": status.get("nodeInfo", {}).get("osImage"),
             "internal_ip": next(
-                (a.get("address") for a in status.get("addresses", [])
-                 if a.get("type") == "InternalIP"), None),
-            "roles": sorted(k.split("/", 1)[1] for k in meta.get("labels", {})
-                            if k.startswith("node-role.kubernetes.io/")),
+                (
+                    a.get("address")
+                    for a in status.get("addresses", [])
+                    if a.get("type") == "InternalIP"
+                ),
+                None,
+            ),
+            "roles": sorted(
+                k.split("/", 1)[1]
+                for k in meta.get("labels", {})
+                if k.startswith("node-role.kubernetes.io/")
+            ),
         }
     fingerprint["nodes"] = nodes
 
     # Which VM sits on which hypervisor — a cluster that came back with nodes
     # on the wrong hosts would still look healthy to kubectl.
     fingerprint["placement"] = {
-        vm.name: host.name for host, vm in all_vms()
-        if provision.vm_exists(host, vm)
+        vm.name: host.name for host, vm in all_vms() if provision.vm_exists(host, vm)
     }
 
     # Workload identity, not instance identity: DaemonSet/Deployment names and
@@ -705,7 +815,8 @@ def cluster_fingerprint() -> dict:
                 name = item["metadata"]["name"]
                 status = item.get("status", {})
                 workloads[f"{namespace}/{kind}/{name}"] = (
-                    status.get("numberReady") if kind == "daemonsets"
+                    status.get("numberReady")
+                    if kind == "daemonsets"
                     else status.get("readyReplicas")
                 )
     fingerprint["workloads"] = workloads
@@ -722,7 +833,8 @@ def cluster_fingerprint() -> dict:
         try:
             fingerprint["flux_kustomizations"] = sorted(
                 f"{k['metadata']['namespace']}/{k['metadata']['name']}"
-                for k in json.loads(result.stdout).get("items", []))
+                for k in json.loads(result.stdout).get("items", [])
+            )
         except json.JSONDecodeError:
             pass
     # The image pin this cluster was built against. NOT part of the field-by-field
@@ -737,7 +849,8 @@ def cluster_fingerprint() -> dict:
         try:
             fingerprint["flux_sources"] = sorted(
                 f"{o['metadata']['namespace']}/{o['metadata']['name']}={o['spec']['url']}"
-                for o in json.loads(result.stdout).get("items", []))
+                for o in json.loads(result.stdout).get("items", [])
+            )
         except json.JSONDecodeError:
             pass
 
@@ -745,20 +858,38 @@ def cluster_fingerprint() -> dict:
 
 
 def compare_fingerprints(a: dict, b: dict, label_a: str, label_b: str) -> bool:
-    """Report every difference between two cluster end states."""
+    """Report every difference between two cluster end states.
+
+    Reports ALL differences rather than stopping at the first: one fix at a
+    time would hide the rest behind it. Recurses into nested dicts so a change
+    buried in platform.flux.source is as visible as a top-level one.
+
+    Returns True when the states match, which is what makes the two-method
+    rebuild a comparison rather than two independent claims of success."""
     problems = []
 
     def walk(x, y, path=""):
+        """Recurse two fingerprints in parallel, recording every difference.
+
+        Compares the union of keys at each level, so a key present on only one side
+        is reported rather than skipped — that asymmetry is the most important
+        thing this comparison can catch."""
         for key in sorted(set(x) | set(y)):
             where = f"{path}.{key}" if path else key
             if key not in x:
-                problems.append(f"  {where}: absent after {label_a}, present after {label_b}")
+                problems.append(
+                    f"  {where}: absent after {label_a}, present after {label_b}"
+                )
             elif key not in y:
-                problems.append(f"  {where}: present after {label_a}, absent after {label_b}")
+                problems.append(
+                    f"  {where}: present after {label_a}, absent after {label_b}"
+                )
             elif isinstance(x[key], dict) and isinstance(y[key], dict):
                 walk(x[key], y[key], where)
             elif x[key] != y[key]:
-                problems.append(f"  {where}: {label_a}={x[key]!r} vs {label_b}={y[key]!r}")
+                problems.append(
+                    f"  {where}: {label_a}={x[key]!r} vs {label_b}={y[key]!r}"
+                )
 
     walk(a, b)
     if problems:
@@ -773,7 +904,10 @@ FINGERPRINT_DIR = Path(__file__).parent / ".fingerprints"
 
 
 def save_fingerprint(method: str) -> Path:
-    """Record the current cluster's end state, tagged with the method that built it."""
+    """Record the current end state, tagged with the method that built it.
+
+    Written to .fingerprints/<method>.json so `compare` can put two rebuilds
+    side by side long after both have finished."""
     FINGERPRINT_DIR.mkdir(exist_ok=True)
     path = FINGERPRINT_DIR / f"{method}.json"
     path.write_text(json.dumps(cluster_fingerprint(), indent=2, sort_keys=True) + "\n")
@@ -791,8 +925,10 @@ def compare_saved(a: str, b: str) -> bool:
     missing = [str(p) for p in (pa, pb) if not p.exists()]
     if missing:
         print(f"missing fingerprint(s): {', '.join(missing)}", file=sys.stderr)
-        print(f"run: ./gate.py rebuild --yes --method <method>   (saves one each time)",
-              file=sys.stderr)
+        print(
+            "run: ./gate.py rebuild --yes --method <method>   (saves one each time)",
+            file=sys.stderr,
+        )
         return False
     fa, fb = json.loads(pa.read_text()), json.loads(pb.read_text())
 
@@ -803,12 +939,18 @@ def compare_saved(a: str, b: str) -> bool:
     pin_a = fa.pop("_pinned_image_sha256", None)
     pin_b = fb.pop("_pinned_image_sha256", None)
     if pin_a != pin_b:
-        print("REFUSING to compare: the fingerprints were captured against "
-              "DIFFERENT pinned images.", file=sys.stderr)
+        print(
+            "REFUSING to compare: the fingerprints were captured against "
+            "DIFFERENT pinned images.",
+            file=sys.stderr,
+        )
         print(f"  {a}: {pin_a or '<not recorded>'}", file=sys.stderr)
         print(f"  {b}: {pin_b or '<not recorded>'}", file=sys.stderr)
-        print("\nA version bump changes kubelet_version legitimately. Re-run both "
-              "passes on the current pin, then compare.", file=sys.stderr)
+        print(
+            "\nA version bump changes kubelet_version legitimately. Re-run both "
+            "passes on the current pin, then compare.",
+            file=sys.stderr,
+        )
         return False
 
     return compare_fingerprints(fa, fb, a, b)
@@ -825,29 +967,58 @@ def expected_k0s_version() -> str | None:
     first: the `+` arrives as `%2B`.
     """
     import urllib.parse
-    m = re.search(r"k0sv([\d.]+)\+k0s",
-                  urllib.parse.unquote(hosts_module.KAIROS_ISO_URL))
+
+    m = re.search(
+        r"k0sv([\d.]+)\+k0s", urllib.parse.unquote(hosts_module.KAIROS_ISO_URL)
+    )
     return m.group(1) if m else None
 
 
 def node_kubelet_version(name: str) -> str | None:
+    """The kubelet version a node reports, or None if it cannot be queried.
+
+    None is not an error here: the gate polls this while nodes are still
+    joining, and "cannot answer yet" is an expected state."""
     result = kubectl(f"get node {name} -o jsonpath={{.status.nodeInfo.kubeletVersion}}")
     return result.stdout.strip() if result.returncode == 0 else None
 
 
 def healthy_nodes() -> list[str]:
-    """Names of nodes the cluster currently considers Ready."""
+    """Names of nodes the cluster currently considers Ready.
+
+    Goes through provision.node_ready_states, which asks the bootstrap node
+    over SSH rather than using a local kubeconfig — after a wipe there is no
+    local kubeconfig, and a stale one points at a cluster that no longer
+    exists."""
     states = provision.node_ready_states(bootstrap_vm()) or {}
     return sorted(n for n, ready in states.items() if ready)
 
 
 def _etcd_members(vm) -> set:
-    """Member names k0s reports. Empty set on failure (caller treats as unhealthy)."""
+    """Member names etcd reports, or an empty set on failure.
+
+    Empty rather than raising: the caller treats "cannot ask" and "unhealthy"
+    the same way, and during a roll the member being replaced is legitimately
+    unreachable."""
     r = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-         f"{provision.ADMIN_USER}@{vm.static_ip}", "sudo k0s etcd member-list"],
-        capture_output=True, text=True, timeout=45)
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            f"{provision.ADMIN_USER}@{vm.static_ip}",
+            "sudo k0s etcd member-list",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
     if r.returncode != 0:
         return set()
     try:
@@ -889,9 +1060,18 @@ def wait_etcd_healthy(expected_names, timeout: int = 300) -> bool:
             unhealthy = []
             for _, vm in all_vms():
                 r = subprocess.run(
-                    ["kubectl", f"--server=https://{vm.static_ip}:6443",
-                     "get", "--raw", "/healthz/etcd"],
-                    capture_output=True, text=True, timeout=30)
+                    [
+                        "kubectl",
+                        f"--server=https://{vm.static_ip}:6443",
+                        "get",
+                        "--raw",
+                        "/healthz/etcd",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
                 if r.returncode != 0 or "ok" not in r.stdout.lower():
                     unhealthy.append(vm.name)
             if not unhealthy:
@@ -901,8 +1081,11 @@ def wait_etcd_healthy(expected_names, timeout: int = 300) -> bool:
         else:
             missing = want - members
             extra = members - want
-            last = "membership " + (f"missing {', '.join(sorted(missing))}" if missing else "") \
-                   + (f" unexpected {', '.join(sorted(extra))}" if extra else "")
+            last = (
+                "membership "
+                + (f"missing {', '.join(sorted(missing))}" if missing else "")
+                + (f" unexpected {', '.join(sorted(extra))}" if extra else "")
+            )
         time.sleep(10)
     print(f"    etcd did NOT become healthy within {timeout}s — {last}")
     return False
@@ -926,7 +1109,11 @@ def wait_longhorn_healthy(timeout: int = 900) -> bool:
     """
     probe = subprocess.run(
         ["kubectl", "get", "crd", "volumes.longhorn.io"],
-        capture_output=True, text=True, timeout=30)
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
     if probe.returncode != 0:
         return True  # Longhorn not installed — nothing to wait for
 
@@ -934,8 +1121,20 @@ def wait_longhorn_healthy(timeout: int = 900) -> bool:
     last = ""
     while time.time() < deadline:
         r = subprocess.run(
-            ["kubectl", "-n", "longhorn-system", "get", "volumes.longhorn.io",
-             "-o", "json"], capture_output=True, text=True, timeout=60)
+            [
+                "kubectl",
+                "-n",
+                "longhorn-system",
+                "get",
+                "volumes.longhorn.io",
+                "-o",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
         if r.returncode == 0:
             try:
                 items = json.loads(r.stdout).get("items", [])
@@ -955,7 +1154,9 @@ def wait_longhorn_healthy(timeout: int = 900) -> bool:
                             continue
                         bad.append(f"{name}={rob}")
                 if not bad:
-                    print(f"    longhorn healthy — {len(items)} volume(s), no rebuilds in flight")
+                    print(
+                        f"    longhorn healthy — {len(items)} volume(s), no rebuilds in flight"
+                    )
                     return True
                 last = ", ".join(bad[:4])
         time.sleep(15)
@@ -989,7 +1190,9 @@ def roll(target: str | None = None) -> bool:
         print(f"no such node: {target}", file=sys.stderr)
         return False
 
-    print(f"=== rolling {len(targets)} node(s) onto image {hosts_module.KAIROS_ISO_SHA256[:12]}... ===")
+    print(
+        f"=== rolling {len(targets)} node(s) onto image {hosts_module.KAIROS_ISO_SHA256[:12]}... ==="
+    )
     print("    one at a time; cluster health re-verified between each\n")
 
     expected = [v.name for _, v in all_vms()]
@@ -999,10 +1202,14 @@ def roll(target: str | None = None) -> bool:
         ready = healthy_nodes()
         unhealthy = [n for n in expected if n not in ready]
         if unhealthy:
-            print(f"REFUSING to roll {vm.name}: cluster is not fully healthy "
-                  f"(not Ready: {unhealthy})")
-            print("  Rolling into a degraded cluster is how a maintenance window "
-                  "becomes an outage.")
+            print(
+                f"REFUSING to roll {vm.name}: cluster is not fully healthy "
+                f"(not Ready: {unhealthy})"
+            )
+            print(
+                "  Rolling into a degraded cluster is how a maintenance window "
+                "becomes an outage."
+            )
             return False
 
         # The bootstrap node holds no special status once the cluster exists,
@@ -1010,7 +1217,9 @@ def roll(target: str | None = None) -> bool:
         # from the node being replaced.
         donors = [(h, v) for h, v in all_vms() if v.name != vm.name and v.name in ready]
         if not donors:
-            print(f"REFUSING to roll {vm.name}: no other healthy node to mint a token from")
+            print(
+                f"REFUSING to roll {vm.name}: no other healthy node to mint a token from"
+            )
             return False
         donor_host, donor_vm = donors[0]
 
@@ -1035,13 +1244,20 @@ def roll(target: str | None = None) -> bool:
         # ghost costs quorum on the NEXT replacement — the failure that once
         # bricked this cluster outright.
         provision.etcd_prune(donor_host, donor_vm, vm)
-        provision.run(host, ["rm", "-f",
-                             f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso"], check=False)
-        subprocess.run(["ssh-keygen", "-R", vm.static_ip], capture_output=True, text=True)
+        provision.run(
+            host, ["rm", "-f", f"{ISO_POOL_PATH}/{vm.name}-cloudinit.iso"], check=False
+        )
+        subprocess.run(
+            ["ssh-keygen", "-R", vm.static_ip],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
         token = provision.generate_join_token(donor_host, donor_vm)
-        provision.create_vm(host, vm, join_token=token,
-                            bootstrap_pair=(donor_host, donor_vm))
+        provision.create_vm(
+            host, vm, join_token=token, bootstrap_pair=(donor_host, donor_vm)
+        )
 
         print(f"    waiting for {vm.name} to rejoin and the cluster to settle...")
         provision.wait_for_nodes_ready(bootstrap_vm(), expected)
@@ -1054,9 +1270,13 @@ def roll(target: str | None = None) -> bool:
         # failure behind them (etcd) or a predicted one (Longhorn). Neither is
         # optional before touching the NEXT node.
         if not wait_etcd_healthy(expected):
-            print(f"ROLL HALTED: etcd did not return to health after replacing {vm.name}")
+            print(
+                f"ROLL HALTED: etcd did not return to health after replacing {vm.name}"
+            )
             print("  Continuing would remove a second member from a cluster that has")
-            print("  not absorbed the first removal — how the first unattended roll broke.")
+            print(
+                "  not absorbed the first removal — how the first unattended roll broke."
+            )
             return False
 
         if not wait_longhorn_healthy():
@@ -1073,10 +1293,14 @@ def roll(target: str | None = None) -> bool:
         if want:
             got = node_kubelet_version(vm.name)
             if got and want not in got:
-                print(f"ROLL HALTED: {vm.name} came back on kubelet {got}, "
-                      f"but the pinned image carries k0s {want}.")
-                print("  The node was rebuilt from a STALE image — the fleet is "
-                      "NOT patched. Do not continue.")
+                print(
+                    f"ROLL HALTED: {vm.name} came back on kubelet {got}, "
+                    f"but the pinned image carries k0s {want}."
+                )
+                print(
+                    "  The node was rebuilt from a STALE image — the fleet is "
+                    "NOT patched. Do not continue."
+                )
                 return False
             print(f"    {vm.name} verified on k0s {got}")
 
@@ -1091,32 +1315,54 @@ def roll(target: str | None = None) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    """Dispatch the requested subcommand.
+
+    Every destructive path requires --yes explicitly. The gate exists to be run
+    unattended, so a mistyped subcommand must do nothing rather than something
+    plausible."""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_wipe = sub.add_parser("wipe", help="DESTRUCTIVE: destroy the entire fleet")
-    p_wipe.add_argument("--yes", action="store_true", help="required to actually destroy")
-    p_wipe.add_argument("--dry-run", action="store_true", help="show what would be destroyed")
+    p_wipe.add_argument(
+        "--yes", action="store_true", help="required to actually destroy"
+    )
+    p_wipe.add_argument(
+        "--dry-run", action="store_true", help="show what would be destroyed"
+    )
 
     sub.add_parser("verify", help="check cluster health (non-destructive)")
 
     p_rebuild = sub.add_parser("rebuild", help="DESTRUCTIVE: wipe, rebuild, verify")
-    p_rebuild.add_argument("--yes", action="store_true", help="required to actually destroy")
-    p_rebuild.add_argument("--method", choices=sorted(BOOTSTRAP_METHODS), default="python",
-                           help="which bootstrap implementation to rebuild with")
+    p_rebuild.add_argument(
+        "--yes", action="store_true", help="required to actually destroy"
+    )
+    p_rebuild.add_argument(
+        "--method",
+        choices=sorted(BOOTSTRAP_METHODS),
+        default="python",
+        help="which bootstrap implementation to rebuild with",
+    )
 
-    p_cmp = sub.add_parser("compare",
-                           help="compare two saved fingerprints (non-destructive)")
+    p_cmp = sub.add_parser(
+        "compare", help="compare two saved fingerprints (non-destructive)"
+    )
     p_cmp.add_argument("a", choices=sorted(BOOTSTRAP_METHODS))
     p_cmp.add_argument("b", choices=sorted(BOOTSTRAP_METHODS))
 
-    sub.add_parser("fingerprint", help="print the cluster's comparable end state (non-destructive)")
+    sub.add_parser(
+        "fingerprint", help="print the cluster's comparable end state (non-destructive)"
+    )
 
     p_roll = sub.add_parser(
         "roll",
-        help="DESTRUCTIVE (one node at a time): rebuild nodes onto the pinned Kairos image")
-    p_roll.add_argument("--yes", action="store_true", help="required to actually replace nodes")
+        help="DESTRUCTIVE (one node at a time): rebuild nodes onto the pinned Kairos image",
+    )
+    p_roll.add_argument(
+        "--yes", action="store_true", help="required to actually replace nodes"
+    )
     p_roll.add_argument("--node", help="roll only this node (default: the whole fleet)")
 
     args = parser.parse_args()
@@ -1145,7 +1391,10 @@ def main() -> int:
             wipe(dry_run=True)
             return 0
         if not args.yes:
-            print("refusing to wipe without --yes (use --dry-run to preview)", file=sys.stderr)
+            print(
+                "refusing to wipe without --yes (use --dry-run to preview)",
+                file=sys.stderr,
+            )
             return 2
         wipe()
         return 0

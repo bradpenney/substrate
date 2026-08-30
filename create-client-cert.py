@@ -20,6 +20,7 @@ rotated. Two consequences shape everything here:
   - never bind a certificate identity to standing write access. Read-only is
     permanent, write is a separate expiring grant (see jit-admin.py).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,31 +47,53 @@ BREAK_GLASS_CONTEXT = "break-glass"
 
 
 def sh(args: list[str], **kw) -> str:
+    """Run a command and return stdout, exiting with its stderr on failure.
+
+    SystemExit rather than an exception: this is a CLI, and the person running
+    it should see the command that failed, not a traceback."""
     if args and args[0] == "kubectl":
         args = [args[0], f"--context={BREAK_GLASS_CONTEXT}"] + args[1:]
-    r = subprocess.run(args, capture_output=True, text=True, **kw)
+    r = subprocess.run(args, capture_output=True, text=True, **kw, check=False)
     if r.returncode:
         sys.exit(f"command failed: {' '.join(args)}\n{r.stderr.strip()}")
     return r.stdout
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    """Mint a client certificate and write a kubeconfig context for it.
+
+    Refuses forbidden groups before generating anything, because a certificate
+    CANNOT be revoked — Kubernetes implements no CRL and no OCSP, so a mistake
+    here is unfixable short of rotating the cluster CA. Also refuses to
+    overwrite an existing certificate, which would leave a live credential
+    nobody is tracking."""
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("user", help="username; becomes the certificate CN")
-    ap.add_argument("--groups", nargs="*", default=[],
-                    help="O values. system:masters is refused.")
-    ap.add_argument("--days", type=int, default=90,
-                    help="certificate lifetime (default 90; it cannot be revoked)")
+    ap.add_argument(
+        "--groups", nargs="*", default=[], help="O values. system:masters is refused."
+    )
+    ap.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="certificate lifetime (default 90; it cannot be revoked)",
+    )
     ap.add_argument("--out-dir", default=str(Path.home() / ".kube" / "certs"))
-    ap.add_argument("--context", default=None,
-                    help="kubeconfig context to create (default: the username)")
+    ap.add_argument(
+        "--context",
+        default=None,
+        help="kubeconfig context to create (default: the username)",
+    )
     args = ap.parse_args()
 
     bad = FORBIDDEN_GROUPS.intersection(args.groups)
     if bad:
-        sys.exit(f"refusing to issue a certificate in {sorted(bad)}: that group "
-                 f"bypasses RBAC entirely, which is the thing this replaces.")
+        sys.exit(
+            f"refusing to issue a certificate in {sorted(bad)}: that group "
+            f"bypasses RBAC entirely, which is the thing this replaces."
+        )
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -78,16 +101,22 @@ def main() -> int:
     crt_path = out / f"{args.user}.crt"
 
     if crt_path.exists():
-        sys.exit(f"{crt_path} already exists. Move it aside to re-issue "
-                 f"(the old certificate stays valid until it expires).")
+        sys.exit(
+            f"{crt_path} already exists. Move it aside to re-issue "
+            f"(the old certificate stays valid until it expires)."
+        )
 
     # EC P-256: smaller and faster than RSA, universally supported by client-go.
     key = ec.generate_private_key(ec.SECP256R1())
     name_attrs = [x509.NameAttribute(NameOID.COMMON_NAME, args.user)]
-    name_attrs += [x509.NameAttribute(NameOID.ORGANIZATION_NAME, g) for g in args.groups]
-    csr = (x509.CertificateSigningRequestBuilder()
-           .subject_name(x509.Name(name_attrs))
-           .sign(key, hashes.SHA256()))
+    name_attrs += [
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, g) for g in args.groups
+    ]
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name(name_attrs))
+        .sign(key, hashes.SHA256())
+    )
     csr_pem = csr.public_bytes(serialization.Encoding.PEM)
 
     csr_name = f"{args.user}-{int(time.time())}"
@@ -113,33 +142,57 @@ def main() -> int:
 
     cert_b64 = ""
     for _ in range(30):
-        cert_b64 = sh(["kubectl", "get", "csr", csr_name,
-                       "-o", "jsonpath={.status.certificate}"]).strip()
+        cert_b64 = sh(
+            ["kubectl", "get", "csr", csr_name, "-o", "jsonpath={.status.certificate}"]
+        ).strip()
         if cert_b64:
             break
         time.sleep(1)
     if not cert_b64:
-        sys.exit(f"CSR {csr_name} was approved but never signed. Check that the "
-                 f"controller-manager's csrsigning controller is running.")
+        sys.exit(
+            f"CSR {csr_name} was approved but never signed. Check that the "
+            f"controller-manager's csrsigning controller is running."
+        )
 
-    key_path.write_bytes(key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption()))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
     key_path.chmod(0o600)
     crt_path.write_bytes(base64.b64decode(cert_b64))
     sh(["kubectl", "delete", "csr", csr_name])
 
     ctx = args.context or args.user
-    cluster = sh(["kubectl", "config", "view", "--minify",
-                  "-o", "jsonpath={.clusters[0].name}"]).strip()
+    cluster = sh(
+        ["kubectl", "config", "view", "--minify", "-o", "jsonpath={.clusters[0].name}"]
+    ).strip()
     # NOTE: set-credentials/set-context below write to the LOCAL kubeconfig.
     # They are `kubectl config` operations, not API calls, so the break-glass
     # context prefix is harmless -- it selects which entry is read, not who acts.
-    sh(["kubectl", "config", "set-credentials", args.user,
-        f"--client-certificate={crt_path}", f"--client-key={key_path}", "--embed-certs=true"])
-    sh(["kubectl", "config", "set-context", ctx,
-        f"--cluster={cluster}", f"--user={args.user}"])
+    sh(
+        [
+            "kubectl",
+            "config",
+            "set-credentials",
+            args.user,
+            f"--client-certificate={crt_path}",
+            f"--client-key={key_path}",
+            "--embed-certs=true",
+        ]
+    )
+    sh(
+        [
+            "kubectl",
+            "config",
+            "set-context",
+            ctx,
+            f"--cluster={cluster}",
+            f"--user={args.user}",
+        ]
+    )
 
     print(f"\n  certificate: {crt_path}  (valid {args.days} days, NOT revocable)")
     print(f"  private key: {key_path}  (0600)")
