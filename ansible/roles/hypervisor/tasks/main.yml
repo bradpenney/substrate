@@ -57,11 +57,25 @@
 # 0711, so an unprivileged lsattr returns "Permission denied" rather than the
 # flags — which made the idempotency check silently never match, re-running
 # chattr on every single pass.
+#
+# `sudo` goes INSIDE the command rather than using `become: true`. The host
+# grants exactly two narrow NOPASSWD rules and nothing else:
+#     (root) NOPASSWD: /usr/bin/lsattr -d /var/lib/libvirt/images
+#     (root) NOPASSWD: /usr/bin/chattr +C /var/lib/libvirt/images
+# `become: true` wraps the whole task as `sudo /bin/sh -c '...'`, which matches
+# NEITHER rule, so it falls through to a password prompt and dies with
+# "sudo: a password is required". provision.py has always shelled out to
+# `sudo lsattr -d <path>` directly, which matches, and that is why the Python
+# path worked here while the Ansible port did not. Keep the two in the same
+# form. Verified 2026-08-28: this was the ONLY failure in an otherwise clean
+# Ansible rebuild, and it was enough to exit 2 and fail the whole gate.
 - name: Check whether the pool directory is already no-CoW
   ansible.builtin.shell:
-    cmd: "lsattr -d {{ pool_path.stdout }} 2>/dev/null | cut -d' ' -f1"
-  become: true
+    cmd: "sudo -n lsattr -d {{ pool_path.stdout }} 2>/dev/null | cut -d' ' -f1"
   changed_when: false
+  # Non-fatal for the same reason the chattr below is: a missing privilege
+  # costs fragmentation, not correctness, and must not fail a whole rebuild.
+  failed_when: false
   register: nocow_check
   when:
     - pool_needs_nocow | bool
@@ -69,8 +83,7 @@
 
 - name: Set no-CoW on the btrfs pool directory
   ansible.builtin.command:
-    cmd: "chattr +C {{ pool_path.stdout }}"
-  become: true
+    cmd: "sudo -n chattr +C {{ pool_path.stdout }}"
   when:
     - pool_needs_nocow | bool
     - pool_path.stdout | default('') | length > 0

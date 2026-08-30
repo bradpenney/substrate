@@ -255,6 +255,51 @@ PEER = os.environ.get("POSTURE_PEER", "brad@192.168.2.101")
 PEER_UNITS = ["hypervisor-update.service"]
 
 
+def check_selinux() -> None:
+    """Assert SELinux is ENFORCING on both hypervisors, with no escape hatches.
+
+    Both hosts were found already enforcing on 2026-08-29 with a genuinely clean
+    policy — zero permissive domains and zero custom modules — so nothing had to
+    be done. That is exactly why this check exists: nothing was watching it, so a
+    drift to permissive, or a `semanage permissive -a` added to work around one
+    awkward denial, would have gone unnoticed indefinitely.
+
+    Mode alone is not the property. A host can report `enforcing` while
+    individual domains run permissive, which is a per-domain opt-out of the whole
+    control — so the domain count is asserted too.
+    """
+    hosts = [("this host", None), (PEER.split("@")[-1], PEER)]
+    script = (
+        "getenforce; "
+        "semanage permissive -l 2>/dev/null | grep -c '^[a-z]' || echo 0"
+    )
+    for label, target in hosts:
+        if target is None:
+            r = subprocess.run(["bash", "-c", script],
+                               capture_output=True, text=True, timeout=30)
+        else:
+            r = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target,
+                 script], capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not r.stdout.strip():
+            notes.append(f"selinux: {label} unreachable, not checked")
+            continue
+        lines = r.stdout.split()
+        mode = lines[0] if lines else "?"
+        try:
+            permissive = int(lines[1]) if len(lines) > 1 else 0
+        except ValueError:
+            permissive = 0
+        if mode != "Enforcing":
+            failures.append(f"selinux: {label} is {mode}, expected Enforcing")
+        elif permissive:
+            failures.append(
+                f"selinux: {label} is Enforcing but {permissive} domain(s) are "
+                f"permissive — a per-domain opt-out of the control")
+        else:
+            notes.append(f"selinux: {label} enforcing, no permissive domains")
+
+
 def check_peer_units() -> None:
     """Assert the peer hypervisor's maintenance is not silently failing.
 
@@ -407,7 +452,7 @@ def main() -> int:
     for check in (check_pod_security, check_default_deny, check_cluster_admin,
                   check_no_standing_grant, check_admission_policies, check_flux,
                   check_failed_units, check_peer_units, check_source_verified,
-                  check_credentials,
+                  check_credentials, check_selinux,
                   check_origin_lock):
         try:
             check()

@@ -18,3 +18,8 @@ __pycache__/
 # Committed template is site.example.yml — this file never goes to git.
 site.yml
 .dns-migration.env
+
+# pytest / coverage artefacts
+.coverage
+tests/__pycache__/
+.pytest_cache/

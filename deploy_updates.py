@@ -238,6 +238,17 @@ def deploy(host: Host, kubeconfig: str) -> None:
     env = (
         f"PEER_HOST={peer_ssh_target(host, peer)}\n"
         f"KUBECONFIG_PATH=/etc/homelab/kubeconfig\n"
+        # hypervisor-update.sh runs as root under systemd, and root has no SSH
+        # key — deliberately. Peer health checks are read-only, so they run as
+        # the unprivileged admin user who does have one. The script guards this
+        # with ${SSH_USER:?}, so omitting it aborts the nightly update outright:
+        # both hypervisors failed at 03:30 on 2026-08-29 with
+        #   "SSH_USER must be set — the unprivileged account used for peer
+        #    health checks"
+        # after this deploy shipped a newer hypervisor-update.sh than the
+        # update.env writer knew about. tests/test_deploy_env.py now asserts
+        # every ${VAR:?} the shipped scripts require is written here.
+        f"SSH_USER={ADMIN_USER}\n"
     )
 
     files: list[tuple[bytes, str, int]] = [

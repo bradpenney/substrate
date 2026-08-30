@@ -1,5 +1,9 @@
 # substrate
 
+[![tests](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/test.yaml?branch=main&label=tests&logo=pytest&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
+[![shellcheck](https://img.shields.io/badge/shellcheck-style%20clean-4EAA25?logo=gnubash&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
+[![rebuild](https://img.shields.io/badge/destroy%20%26%20rebuild-verified%20both%20methods-success)](#the-gate)
+[![SELinux](https://img.shields.io/badge/SELinux-enforcing-red)](#security-posture)
 [![bump-kairos](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-kairos.yaml?branch=main&label=kairos%20bump&logo=githubactions&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-kairos.yaml)
 [![bump-flux-operator](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-flux-operator.yaml?branch=main&label=flux%20bump&logo=flux&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-flux-operator.yaml)
 [![k0s](https://img.shields.io/badge/k0s-1.36-0F1689?logo=kubernetes&logoColor=white)](https://k0sproject.io)
@@ -97,6 +101,42 @@ python3 -m venv .venv && .venv/bin/pip install ansible-core
 makes it readable; the checksum is what actually makes a rebuild months from now
 install the same bytes. Two scheduled workflows watch upstream and open the bump
 as a change to review, rather than letting `latest` decide.
+
+## Security posture
+
+Every control below is **asserted continuously**, not configured once.
+`posture-check.py` runs on a timer and fails loudly if any of these stops being
+true — 14 invariants at present. The distinction matters: most of the defects
+found while building this were controls that were installed and *not working*.
+
+| Control | How it is enforced |
+|---|---|
+| Pod Security Standards | Every namespace labelled; enforcement asserted, not assumed |
+| Network policy | Default-deny in every namespace |
+| Admission control | ValidatingAdmissionPolicy + CEL, `Deny` for authored namespaces |
+| Cluster admin | No standing `system:masters`. A scoped read-only identity by default; writes are a time-boxed grant that expires on its own |
+| Client certificates | Short-lived, and never bound to standing write access — Kubernetes has no revocation |
+| Secrets at rest | Encrypted with an explicit provider config, not the default plaintext |
+| API audit | Explicit audit policy, retained on disk |
+| Supply chain | Config delivered as a signed OCI artifact; the signature is verified against a pinned OIDC identity, issuer **and** subject |
+| Host OS | SELinux `enforcing` on both hypervisors — zero permissive domains, zero custom modules |
+| Privilege on hosts | No standing `NOPASSWD`. Deployments escalate once, per host, and say so |
+| Ingress | Origin locked so the public path cannot be bypassed |
+
+### What is tested
+
+| Layer | What it proves |
+|---|---|
+| `pytest` | Unit and **regression** tests — every one written against a defect that actually occurred |
+| `shellcheck -S style` | The scripts that run as root on every hypervisor and drain cluster nodes |
+| `check_render.py` | Both bootstrap implementations render byte-identical cloud-config |
+| `ansible --syntax-check` | The second implementation still parses |
+| `gate.py verify` | Six live checks against a real cluster |
+| `gate.py rebuild` + `compare` | The whole thing, from nothing, both ways — end states compared field by field |
+
+The test suite's specification is the bug log. When something breaks, the fix
+ships with the test that would have caught it; tests written against imagined
+failures become decoration, tests written against real ones do not.
 
 ## Design notes
 

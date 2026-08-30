@@ -427,7 +427,11 @@ def _check_system_pods() -> bool:
 
 
 def _unhealthy_pods() -> list[str] | None:
-    """Names of system pods that aren't Running-and-fully-ready.
+    """Names of system workloads that aren't fully rolled out and ready.
+
+    Covers both pods that exist but aren't ready, AND DaemonSets that have not
+    finished scheduling onto every node — the second is not implied by the
+    first.
 
     Returns None if the API can't be reached or parsed — a transient state
     during a rebuild, not a failure. Callers keep polling.
@@ -453,6 +457,39 @@ def _unhealthy_pods() -> list[str] | None:
             total = len(statuses)
             if phase != "Running" or total == 0 or ready != total:
                 bad.append(f"{namespace}/{name} ({phase}, {ready}/{total} ready)")
+
+        # A DaemonSet that has not finished SCHEDULING passes the loop above,
+        # because that loop only asks whether the pods which EXIST are ready.
+        # Four ready konnectivity-agents with the fifth not yet created reads as
+        # "all system pods Running and ready" — and the fingerprint taken
+        # immediately afterwards then records numberReady=4.
+        #
+        # That is exactly what happened on 2026-08-28: `gate.py compare python
+        # ansible` reported
+        #     konnectivity-agent: python=4 vs ansible=5
+        # on two rebuilds that were both correct and both settled at 5/5. A
+        # comparison that reports differences at random is worse than no
+        # comparison, so the readiness gate has to wait for the full rollout.
+        result = kubectl(f"get daemonsets -n {namespace} -o json")
+        if result.returncode != 0:
+            return None
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        for ds in payload.get("items", []):
+            name = ds.get("metadata", {}).get("name", "<unnamed>")
+            status = ds.get("status", {})
+            desired = status.get("desiredNumberScheduled")
+            ready = status.get("numberReady")
+            # `desired` is 0 before the controller has observed the DaemonSet at
+            # all; treat that as "not settled yet" rather than as satisfied.
+            if desired is None or ready is None or desired == 0 or ready != desired:
+                bad.append(
+                    f"{namespace}/daemonset/{name} "
+                    f"({ready if ready is not None else '?'}/"
+                    f"{desired if desired is not None else '?'} scheduled-and-ready)"
+                )
     return bad
 
 
