@@ -51,6 +51,19 @@ jobs:
           python -m pytest tests/ -v \
             --cov --cov-report=term --cov-report=json:coverage.json
 
+      - name: Golden cloud-config is byte-exact and carries no real identity
+        # Belt and braces: the goldens are asserted by the suite above, but this
+        # step runs the generator's own --check so a CI log shows WHICH archetype
+        # drifted and by how much, without anyone re-running pytest locally to
+        # find out. It also fails if a golden was captured while the two
+        # renderers disagreed (ADR-093).
+        #
+        # No env block: regenerate.py FORCES the fixture and a fixed key rather
+        # than defaulting to them, because a golden rendered from a real
+        # site.yml would write real addresses into a committed file. Setting
+        # them here would look load-bearing and be ignored.
+        run: python3 tests/golden/regenerate.py --check
+
       - name: Coverage gate (95% per logic module)
         # Per module, not one global number. Driving the orchestration modules
         # to 95% would mean stubbing a hypervisor and asserting the code calls
@@ -106,6 +119,44 @@ jobs:
           git add coverage.svg
           git commit -m "logic coverage: ${PCT}%"
           git push origin HEAD:main
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        # rust-toolchain.toml pins the channel and the musl target. Pinned for
+        # the same reason every other version here is: a rebuild months from now
+        # must produce the same binary.
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy (warnings are errors)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Build
+        run: cargo build --release
+      - name: Static musl binary
+        # The whole distribution story (ADR-093) rests on this linking
+        # statically. Asserting it here rather than trusting the target name:
+        # a dynamically linked artifact would still run on the builder and fail
+        # on a Kairos node, which is the worst place to find out.
+        run: |
+          set -euo pipefail
+          cargo build --release --target x86_64-unknown-linux-musl
+          BIN=target/x86_64-unknown-linux-musl/release/substrate
+          file "$BIN" | grep -q "statically linked" || {
+            echo "::error::$BIN is not statically linked"; file "$BIN"; exit 1; }
+      - name: Test — the renderer reproduces every golden
+        # The acceptance criterion for Wave 0 of the port. Rust-native: no
+        # Python in the loop, because `cargo test` has to stand on its own once
+        # Python goes.
+        run: cargo test --workspace
+      - name: Test on musl
+        # The musl build is what actually ships. Running the suite against it
+        # too would catch a renderer that differed by libc — unlikely in pure
+        # Rust, and cheap enough to prove rather than assume.
+        run: cargo test --workspace --target x86_64-unknown-linux-musl
 
   lint:
     name: lint & format

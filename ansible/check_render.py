@@ -74,7 +74,10 @@ def compare(label: str, vm: py.VM, join_token: str | None) -> bool:
         hostvars["storage_disk_gb"] = vm.storage_disk_gb
     actual = render_jinja(vm.name, vm.static_ip, join_token, hostvars)
     if expected == actual:
-        print(f"  [ok ] {label}: byte-identical ({len(actual)} bytes)")
+        # len() on a str counts CHARACTERS. The cloud-config carries 16
+        # multi-byte characters, so the figure was consistently 16 short of
+        # what any other tool reports for the same file.
+        print(f"  [ok ] {label}: byte-identical ({len(actual.encode())} bytes)")
         return True
     print(f"  [BUG] {label}: OUTPUT DIFFERS")
     for line in difflib.unified_diff(

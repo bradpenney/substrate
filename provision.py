@@ -793,8 +793,8 @@ stages:
                         verify:
                           provider: cosign
                           matchOIDCIdentity:
-                            - issuer: "^https://token\\\\.actions\\\\.githubusercontent\\\\.com$"
-                              subject: "^https://github\\\\.com/bradpenney/substrate_config/\\\\.github/workflows/publish\\\\.yaml@refs/heads/main$"
+                            - issuer: "{flux.cosign_issuer}"
+                              subject: "{flux.cosign_subject}"
               sync:
                 kind: OCIRepository
                 url: oci://{flux.oci_repository}

@@ -30,6 +30,9 @@ a 200 means shields answered, not that it answered with a status.
 [![Kairos](https://img.shields.io/badge/Kairos-v4.2.0-6E4AFF)](https://kairos.io)
 [![Flux](https://img.shields.io/badge/GitOps-Flux%20via%20OCI-5468FF?logo=flux&logoColor=white)](https://fluxcd.io)
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Rust](https://img.shields.io/badge/Rust-1.98%20%C2%B7%20static%20musl-000000?logo=rust&logoColor=white)](crates/)
+[![rustfmt](https://img.shields.io/badge/rustfmt-clean-000000?logo=rust&logoColor=white)](rust-toolchain.toml)
+[![clippy](https://img.shields.io/badge/clippy-warnings%20are%20errors-000000?logo=rust&logoColor=white)](rust-toolchain.toml)
 [![pydantic](https://img.shields.io/badge/config-typed%20with%20pydantic-E92063?logo=pydantic&logoColor=white)](models.py)
 [![Ansible](https://img.shields.io/badge/Ansible-core-EE0000?logo=ansible&logoColor=white)](https://ansible.com)
 [![Licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
@@ -161,10 +164,10 @@ failures become decoration, tests written against real ones do not.
 
 **The coverage badge says "logic coverage" deliberately.** It measures lines
 executed by `pytest`, which is not the same as how much of this system is
-tested. `posture-check.py` reads 0% and runs nightly against a live cluster;
-`gate.py` reads 18% and is exercised end to end by every rebuild; the static
-rules over the systemd units contribute nothing to the number and catch defects
-that shipped. Most of what is uncovered drives real hosts over ssh and kubectl,
+tested. `posture-check.py` reads 99% and still proves nothing on its own — what it
+asserts is only true of a live cluster, nightly; `gate.py` reads 20% and is
+exercised end to end by every rebuild; the static rules over the systemd units
+contribute nothing to the number and catch defects that shipped. Most of what is uncovered drives real hosts over ssh and kubectl,
 where a unit test would assert only that the code calls the commands it calls.
 
 Coverage is enforced **per module** rather than as one global number: 95% on the

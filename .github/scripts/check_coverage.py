@@ -32,6 +32,9 @@ LOGIC_MODULES = [
     "siteconfig.py",
     "hosts.py",
     "models.py",
+    # Thin, but its argument names are the contract a Rust renderer must
+    # honour, and the goldens are pinned to them (ADR-093).
+    "render-cloud-config.py",
     "posture-check.py",
     "jit-admin.py",
     "create-client-cert.py",

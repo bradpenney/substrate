@@ -1,0 +1,21 @@
+[package]
+name = "substrate"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Provision and operate the k0s fleet."
+
+[[bin]]
+name = "substrate"
+path = "src/main.rs"
+
+[dependencies]
+substrate-core = { path = "../substrate-core" }
+clap.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_yaml_ng.workspace = true
+tempfile = "3"

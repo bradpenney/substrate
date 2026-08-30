@@ -72,6 +72,10 @@ flux:
   oci_tag: main
   ghcr_username: example
   ghcr_token: ""
+  # Who must have signed the config artifact (ADR-069/094). Stored exactly
+  # as it must appear in the rendered yaml — interpolated verbatim, never
+  # escaped at render time.
+  cosign_subject: '^https://github\\.com/example/config/\\.github/workflows/publish\\.yaml@refs/heads/main$'
 
 dns:
   domain: example.invalid

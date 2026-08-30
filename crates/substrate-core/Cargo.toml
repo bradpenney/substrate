@@ -1,0 +1,17 @@
+[package]
+name = "substrate-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Site configuration and cloud-config rendering for substrate."
+
+[dependencies]
+serde.workspace = true
+serde_yaml_ng.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

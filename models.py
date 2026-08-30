@@ -194,6 +194,26 @@ class FluxConfig(_Strict):
     ghcr_username: str | None = None
     ghcr_token: str | None = None
 
+    # Who is allowed to have signed the artifact (ADR-069, ADR-094).
+    #
+    # These were HARDCODED in both provision.py and the Jinja template until
+    # the golden files exposed them: a public repo carried the name of the
+    # private config repo, and anyone cloning substrate would have built a
+    # cluster that trusts someone else's workflow and refuses their own.
+    #
+    # `cosign_subject` has NO DEFAULT on purpose. `provider: cosign` alone
+    # accepts any valid Sigstore signature, including one an attacker made with
+    # their own GitHub account; the subject pin is the load-bearing part. A
+    # default would be a silent downgrade, so siteconfig._validate() refuses a
+    # config without one.
+    # Stored as the text that must appear in the RENDERED yaml, backslashes
+    # and all, and interpolated verbatim. The alternative — storing the plain
+    # regex and escaping it at render time — would need identical escaping
+    # logic in every implementation, which is exactly where two renderers
+    # drift apart.
+    cosign_issuer: str = r"^https://token\\.actions\\.githubusercontent\\.com$"
+    cosign_subject: str | None = None
+
     # Merged in from the COMMITTED versions.yml by siteconfig.load(), so callers
     # see one config object. They are modelled here because this is the shape
     # consumers actually receive — describing only the raw file would document

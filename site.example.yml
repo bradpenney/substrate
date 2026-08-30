@@ -167,6 +167,19 @@ flux:
   # cannot be avoided: Flux needs it before External Secrets exists.
   ghcr_username: youruser
   ghcr_token: ""
+  # REQUIRED. Flux refuses to reconcile the artifact unless it was signed by
+  # this exact identity (ADR-069). There is deliberately no default: `provider:
+  # cosign` on its own accepts ANY valid Sigstore signature, including one an
+  # attacker made with their own GitHub account, so a default would be a silent
+  # downgrade rather than a convenience.
+  #
+  # Point it at the workflow that publishes YOUR artifact. Write it exactly as
+  # it must appear in the rendered yaml — doubled backslashes and all — because
+  # it is interpolated verbatim rather than escaped at render time.
+  cosign_subject: '^https://github\\.com/youruser/your-config-repo/\\.github/workflows/publish\\.yaml@refs/heads/main$'
+  # Optional; defaults to GitHub Actions. Change only for a different OIDC
+  # provider.
+  # cosign_issuer: '^https://token\\.actions\\.githubusercontent\\.com$'
 
 # Optional. Only needed by dns/migrate_to_cloudflare.py (ADR-037).
 # Credentials for that script live in .dns-migration.env (also gitignored),

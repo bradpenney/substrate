@@ -32,3 +32,4 @@ coverage.json
 logic-coverage.txt
 tests/__pycache__/
 .pytest_cache/
+target/

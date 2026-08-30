@@ -54,6 +54,43 @@ VERSIONS_FILE = REPO_ROOT / "versions.yml"
 EXAMPLE_FILE = REPO_ROOT / "site.example.yml"
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """A YAML loader that REFUSES duplicate keys.
+
+    PyYAML silently accepts them and keeps the last, which is how the real
+    site.yml carried `storage_disk_gb` twice on three nodes for an unknown
+    length of time (ADR-095). Both values happened to be equal, so nothing
+    broke — but editing one and not the other would have silently discarded
+    the change with no error anywhere.
+
+    Found by the Rust renderer, whose YAML parser rejects duplicates by
+    default. This closes the gap in the direction that matters: the two
+    implementations must agree on what a VALID config is, not only on how to
+    render a valid one.
+    """
+
+
+def _no_duplicate_keys(loader, node, deep=False):
+    """Construct a mapping, failing on any repeated key."""
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise SystemExit(
+                f"{SITE_FILE}: duplicate key '{key}' at line "
+                f"{key_node.start_mark.line + 1}.\n"
+                f"  YAML keeps the LAST one silently, so an edit to the first "
+                f"is discarded with no error. Remove the duplicate."
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys
+)
+
+
 def load_versions() -> dict:
     """Pinned upstream versions, from the COMMITTED versions.yml.
 
@@ -67,7 +104,7 @@ def load_versions() -> dict:
         raise SystemExit(
             f"Missing {VERSIONS_FILE} — pinned versions live there, not in site.yml"
         )
-    return yaml.safe_load(VERSIONS_FILE.read_text())
+    return yaml.load(VERSIONS_FILE.read_text(), Loader=_StrictLoader)
 
 
 def load() -> dict:
@@ -83,7 +120,7 @@ def load() -> dict:
             f"  It holds your addresses and usernames, and is gitignored."
         )
 
-    cfg = yaml.safe_load(SITE_FILE.read_text(encoding="utf-8"))
+    cfg = yaml.load(SITE_FILE.read_text(encoding="utf-8"), Loader=_StrictLoader)
     versions = load_versions()
 
     # Pinned versions are merged in so callers see one config object, but they
@@ -170,6 +207,30 @@ def _validate(cfg: dict) -> None:
                 f"  Set peer_target to how the OTHER hypervisor reaches it, "
                 f"e.g. user@10.0.0.5"
             )
+
+    # Flux will only reconcile an artifact signed by this exact identity
+    # (ADR-069). It was HARDCODED in both renderers until ADR-094 — so a public
+    # repo named a private one, and anyone else cloning substrate would have
+    # built a cluster pinned to somebody else's workflow, which fails as an
+    # opaque registry error rather than as "you are trusting the wrong person".
+    #
+    # No default, and no skipping the block when absent. `provider: cosign`
+    # alone accepts ANY valid Sigstore signature, including one an attacker
+    # produced with their own GitHub account; the subject pin is the whole
+    # control. Silently rendering without it would be a downgrade that looks
+    # like success.
+    flux = cfg.get("flux") or {}
+    if flux and not flux.get("cosign_subject"):
+        raise SystemExit(
+            "site.yml: flux.cosign_subject is not set.\n"
+            "  Flux verifies the config artifact's signature against this "
+            "identity, and `provider: cosign` without it accepts any valid\n"
+            "  Sigstore signature — including an attacker's. Set it to the "
+            "workflow that publishes your artifact, escaped as it must\n"
+            "  appear in the rendered yaml, e.g.\n"
+            "    cosign_subject: '^https://github\\\\.com/ORG/REPO/"
+            "\\\\.github/workflows/publish\\\\.yaml@refs/heads/main$'"
+        )
 
     # The control-plane VIP must not collide with any node address.
     #

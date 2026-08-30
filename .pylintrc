@@ -94,6 +94,11 @@ disable =
 # means accepting arguments they ignore.
     unused-argument,
 
+# _StrictLoader subclasses yaml.SafeLoader, whose own inheritance chain is nine
+# deep. The depth belongs to PyYAML, not to this code, and the alternative —
+# reimplementing a loader to keep a count down — would be strictly worse.
+    too-many-ancestors,
+
 [REPORTS]
 score = yes
 

@@ -1,42 +1,11 @@
-{#
-  Kairos cloud-config. A faithful port of provision.py's render_cloud_config().
-  `check_render.py` diffs this template's output against the Python version so
-  the two implementations cannot drift.
-
-  THREE THINGS HERE ARE LOAD-BEARING — all three were real bugs:
-
-  1. `stages:`, NOT cloud-init's `write_files:`. Kairos copies this whole
-     config to /oem/90_custom.yaml on the PERSISTENT partition during install
-     and re-runs its `stages` on every boot, which is how config survives on an
-     immutable OS with an ephemeral rootfs. `write_files` is honoured ONLY in
-     the live installer environment — files written that way exist during
-     install and then silently vanish. Verified by mounting the installed image
-     offline: the stages-written network file was there, a write_files token
-     was not.
-
-  2. `permissions:` UNQUOTED octal. In a `stages` block Kairos wants a YAML
-     integer (it stores 0644 as decimal 420). Quoting it makes the file
-     silently NOT get written — which on the network config means a node with
-     no IP and no error anywhere. This is the OPPOSITE of cloud-init's
-     `write_files`, where unquoted fails loudly with
-     `strconv.ParseUint: parsing "384"`. Same-looking field, two parsers,
-     contradictory rules — hence both bugs.
-
-  3. `Name={{ primary_nic }}`, never `Type=ether`. Type=ether also matches the
-     CNI's per-pod veth pairs; systemd-networkd claims them, applies host
-     settings, and pod networking dies completely.
-
-  Jinja whitespace control is used carefully below: the `permissions` values
-  must stay unquoted integers and the indentation must survive exactly.
-#}
 #cloud-config
-hostname: {{ inventory_hostname }}
+hostname: test-private
 users:
-- name: {{ admin_user }}
+- name: operator
   groups:
     - admin
   ssh_authorized_keys:
-    - {{ ssh_public_key }}
+    - ssh-ed25519 AAAATESTKEYONLY test@fixture
 install:
   device: /dev/vda
   reboot: true
@@ -44,15 +13,11 @@ install:
 k0s:
   enabled: true
   args:
-{% for arg in k0s_args %}
-    - {{ arg }}
-{% endfor %}
-{% if control_plane_vip %}
+    - --enable-worker
+    - --no-taints
+    - --profile=homelab
     - --config /etc/k0s/k0s.yaml
-{% endif %}
-{% if join_token is defined and join_token %}
     - --token-file /etc/k0s/join-token
-{% endif %}
 stages:
   initramfs:
     - files:
@@ -60,14 +25,12 @@ stages:
           permissions: 0644
           content: |
             [Match]
-            Name={{ primary_nic }}
+            Name=ens2
             [Network]
-            Address={{ static_ip }}/24
-            Gateway={{ gateway }}
-{% for d in dns_servers %}
-            DNS={{ d }}
-{% endfor %}
-{% if control_plane_vip %}
+            Address=192.0.2.13/24
+            Gateway=10.99.0.1
+            DNS=10.99.0.1
+            DNS=10.99.0.2
         - path: /etc/k0s/k0s.yaml
           permissions: 0644
           content: |
@@ -77,24 +40,14 @@ stages:
               name: k0s
             spec:
               api:
-                externalAddress: {{ control_plane_vip }}
+                externalAddress: 10.99.0.99
                 sans:
-                  - {{ control_plane_vip }}
-{% set _ea = [] %}
-{% if api_hardening.secrets_encryption_key is defined and api_hardening.secrets_encryption_key %}
-{% set _ = _ea.append(('encryption-provider-config', '/etc/k0s/encryption.yaml')) %}
-{% endif %}
-{% if api_hardening.audit_log_path is defined and api_hardening.audit_log_path %}
-{% set _ = _ea.append(('audit-log-maxage', api_hardening.audit_log_maxage | default('30') | string)) %}
-{% set _ = _ea.append(('audit-log-path', api_hardening.audit_log_path)) %}
-{% set _ = _ea.append(('audit-policy-file', '/etc/k0s/audit-policy.yaml')) %}
-{% endif %}
-{% if _ea %}
+                  - 10.99.0.99
                 extraArgs:
-{% for k, v in _ea | sort %}
-                  {{ k }}: "{{ v }}"
-{% endfor %}
-{% endif %}
+                  audit-log-maxage: "30"
+                  audit-log-path: "/var/log/k0s/audit.log"
+                  audit-policy-file: "/etc/k0s/audit-policy.yaml"
+                  encryption-provider-config: "/etc/k0s/encryption.yaml"
               # --- node resource reservation (ADR-064) ---
               #
               # Every node here is controller AND worker, so kube-apiserver,
@@ -134,8 +87,6 @@ stages:
                     evictionHard:
                       memory.available: 300Mi
                       nodefs.available: 10%
-{% endif %}
-{% if api_hardening.secrets_encryption_key is defined and api_hardening.secrets_encryption_key %}
         - path: /etc/k0s/encryption.yaml
           permissions: 0600
           content: |
@@ -148,10 +99,8 @@ stages:
                   - secretbox:
                       keys:
                         - name: key1
-                          secret: {{ api_hardening.secrets_encryption_key }}
+                          secret: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
                   - identity: {}
-{% endif %}
-{% if api_hardening.audit_log_path is defined and api_hardening.audit_log_path %}
         - path: /etc/k0s/audit-policy.yaml
           permissions: 0644
           content: |
@@ -196,36 +145,6 @@ stages:
                 verbs: ["create", "update", "patch", "delete", "deletecollection"]
               # Everything else: who, what, when -- but not the payload.
               - level: Metadata
-{% endif %}
-{% if storage_disk_gb | default(0) | int > 0 %}
-        - path: /etc/systemd/system/usr-local-longhorn.mount
-          permissions: 0644
-          content: |
-            [Unit]
-            Description=Longhorn data disk
-            After=local-fs.target
-            [Mount]
-            What=/dev/vdb
-            Where=/usr/local/longhorn
-            Type=ext4
-            Options=defaults,noatime
-            [Install]
-            WantedBy=local-fs.target
-        - path: /usr/local/bin/prepare-longhorn-disk.sh
-          permissions: 0755
-          content: |
-            #!/bin/sh
-            # Format ONCE. blkid succeeds only if a filesystem already exists,
-            # so a reboot preserves data and a rebuild starts clean.
-            set -e
-            [ -b /dev/vdb ] || exit 0
-            if ! blkid /dev/vdb >/dev/null 2>&1; then
-                mkfs.ext4 -F -L longhorn /dev/vdb
-            fi
-            mkdir -p /usr/local/longhorn
-            systemctl enable --now usr-local-longhorn.mount
-{% endif %}
-{% if external_secrets.client_id is defined and external_secrets.client_id and external_secrets.client_secret %}
         - path: /var/lib/k0s/manifests/external-secrets-bootstrap/creds.yaml
           permissions: 0600
           content: |
@@ -241,15 +160,12 @@ stages:
               namespace: external-secrets
             type: Opaque
             stringData:
-              clientId: {{ external_secrets.client_id }}
-              clientSecret: {{ external_secrets.client_secret }}
-{% endif %}
-{% if join_token is defined and join_token %}
+              clientId: 00000000-0000-0000-0000-000000000000
+              clientSecret: fake-client-secret
         - path: /etc/k0s/join-token
           permissions: 0600
           content: |
-            {{ join_token }}
-{% endif %}
+            TESTTOKEN123abc
         - path: /etc/ssh/sshd_config.d/99-hardening.conf
           permissions: 0644
           content: |
@@ -295,7 +211,6 @@ stages:
             kind: Namespace
             metadata:
               name: flux-system
-{% if flux_pull_secret_b64 %}
             ---
             apiVersion: v1
             kind: Secret
@@ -304,8 +219,7 @@ stages:
               namespace: flux-system
             type: kubernetes.io/dockerconfigjson
             data:
-              .dockerconfigjson: {{ flux_pull_secret_b64 }}
-{% endif %}
+              .dockerconfigjson: eyJhdXRocyI6IHsiZ2hjci5pbyI6IHsiYXV0aCI6ICJaWGhoYlhCc1pUcG1ZV3RsTFdkb1kzSXRkRzlyWlc0PSJ9fX0=
             ---
             apiVersion: fluxcd.controlplane.io/v1
             kind: FluxInstance
@@ -314,7 +228,7 @@ stages:
               namespace: flux-system
             spec:
               distribution:
-                version: {{ flux.distribution_version }}
+                version: 2.x
                 registry: ghcr.io/fluxcd
               # EXPLICIT component set. Left unset, flux-operator installs its
               # default four, which includes helm-controller.
@@ -380,24 +294,15 @@ stages:
                         verify:
                           provider: cosign
                           matchOIDCIdentity:
-                            - issuer: "{{ flux.cosign_issuer }}"
-                              subject: "{{ flux.cosign_subject }}"
+                            - issuer: "^https://token\\.actions\\.githubusercontent\\.com$"
+                              subject: "^https://github\\.com/example/config/\\.github/workflows/publish\\.yaml@refs/heads/main$"
               sync:
                 kind: OCIRepository
-                url: oci://{{ flux.oci_repository }}
-                ref: {{ flux.oci_tag }}
+                url: oci://ghcr.io/example/config
+                ref: main
                 path: clusters/homelab
-{% if flux_pull_secret_b64 %}
                 pullSecret: ghcr-auth
-{% endif %}
   network:
-{% if storage_disk_gb | default(0) | int > 0 %}
-    - name: prepare the Longhorn data disk
-      commands:
-        - |
-          set -e
-          /usr/local/bin/prepare-longhorn-disk.sh
-{% endif %}
     - name: fetch the pinned flux-operator manifest
       commands:
         - |
@@ -407,6 +312,6 @@ stages:
           # reboot would re-download 97KB for no reason.
           [ -f "$D/install.yaml" ] && exit 0
           mkdir -p "$D"
-          curl -fsSL -o /tmp/flux-operator.yaml {{ flux.operator_url }}
-          echo "{{ flux.operator_sha256 }}  /tmp/flux-operator.yaml" | sha256sum -c -
+          curl -fsSL -o /tmp/flux-operator.yaml https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/v0.58.1/install.yaml
+          echo "d674546f8cd6c9a09c55a279b119c880ae6d79c726ff7c57ec4d92b26827a04d  /tmp/flux-operator.yaml" | sha256sum -c -
           mv /tmp/flux-operator.yaml "$D/install.yaml"

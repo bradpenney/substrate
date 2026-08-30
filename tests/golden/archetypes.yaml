@@ -1,0 +1,39 @@
+# The node archetypes the golden files cover — the SINGLE declaration, read by
+# both harnesses.
+#
+# `tests/golden/regenerate.py` writes the goldens from this list, and
+# `crates/substrate/tests/golden.rs` asserts the Rust binary against the same
+# list. Declaring it twice would let the two drift into testing different
+# things while both reported success, which is the failure mode this whole
+# directory exists to close.
+#
+# Each archetype covers a branch that fails SILENTLY when wrong. That is the
+# only justification for spending a golden file on one.
+
+- file: bootstrap.yaml
+  why: the controller that comes up alone; no join token
+  private_artifact: false
+  args: [--name, test-boot, --ip, 192.0.2.10, --bootstrap]
+
+- file: joiner.yaml
+  why: every other node; carries a join token and sizing overrides
+  private_artifact: false
+  args: [--name, test-join, --ip, 192.0.2.11, --memory-mib, "10240",
+         --vcpu, "4", --join-token, TESTTOKEN123abc]
+
+# Without this the storage branch renders empty on both sides of a comparison
+# and "matches" by comparing two absences.
+- file: joiner_storage_disk.yaml
+  why: dedicated Longhorn disk (ADR-050)
+  private_artifact: false
+  args: [--name, test-store, --ip, 192.0.2.12, --storage-disk-gb, "200",
+         --join-token, TESTTOKEN123abc]
+
+# The committed fixture has an empty ghcr_token, so the archetypes above render
+# NO pull secret. The 16-space `pullSecret` indent bug (12 spaces malformed the
+# FluxInstance) existed only on this path and was caught only because this path
+# was exercised. A golden set that skipped it would have let that bug through.
+- file: joiner_private_artifact.yaml
+  why: private Flux OCI artifact — renders the ghcr pull secret
+  private_artifact: true
+  args: [--name, test-private, --ip, 192.0.2.13, --join-token, TESTTOKEN123abc]
