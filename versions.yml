@@ -29,7 +29,7 @@ flux_distribution:
 # fleet onto a newer image (`gate.py roll`), so letting this pin go stale is a
 # standing security gap, not a tidiness issue.
 kairos:
-  version: v4.1.2
+  version: v4.2.0
   # The asset name encodes flavour + k0s version, so a bump may change more of
   # this string than just the tag — the bump bot resolves the real asset name
   # from the release rather than guessing.
