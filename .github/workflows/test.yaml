@@ -137,16 +137,15 @@ jobs:
       - name: Build
         run: cargo build --release
       - name: Static musl binary
-        # The whole distribution story (ADR-093) rests on this linking
-        # statically. Asserting it here rather than trusting the target name:
-        # a dynamically linked artifact would still run on the builder and fail
-        # on a Kairos node, which is the worst place to find out.
+        # The assertion lives in check-static-binary.sh so it can be run
+        # locally EXACTLY as CI runs it. The inline version of this check was
+        # wrong — it grepped `file` output for ldd's wording — and nothing
+        # caught it because a step that exists only inside a workflow is never
+        # executed anywhere else (ADR-090, third occurrence).
         run: |
           set -euo pipefail
           cargo build --release --target x86_64-unknown-linux-musl
-          BIN=target/x86_64-unknown-linux-musl/release/substrate
-          file "$BIN" | grep -q "statically linked" || {
-            echo "::error::$BIN is not statically linked"; file "$BIN"; exit 1; }
+          ./check-static-binary.sh target/x86_64-unknown-linux-musl/release/substrate
       - name: Test — the renderer reproduces every golden
         # The acceptance criterion for Wave 0 of the port. Rust-native: no
         # Python in the loop, because `cargo test` has to stand on its own once
