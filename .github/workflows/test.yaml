@@ -1,0 +1,71 @@
+name: test
+
+# Until 2026-08-28 this repo's CI only bumped dependencies — nothing was tested.
+# Everything here runs against tests/fixtures/site.yml, never the real one:
+# site.yml is gitignored (ADR-012), so a suite that needed it could not run in
+# CI at all.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: unit & regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: python -m pip install --quiet pytest pyyaml jinja2
+      - name: Run the suite
+        run: python -m pytest tests/ -v
+      - name: Assert no real site config is committed
+        # site.yml carries addresses, an admin identity and credentials. The
+        # fixture exists so the suite never needs it; this makes that structural
+        # rather than a matter of remembering.
+        run: |
+          if [ -f site.yml ]; then
+            echo "::error::site.yml is committed — it must stay gitignored (ADR-012)"
+            exit 1
+          fi
+
+  shellcheck:
+    name: shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint every shipped script
+        # -S style is the STRICTEST level, and all seven scripts already pass it
+        # clean — verified before this gate was added, so it starts green rather
+        # than being introduced already-failing. These scripts run as root on
+        # every hypervisor and drain cluster nodes; an unquoted expansion here
+        # is not a style opinion.
+        run: shellcheck -S style *.sh
+
+  ansible:
+    name: ansible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install ansible-core
+        run: python -m pip install --quiet ansible-core pyyaml
+      - name: Inventory resolves and the playbook parses
+        # The Ansible path is one of two interchangeable bootstrap
+        # implementations (ADR-020). A playbook that no longer parses would be
+        # found at rebuild time — 13 minutes in, mid-wipe — rather than here.
+        env:
+          SUBSTRATE_SITE_FILE: ${{ github.workspace }}/tests/fixtures/site.yml
+        run: |
+          set -euo pipefail
+          python3 ansible/inventory.py --list > /dev/null
+          ansible-playbook -i ansible/inventory.py ansible/site.yml --syntax-check

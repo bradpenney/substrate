@@ -175,6 +175,10 @@ WATCHED_UNITS = [
     "auto-roll.service",
     "gcal-sync.service",
     "nextcloud-cron.service",
+    # The upgrade nag. Its failure mode is invisible by construction: if it
+    # stops running, the symptom is the ABSENCE of a reminder, so nothing else
+    # would ever notice that platform upgrades were piling up unreviewed.
+    "component-nag.service",
     # NOT posture-check.service itself. Watching yourself deadlocks: one failure
     # marks the unit failed, the next run then fails BECAUSE it is failed, and it
     # can never clear -- the unit only leaves the failed state by succeeding.
