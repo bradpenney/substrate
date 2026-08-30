@@ -42,12 +42,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Lint every shipped script
-        # -S style is the STRICTEST level, and all seven scripts already pass it
-        # clean — verified before this gate was added, so it starts green rather
-        # than being introduced already-failing. These scripts run as root on
-        # every hypervisor and drain cluster nodes; an unquoted expansion here
-        # is not a style opinion.
-        run: shellcheck -S style *.sh
+        # PINNED to a specific shellcheck, run from the same container image used
+        # locally. The first version of this step used ubuntu-latest's
+        # preinstalled shellcheck and failed on its first run with SC2015 — a
+        # check the locally-tested version does not emit AT ALL, even with
+        # `-o all`. "Verified clean before gating" was true of a different tool
+        # than the gate ran. Pinning makes local and CI the same thing.
+        #
+        # -S style is the strictest level. These scripts run as root on every
+        # hypervisor and drain cluster nodes; an unquoted expansion is not a
+        # style opinion.
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt \
+            koalaman/shellcheck:v0.11.0 -S style *.sh
 
   ansible:
     name: ansible

@@ -1,0 +1,79 @@
+# Synthetic site config for the test suite. Committed ON PURPOSE, unlike the
+# real site.yml (gitignored, ADR-012) — every value here is fake, so the tests
+# run in CI and in a fresh clone without carrying any real identity, address,
+# credential or hostname into a repo that is going public.
+#
+# Mirrors the real schema exactly. If a test fails only because a key is missing
+# here, add the key — do not point the suite at the real file.
+admin_user: operator
+
+network:
+  gateway: 10.99.0.1
+  dns_servers: [10.99.0.1, 10.99.0.2]
+  bridge: br0
+  primary_nic: ens2
+
+hypervisors:
+  hvA:
+    ssh_target: null          # local: the tooling runs on this one
+    peer_target: operator@10.99.0.11
+    disk_pool: default
+    pool_needs_nocow: true    # btrfs
+  hvB:
+    ssh_target: operator@10.99.0.12
+    disk_pool: vmpool
+    pool_needs_nocow: false   # LVM
+
+control_plane:
+  vip: 10.99.0.99
+  vrrp_router_id: 51
+  auth_pass: fake-vrrp-pass
+  priorities: {hvB: 200, hvA: 100}
+
+external_secrets:
+  host: https://secrets.example.invalid
+  client_id: 00000000-0000-0000-0000-000000000000
+  client_secret: fake-client-secret
+  project_slug: fake-project
+  environment_slug: prod
+
+nodes:
+  b-vm1: {hypervisor: hvB, ip: 10.99.0.20, bootstrap: true, memory_mib: 6144, vcpu: 2, storage_disk_gb: 40}
+  b-vm2: {hypervisor: hvB, ip: 10.99.0.21, memory_mib: 6144, vcpu: 2, storage_disk_gb: 40}
+  b-vm3: {hypervisor: hvB, ip: 10.99.0.22, memory_mib: 6144, vcpu: 2, storage_disk_gb: 40}
+  a-vm1: {hypervisor: hvA, ip: 10.99.0.23, memory_mib: 20480, vcpu: 4, storage_disk_gb: 200}
+  a-vm2: {hypervisor: hvA, ip: 10.99.0.24, memory_mib: 20480, vcpu: 4, storage_disk_gb: 200}
+
+defaults: {memory_mib: 6144, vcpu: 2, disk_gb: 40, storage_disk_gb: 0}
+
+kairos:
+  iso_url: https://example.invalid/kairos.iso
+  iso_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+k0s:
+  args: ["--enable-worker", "--no-taints", "--profile=homelab"]
+  token_expiry: 24h
+
+api_hardening:
+  secrets_encryption_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  audit_log_path: /var/log/k0s/audit.log
+  audit_log_maxage: "30"
+
+posture:
+  public_hostname: hello.example.invalid
+  origin_ip: 203.0.113.1
+
+libvirt:
+  iso_pool: isos
+  iso_pool_path: /var/lib/libvirt/isos
+
+flux:
+  oci_repository: ghcr.io/example/config
+  oci_tag: main
+  ghcr_username: example
+  ghcr_token: ""
+
+dns:
+  domain: example.invalid
+  proxied: [hello]
+  vercel_team: fake-team

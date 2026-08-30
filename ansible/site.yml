@@ -1,0 +1,239 @@
+---
+# Build the whole k0s fleet from nothing.
+#
+#   ansible-playbook site.yml
+#
+# This is the SECOND independent implementation of what provision.py does, and
+# it exists to satisfy the hard gate: the cluster must rebuild from scratch via
+# BOTH bootstrap methods, proving it's genuinely reproducible rather than
+# accidentally working.
+#
+# The honest lesson from building both: the tool never mattered — the LIFECYCLE
+# ORDERING did. An earlier Ansible attempt failed for exactly the same
+# misordered-boot-order reason the Python one did, and was deleted before that
+# was understood. This version ports the CORRECTED logic. OpenTofu is the one
+# genuine technical disqualifier (its libvirt provider omits libosinfo's
+# OS-profile defaults) — that's a real difference, unlike Ansible vs Python.
+#
+# Requires passwordless sudo on both hypervisors for the run — grant it with
+# ../temp-sudo.sh, which self-expires.
+
+# Guard against the two fleet definitions drifting apart. Runs first so a
+# mismatch fails before anything is built.
+- name: Verify the Ansible inventory matches hosts.py
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Compare inventory.yml against hosts.py
+      ansible.builtin.command:
+        cmd: "{{ playbook_dir }}/../.venv/bin/python3 {{ playbook_dir }}/check_drift.py"
+      changed_when: false
+
+    # The cloud-config carries every Kairos gotcha, and all of them fail
+    # SILENTLY when wrong. A divergence here would build different nodes from
+    # the two bootstrap methods while both reported success.
+    - name: Verify the cloud-config template matches provision.py's renderer
+      ansible.builtin.command:
+        cmd: "{{ playbook_dir }}/../.venv/bin/python3 {{ playbook_dir }}/check_render.py"
+      changed_when: false
+
+- name: Prepare hypervisors
+  hosts: hypervisors
+  gather_facts: false
+  roles:
+    - hypervisor
+
+# The bootstrap controller must be fully up BEFORE any other node is created,
+# because their join tokens are minted from it and baked into their seed ISOs
+# at build time. This ordering constraint applies ONLY to the initial build —
+# once formed, every node is an equal controller and the bootstrap node holds
+# no special status.
+- name: Build the bootstrap controller
+  hosts: k0s_bootstrap
+  gather_facts: false
+  roles:
+    - k0s_node
+
+# serial: 1 mirrors provision.py's sequential build. Parallel joins would race
+# on etcd membership, and a failed join leaves a ghost member that breaks
+# quorum for everyone.
+- name: Build and join the remaining controllers
+  hosts: k0s_joiners
+  gather_facts: false
+  serial: 1
+  tasks:
+    # ⚠️ The bootstrap VM having BOOTED is not the same as k0s being ready to
+    # mint join tokens. COS_ACTIVE proves the installed OS is running; k0s
+    # takes appreciably longer. Without this wait the first joiner races the
+    # control plane and dies with:
+    #
+    #   Error: failed to get k0s status: ... dial unix /run/k0s/status.sock:
+    #   connect: no such file or directory
+    #
+    # Both implementations had this gap — Python happened to win the race,
+    # Ansible's tighter sequencing lost it. Same class of mistake as treating
+    # SSH reachability as proof the install had finished.
+    #
+    # run_once: the check is about the bootstrap node, not about each joiner.
+    - name: Wait for k0s to be ready on the bootstrap node
+      ansible.builtin.command:
+        cmd: >-
+          ssh -o BatchMode=yes -o ConnectTimeout=5
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          {{ admin_user }}@{{ hostvars[groups['k0s_bootstrap'][0]].static_ip }}
+          sudo k0s status
+      delegate_to: localhost
+      run_once: true
+      register: k0s_up
+      until: k0s_up.rc == 0
+      retries: "{{ (ssh_wait_timeout | int // poll_interval | int) }}"
+      delay: "{{ poll_interval }}"
+      changed_when: false
+
+    # Don't mint a token for a node that already exists — it's already a
+    # cluster member, so the token would be pure waste (and it makes an
+    # idempotent re-run needlessly chatty against the bootstrap node).
+    - name: Does this node already exist?
+      ansible.builtin.command:
+        cmd: "virsh -c qemu:///system dominfo {{ inventory_hostname }}"
+      delegate_to: "{{ hypervisor }}"
+      changed_when: false
+      failed_when: false
+      register: existing
+
+    # A fresh token per node, minted from the running bootstrap controller.
+    # --role controller (verified real) because every node in this cluster is a
+    # controller, not the more commonly documented worker role.
+    - name: Mint a controller join token
+      ansible.builtin.command:
+        cmd: >-
+          ssh -o BatchMode=yes -o ConnectTimeout=10
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          {{ admin_user }}@{{ hostvars[groups['k0s_bootstrap'][0]].static_ip }}
+          sudo k0s token create --role controller --expiry {{ k0s_token_expiry }}
+      delegate_to: localhost
+      changed_when: false
+      register: token_result
+      when: existing.rc != 0
+
+    - name: Fail if the token is empty
+      ansible.builtin.fail:
+        msg: "Got an empty join token from the bootstrap node"
+      when:
+        - token_result.stdout is defined
+        - token_result.stdout | trim | length == 0
+
+    - name: Stash the token for the cloud-config template
+      ansible.builtin.set_fact:
+        join_token: "{{ token_result.stdout_lines | last | trim }}"
+      when: token_result.stdout is defined
+
+    - name: Build the node
+      ansible.builtin.include_role:
+        name: k0s_node
+
+- name: Wait for the cluster to converge
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    # provision.py's create step returns as soon as a VM boots its installed
+    # system, but k0s takes another ~45-60s to register that node with the API
+    # server. Exiting during that window means a "successful" run that leaves a
+    # short cluster — and makes the gate report a failure that isn't one.
+    #
+    # Queried through the bootstrap node's `k0s kubectl` rather than a local
+    # kubectl: after a teardown there is no local kubeconfig, and a stale one
+    # points at a node that no longer exists.
+    - name: Wait for every node to be registered and Ready
+      ansible.builtin.shell:
+        cmd: >-
+          ssh -o BatchMode=yes -o ConnectTimeout=10
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          {{ admin_user }}@{{ hostvars[groups['k0s_bootstrap'][0]].static_ip }}
+          "sudo k0s kubectl get nodes --no-headers"
+          | awk '$2 == "Ready" { c++ } END { print c+0 }'
+      register: ready_count
+      until: ready_count.stdout | int == groups['k0s_nodes'] | length
+      retries: "{{ (node_ready_timeout | int // poll_interval | int) }}"
+      delay: "{{ poll_interval }}"
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "All {{ groups['k0s_nodes'] | length }} nodes are Ready"
+
+    # ---------------------------------------------------------------------
+    # Leave the OPERATOR'S environment working too.
+    #
+    # A rebuild leaves two pieces of stale CLIENT-side state, and both bit
+    # repeatedly before this was automated:
+    #   1. known_hosts — rebuilt VMs present new host keys at the same IPs.
+    #   2. kubeconfig — the new cluster has a new CA at the same IP, so
+    #      kubectl fails with "x509: certificate signed by unknown authority".
+    # Neither is cluster state, which is exactly why they kept being
+    # forgotten: the cluster is genuinely fine and only the workstation is
+    # wrong. But "reproducible" has to mean the environment works afterwards,
+    # not just that the pods are Running.
+    # ---------------------------------------------------------------------
+
+    - name: Drop stale host keys for every node
+      ansible.builtin.command:
+        cmd: "ssh-keygen -R {{ hostvars[item].static_ip }}"
+      loop: "{{ groups['k0s_nodes'] }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Learn the rebuilt nodes' new host keys
+      ansible.builtin.shell:
+        cmd: "ssh-keyscan -t ed25519 {{ hostvars[item].static_ip }} >> ~/.ssh/known_hosts"
+      loop: "{{ groups['k0s_nodes'] }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Fetch a fresh admin kubeconfig from the bootstrap node
+      ansible.builtin.command:
+        cmd: >-
+          ssh -o BatchMode=yes -o ConnectTimeout=10
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          {{ admin_user }}@{{ hostvars[groups['k0s_bootstrap'][0]].static_ip }}
+          sudo k0s kubeconfig admin
+      register: kubeconfig
+      changed_when: false
+
+    - name: Back up the existing kubeconfig
+      ansible.builtin.copy:
+        src: "~/.kube/config"
+        dest: "~/.kube/config.bak.{{ ansible_date_time.iso8601_basic_short | default(lookup('pipe', 'date +%Y%m%d-%H%M%S')) }}"
+        mode: "0600"
+        remote_src: true
+      failed_when: false
+
+    # Validate before writing: clobbering a working kubeconfig with an error
+    # message would turn a transient fetch failure into a broken workstation.
+    - name: Install the new kubeconfig
+      ansible.builtin.copy:
+        content: "{{ kubeconfig.stdout }}"
+        dest: "~/.kube/config"
+        mode: "0600"
+      when: "'client-certificate-data' in kubeconfig.stdout"
+
+    - name: Warn if the kubeconfig could not be refreshed
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: no valid kubeconfig fetched — leaving the existing one alone.
+          Fix with: ssh {{ admin_user }}@{{ hostvars[groups['k0s_bootstrap'][0]].static_ip }}
+          'sudo k0s kubeconfig admin' > ~/.kube/config
+      when: "'client-certificate-data' not in kubeconfig.stdout"
+
+    # Prove it actually works rather than assuming. A kubeconfig that parses
+    # but can't authenticate looks identical to a good one on disk.
+    - name: Verify kubectl works against the rebuilt cluster
+      ansible.builtin.command:
+        cmd: "kubectl get nodes --no-headers"
+      register: kubectl_check
+      changed_when: false
+      failed_when: kubectl_check.rc != 0
+
+    - name: Confirm client access
+      ansible.builtin.debug:
+        msg: "kubectl verified: {{ kubectl_check.stdout_lines | length }} nodes visible"

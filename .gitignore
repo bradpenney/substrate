@@ -16,7 +16,11 @@ __pycache__/
 
 # Real site configuration: addresses, usernames, storage layout.
 # Committed template is site.example.yml — this file never goes to git.
-site.yml
+# ANCHORED to the repo root. A bare `site.yml` matches at ANY depth, which
+# silently excluded tests/fixtures/site.yml — the synthetic config the whole
+# suite depends on — so CI failed on its first run with "No site
+# configuration found". The real site.yml still must never be committed.
+/site.yml
 .dns-migration.env
 
 # pytest / coverage artefacts

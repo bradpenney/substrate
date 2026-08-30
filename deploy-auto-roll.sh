@@ -101,7 +101,11 @@ echo "  [+] $CONF_DIR/auto-roll.env"
 # "Permission denied ... 203/EXEC" even when the file is chmod +x. restorecon
 # applies the correct label. (Learned during the server1 network cutover.)
 install -o root -g root -m 0755 "$SRC_DIR/auto-roll.sh" /usr/local/sbin/auto-roll.sh
-command -v restorecon >/dev/null && restorecon -F /usr/local/sbin/auto-roll.sh || true
+# `if`, not `A && B || true`: shellcheck SC2015 flags that form because the
+# fallback runs when A succeeds and B fails, not only when A fails.
+if command -v restorecon >/dev/null; then
+    restorecon -F /usr/local/sbin/auto-roll.sh || true
+fi
 echo "  [+] /usr/local/sbin/auto-roll.sh"
 
 # ---- 7. systemd units, with the admin user substituted in ----
