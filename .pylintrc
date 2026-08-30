@@ -11,6 +11,21 @@
 # modules, so the filename is a UX decision and not an identifier.
 ignore-patterns =
 
+# pydantic v2 builds models through a metaclass, so pylint's static inference
+# sees `Field(default_factory=...)` and reports every attribute read on a model
+# as a member of FieldInfo — nine false positives the moment hosts.py became
+# typed.
+#
+# BE HONEST ABOUT WHAT THIS BUYS: the plugin silences those false positives, it
+# does NOT teach pylint the real field set. Verified by writing
+# `_CFG.network.gatewya` into hosts.py — pylint still reported 10.00/10.
+#
+# What actually catches a misspelled field is the test suite: every model is
+# built at import time, so the same typo fails collection in 7 test files with
+# `'NetworkConfig' object has no attribute 'gatewya'`. pylint is a style gate
+# here, not the correctness net.
+load-plugins = pylint_pydantic
+
 [MESSAGES CONTROL]
 disable =
 # --- structural: the dual shell/Python entry point --------------------------

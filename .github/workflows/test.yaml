@@ -23,7 +23,10 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install test dependencies
-        run: python -m pip install --quiet pytest pytest-cov pyyaml jinja2
+        # cryptography is imported by create-client-cert.py, which several
+        # tests load. Omitting it produced 13 collection errors while the suite
+        # itself was fine.
+        run: python -m pip install --quiet pytest pytest-cov pyyaml jinja2 cryptography pydantic
       - name: Run the suite
         # --cov-fail-under is a RATCHET, not a target. Most of what is uncovered
         # here drives real hosts over ssh/kubectl; driving that to 100% would mean
@@ -32,12 +35,20 @@ jobs:
         # cluster; gate.py reads 18% and is exercised by every rebuild. The number
         # exists to stop REGRESSION, and the badge says "unit coverage" so it is
         # not mistaken for how much of this system is tested.
+        # No --cov-config=/dev/null: that bypassed .coveragerc, which omits
+        # tests/. Counting the test files inflated the total from 35% to 54%
+        # without covering a line of substrate — a coverage figure is only
+        # meaningful against an honest denominator.
         run: |
           python -m pytest tests/ -v \
-            --cov=. --cov-config=/dev/null \
-            --cov-report=term --cov-report=json:coverage.json \
-            --cov-fail-under=38
-      - name: Publish the unit-coverage badge
+            --cov --cov-report=term --cov-report=json:coverage.json
+
+      - name: Coverage gate (95% per logic module)
+        # Per module, not one global number. Driving the orchestration modules
+        # to 95% would mean stubbing a hypervisor and asserting the code calls
+        # the commands it calls; they are covered by `gate.py rebuild` instead.
+        run: python3 .github/scripts/check_coverage.py coverage.json
+      - name: Publish the logic-coverage badge
         # Self-contained on purpose: no Codecov, no third-party upload, no extra
         # token. Coverage data is a map of the codebase, and there is no reason to
         # hand it to a service when a two-colour SVG on a branch does the job.
@@ -57,7 +68,7 @@ jobs:
           find . -maxdepth 1 ! -name . ! -name .git ! -name coverage.svg -exec rm -rf {} + 2>/dev/null || true
           cp /tmp/coverage.svg coverage.svg
           git add coverage.svg
-          git commit -m "unit coverage: ${PCT}%" 2>/dev/null || { echo "unchanged"; exit 0; }
+          git commit -m "logic coverage: ${PCT}%" 2>/dev/null || { echo "unchanged"; exit 0; }
           git push origin badges
 
       - name: Assert no real site config is committed
@@ -81,7 +92,7 @@ jobs:
       - name: Install linters and the imports they resolve
         # pylint follows imports, so the runtime dependencies have to be present
         # or it reports import-error for code that is fine.
-        run: python -m pip install --quiet pylint black pyyaml jinja2 cryptography
+        run: python -m pip install --quiet pylint pylint-pydantic black pyyaml jinja2 cryptography pydantic
 
       - name: black
         # --check only: CI reports drift, it does not rewrite the repo. A
@@ -127,7 +138,10 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install ansible-core
-        run: python -m pip install --quiet ansible-core pyyaml
+        # pydantic because inventory.py loads the TYPED site config (ADR-089).
+        # Left out, this job fails at import while pytest and lint stay green —
+        # the same shape of miss as ADR-090.
+        run: python -m pip install --quiet ansible-core pyyaml pydantic
       - name: Inventory resolves and the playbook parses
         # The Ansible path is one of two interchangeable bootstrap
         # implementations (ADR-020). A playbook that no longer parses would be

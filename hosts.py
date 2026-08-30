@@ -27,7 +27,11 @@ from dataclasses import dataclass, field
 
 import siteconfig
 
-_CFG = siteconfig.load()
+# Typed (ADR-089), not a dict. Attribute access means a renamed or misspelled
+# field is an error where it is READ rather than a KeyError three minutes
+# into a provisioning run, and the sub-models below are handed on to callers
+# as-is so the typing does not stop at this module's edge.
+_CFG = siteconfig.load_model()
 
 
 @dataclass
@@ -99,23 +103,23 @@ def _build_hosts() -> list[Host]:
     first regardless of where it appears — see provision.py's find_bootstrap().
     """
     hosts: dict[str, Host] = {}
-    for name, cfg in _CFG["hypervisors"].items():
+    for name, hv in _CFG.hypervisors.items():
         hosts[name] = Host(
             name=name,
-            ssh_target=cfg.get("ssh_target"),
-            peer_target=cfg.get("peer_target") or cfg.get("ssh_target"),
-            disk_pool=cfg["disk_pool"],
-            pool_needs_nocow=bool(cfg.get("pool_needs_nocow", False)),
+            ssh_target=hv.ssh_target,
+            peer_target=hv.peer_target or hv.ssh_target,
+            disk_pool=hv.disk_pool,
+            pool_needs_nocow=hv.pool_needs_nocow,
         )
-    for name, cfg in _CFG["nodes"].items():
-        hosts[cfg["hypervisor"]].vms.append(
+    for name, node in _CFG.nodes.items():
+        hosts[node.hypervisor].vms.append(
             VM(
                 name=name,
-                static_ip=cfg["ip"],
-                bootstrap=bool(cfg.get("bootstrap", False)),
-                memory_mib=cfg.get("memory_mib"),
-                vcpu=cfg.get("vcpu"),
-                storage_disk_gb=cfg.get("storage_disk_gb"),
+                static_ip=node.ip,
+                bootstrap=node.bootstrap,
+                memory_mib=node.memory_mib,
+                vcpu=node.vcpu,
+                storage_disk_gb=node.storage_disk_gb,
             )
         )
     return list(hosts.values())
@@ -125,10 +129,10 @@ HOSTS = _build_hosts()
 
 # ---- cluster-wide settings, all sourced from site.yml ----
 
-ADMIN_USER = _CFG["admin_user"]
-GATEWAY = _CFG["network"]["gateway"]
-DNS_SERVERS = list(_CFG["network"]["dns_servers"])
-NETWORK_BRIDGE = _CFG["network"]["bridge"]
+ADMIN_USER = _CFG.admin_user
+GATEWAY = _CFG.network.gateway
+DNS_SERVERS = list(_CFG.network.dns_servers)
+NETWORK_BRIDGE = _CFG.network.bridge
 
 # The VM's real NIC, matched by NAME in the static network config.
 #
@@ -140,7 +144,7 @@ NETWORK_BRIDGE = _CFG["network"]["bridge"]
 # looks like a broken cluster rather than a networking config bug.
 # `networkctl list` on a node shows whether networkd has wrongly claimed any
 # veth* interfaces.
-PRIMARY_NIC = _CFG["network"]["primary_nic"]
+PRIMARY_NIC = _CFG.network.primary_nic
 
 # Resolved at runtime from the environment or ~/.ssh/id_ed25519.pub, never
 # stored — so the repo carries nobody's identity and anyone cloning it
@@ -149,39 +153,39 @@ SSH_PUBLIC_KEY = siteconfig.resolve_ssh_public_key()
 
 # Pinned to a specific release, not "latest", so a re-run months from now
 # still builds identical nodes. The checksum is what actually guarantees it.
-KAIROS_ISO_URL = _CFG["kairos"]["iso_url"]
-KAIROS_ISO_SHA256 = _CFG["kairos"]["iso_sha256"]
+KAIROS_ISO_URL = _CFG.kairos.iso_url
+KAIROS_ISO_SHA256 = _CFG.kairos.iso_sha256
 
-K0S_ARGS = list(_CFG["k0s"]["args"])
+K0S_ARGS = list(_CFG.k0s.args)
 # Empty string when no load balancer is configured, so provision.py can
 # simply test truthiness rather than branching on presence.
-CONTROL_PLANE_VIP = (_CFG.get("control_plane") or {}).get("vip") or ""
+CONTROL_PLANE_VIP = _CFG.control_plane.vip or ""
 # ADR-055. Empty client_id/client_secret disables ESO bootstrap entirely.
-EXTERNAL_SECRETS = dict(_CFG.get("external_secrets") or {})
+EXTERNAL_SECRETS = _CFG.external_secrets
 
 # API server hardening: secrets-at-rest encryption and audit logging (ADR-066).
-API_HARDENING = dict(_CFG.get("api_hardening") or {})
+API_HARDENING = _CFG.api_hardening
 
 # Public endpoint the daily posture check verifies (ADR-073).
-POSTURE = dict(_CFG.get("posture") or {})
+POSTURE = _CFG.posture
 
 # Join tokens are generated fresh on each provisioning run and baked into
 # each joining node's seed ISO, so nodes join on first boot with no
 # post-provisioning SSH step. Long enough for a full fleet build in one
 # session, short enough that a stale token in an old ISO fails loudly
 # instead of silently working months later.
-K0S_TOKEN_EXPIRY = _CFG["k0s"]["token_expiry"]
+K0S_TOKEN_EXPIRY = _CFG.k0s.token_expiry
 
-VM_MEMORY_MIB = _CFG["defaults"]["memory_mib"]
-VM_VCPU = _CFG["defaults"]["vcpu"]
-VM_DISK_GB = _CFG["defaults"]["disk_gb"]
+VM_MEMORY_MIB = _CFG.defaults.memory_mib
+VM_VCPU = _CFG.defaults.vcpu
+VM_DISK_GB = _CFG.defaults.disk_gb
 # Default size of the dedicated Longhorn disk. 0 = do not attach one,
 # which keeps the change inert until storage is actually rolled out.
-VM_STORAGE_DISK_GB = int(_CFG["defaults"].get("storage_disk_gb", 0) or 0)
+VM_STORAGE_DISK_GB = _CFG.defaults.storage_disk_gb
 
-ISO_POOL = _CFG["libvirt"]["iso_pool"]
-ISO_POOL_PATH = _CFG["libvirt"]["iso_pool_path"]
+ISO_POOL = _CFG.libvirt.iso_pool
+ISO_POOL_PATH = _CFG.libvirt.iso_pool_path
 
 # GitOps bootstrap settings (ADR-018): pinned operator version+checksum come
 # from the committed versions.yml; repository/tag/credential from site.yml.
-FLUX = _CFG["flux"]
+FLUX = _CFG.flux

@@ -13,6 +13,7 @@
 [![Kairos](https://img.shields.io/badge/Kairos-v4.2.0-6E4AFF)](https://kairos.io)
 [![Flux](https://img.shields.io/badge/GitOps-Flux%20via%20OCI-5468FF?logo=flux&logoColor=white)](https://fluxcd.io)
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://python.org)
+[![pydantic](https://img.shields.io/badge/config-typed%20with%20pydantic-E92063?logo=pydantic&logoColor=white)](models.py)
 [![Ansible](https://img.shields.io/badge/Ansible-core-EE0000?logo=ansible&logoColor=white)](https://ansible.com)
 [![Licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
 

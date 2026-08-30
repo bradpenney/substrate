@@ -573,8 +573,8 @@ def check_origin_lock() -> None:
     the one most likely to regress: the allowlist is a static list of Cloudflare
     ranges (ADR-070) and a stale list fails closed.
     """
-    hostname = (site.POSTURE or {}).get("public_hostname")
-    origin = (site.POSTURE or {}).get("origin_ip")
+    hostname = site.POSTURE.public_hostname
+    origin = site.POSTURE.origin_ip
     if not hostname:
         notes.append("origin lock: no public_hostname configured, check skipped")
         return

@@ -42,12 +42,12 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 import siteconfig  # noqa: E402
 
-_DNS = siteconfig.load().get("dns") or {}
+_DNS = siteconfig.load_model().dns
 # Names allowed to be orange-clouded. Empty by default: proxy-off is the rule,
 # and every exception is written down rather than discovered later.
-PROXY_OK = {n.rstrip(".").lower() for n in (_DNS.get("proxied") or [])}
-DOMAIN = _DNS.get("domain") or ""
-TEAM = _DNS.get("vercel_team") or ""
+PROXY_OK = {n.rstrip(".").lower() for n in _DNS.proxied}
+DOMAIN = _DNS.domain or ""
+TEAM = _DNS.vercel_team or ""
 if not DOMAIN:
     sys.exit("site.yml has no dns.domain — see ADR-037")
 

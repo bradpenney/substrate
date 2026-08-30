@@ -27,6 +27,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from pydantic import ValidationError
+
+import models
+
 try:
     import yaml
 except ImportError as e:  # pragma: no cover
@@ -96,8 +100,44 @@ def load() -> dict:
         }
     )
 
+    _validate_shape(cfg)
     _validate(cfg)
     return cfg
+
+
+def load_model() -> "models.SiteConfig":
+    """The same configuration, as a typed object rather than a dict.
+
+    New code should prefer this: `cfg.network.gateway` fails at load with the
+    field named, where `cfg["network"]["gateway"]` fails at the moment of use
+    with a KeyError and no indication of what was expected.
+
+    `load()` remains for the existing callers, which index by string throughout.
+    Both run the same validation, so they cannot disagree about what is valid.
+    """
+    return models.SiteConfig(**load())
+
+
+def _validate_shape(cfg: dict) -> None:
+    """Check field names and types against the models, before the cross-field rules.
+
+    Pydantic catches what a hand-written validator does not bother to: a
+    misspelled key (the models forbid extras, so `gatway:` is an error rather
+    than a silently ignored line that leaves the default in place), and a value
+    of the wrong type arriving from hand-edited YAML.
+
+    The error is reformatted rather than raised as a ValidationError, because
+    pydantic reports a field path and this file's other messages explain what to
+    do about the problem. Whoever hits this is usually mid-provision.
+    """
+    try:
+        models.SiteConfig(**cfg)
+    except ValidationError as exc:
+        lines = [f"{SITE_FILE} does not match the expected schema:"]
+        for err in exc.errors():
+            where = ".".join(str(p) for p in err["loc"]) or "(root)"
+            lines.append(f"  {where}: {err['msg']}")
+        raise SystemExit("\n".join(lines)) from exc
 
 
 def _validate(cfg: dict) -> None:

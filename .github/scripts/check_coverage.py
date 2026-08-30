@@ -31,6 +31,7 @@ LOGIC_TARGET = 95
 LOGIC_MODULES = [
     "siteconfig.py",
     "hosts.py",
+    "models.py",
     "posture-check.py",
     "jit-admin.py",
     "create-client-cert.py",

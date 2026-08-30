@@ -48,38 +48,39 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import models
 import siteconfig
 
 
-def _pull_secret_b64(flux: dict) -> str:
+def _pull_secret_b64(flux: models.FluxConfig) -> str:
     """dockerconfigjson for the private config artifact, or "" if public.
 
     The ONE irreducible bootstrap credential (ADR-019): Flux needs it to pull
     the config artifact, which happens before External Secrets exists.
     """
-    if not flux.get("ghcr_token"):
+    if not flux.ghcr_token:
         return ""
     import base64
     import json
-    registry = flux["oci_repository"].split("/")[0]
+    registry = flux.oci_repository.split("/")[0]
     auth = base64.b64encode(
-        f"{flux['ghcr_username']}:{flux['ghcr_token']}".encode()).decode()
+        f"{flux.ghcr_username}:{flux.ghcr_token}".encode()).decode()
     cfg = json.dumps({"auths": {registry: {"auth": auth}}})
     return base64.b64encode(cfg.encode()).decode()
 
 
 def build() -> dict:
-    cfg = siteconfig.load()
-    net = cfg["network"]
-    defaults = cfg["defaults"]
+    cfg = siteconfig.load_model()
+    net = cfg.network
+    defaults = cfg.defaults
 
     hypervisor_hosts = {}
-    for name, hcfg in cfg["hypervisors"].items():
+    for name, hcfg in cfg.hypervisors.items():
         hvars = {
-            "disk_pool": hcfg["disk_pool"],
-            "pool_needs_nocow": bool(hcfg.get("pool_needs_nocow", False)),
+            "disk_pool": hcfg.disk_pool,
+            "pool_needs_nocow": hcfg.pool_needs_nocow,
         }
-        target = hcfg.get("ssh_target")
+        target = hcfg.ssh_target
         if target is None:
             # Ansible runs ON this machine — no SSH round-trip to itself.
             hvars["ansible_connection"] = "local"
@@ -91,16 +92,19 @@ def build() -> dict:
         hypervisor_hosts[name] = hvars
 
     bootstrap, joiners, node_vars = [], [], {}
-    for name, ncfg in cfg["nodes"].items():
-        (bootstrap if ncfg.get("bootstrap") else joiners).append(name)
+    for name, ncfg in cfg.nodes.items():
+        (bootstrap if ncfg.bootstrap else joiners).append(name)
         node_vars[name] = {
-            "hypervisor": ncfg["hypervisor"],
-            "static_ip": ncfg["ip"],
-            "memory_mib": ncfg.get("memory_mib", defaults["memory_mib"]),
-            "vcpu": ncfg.get("vcpu", defaults["vcpu"]),
+            "hypervisor": ncfg.hypervisor,
+            "static_ip": ncfg.ip,
+            "memory_mib": ncfg.memory_mib or defaults.memory_mib,
+            "vcpu": ncfg.vcpu or defaults.vcpu,
             # ADR-050. Falls back to the fleet default, then to 0 (no disk).
-            "storage_disk_gb": ncfg.get(
-                "storage_disk_gb", defaults.get("storage_disk_gb", 0) or 0),
+            "storage_disk_gb": (
+                defaults.storage_disk_gb
+                if ncfg.storage_disk_gb is None
+                else ncfg.storage_disk_gb
+            ),
         }
 
     hostvars = {**hypervisor_hosts, **node_vars}
@@ -110,48 +114,54 @@ def build() -> dict:
         "all": {
             "children": ["hypervisors", "k0s_bootstrap", "k0s_joiners", "k0s_nodes"],
             "vars": {
-                "admin_user": cfg["admin_user"],
-                "gateway": net["gateway"],
-                "dns_servers": list(net["dns_servers"]),
-                "network_bridge": net["bridge"],
+                "admin_user": cfg.admin_user,
+                "gateway": net.gateway,
+                "dns_servers": list(net.dns_servers),
+                "network_bridge": net.bridge,
                 # NEVER match the node NIC on Type=ether: that also matches the
                 # CNI's veth pairs, so systemd-networkd claims kube-router's pod
                 # interfaces and pod networking dies completely.
-                "primary_nic": net["primary_nic"],
+                "primary_nic": net.primary_nic,
                 # Resolved at runtime from the environment or
                 # ~/.ssh/id_ed25519.pub — never stored, so the repo carries
                 # nobody's identity. hosts.py resolves the same three sources
                 # in the same order.
                 "ssh_public_key": siteconfig.resolve_ssh_public_key(),
-                "kairos_iso_url": cfg["kairos"]["iso_url"],
-                "kairos_iso_sha256": cfg["kairos"]["iso_sha256"],
-                "k0s_args": list(cfg["k0s"]["args"]),
+                "kairos_iso_url": cfg.kairos.iso_url,
+                "kairos_iso_sha256": cfg.kairos.iso_sha256,
+                "k0s_args": list(cfg.k0s.args),
             # Empty string when no LB is configured — Jinja tests truthiness.
-            "control_plane_vip": (cfg.get("control_plane") or {}).get("vip") or "",
-                "k0s_token_expiry": cfg["k0s"]["token_expiry"],
-                "vm_memory_mib": defaults["memory_mib"],
-                "vm_vcpu": defaults["vcpu"],
-                "vm_disk_gb": defaults["disk_gb"],
+            "control_plane_vip": cfg.control_plane.vip or "",
+                "k0s_token_expiry": cfg.k0s.token_expiry,
+                "vm_memory_mib": defaults.memory_mib,
+                "vm_vcpu": defaults.vcpu,
+                "vm_disk_gb": defaults.disk_gb,
             # ADR-050: dedicated Longhorn disk. 0 = do not attach one.
-            "vm_storage_disk_gb": int(cfg["defaults"].get("storage_disk_gb", 0) or 0),
-                "iso_pool": cfg["libvirt"]["iso_pool"],
-                "iso_pool_path": cfg["libvirt"]["iso_pool_path"],
+            "vm_storage_disk_gb": defaults.storage_disk_gb,
+                "iso_pool": cfg.libvirt.iso_pool,
+                "iso_pool_path": cfg.libvirt.iso_pool_path,
                 # GitOps bootstrap (ADR-018). The pull secret is pre-rendered
                 # here rather than in Jinja: base64-of-JSON-of-base64 is
                 # unreadable as a template expression, and getting it subtly
                 # wrong would fail at node boot rather than in CI.
-                "flux": cfg["flux"],
-                "flux_pull_secret_b64": _pull_secret_b64(cfg["flux"]),
+                # `exclude_none` keeps the ABSENT-key semantics the templates
+                # were written against: `flux.ghcr_token | default("")` fires on
+                # an undefined key, not on one whose value is None — a plain
+                # dump would render the string "None" into the pull secret.
+                "flux": cfg.flux.model_dump(exclude_none=True),
+                "flux_pull_secret_b64": _pull_secret_b64(cfg.flux),
                 # External Secrets bootstrap credential (ADR-055). Absent from
                 # the Ansible path until 2026-08-26, which check_render.py
                 # caught: an Ansible-built cluster came up with no Infisical
                 # credentials, so cert-manager could not solve DNS-01 and the
                 # PV backups had no remote — the exact silent failure the
                 # bootstrap manifest exists to prevent.
-                "external_secrets": cfg.get("external_secrets") or {},
+                "external_secrets": cfg.external_secrets.model_dump(
+                    exclude_none=True
+                ),
                 # API server hardening: secrets-at-rest encryption key and
                 # audit log settings (ADR-066).
-                "api_hardening": cfg.get("api_hardening") or {},
+                "api_hardening": cfg.api_hardening.model_dump(exclude_none=True),
                 # Lifecycle timeouts (seconds).
                 "install_wait_timeout": 900,
                 "ssh_wait_timeout": 300,

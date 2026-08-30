@@ -326,11 +326,11 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     # SILENTLY when misconfigured: a bad encryption config means Secrets keep
     # being written in plaintext, and a bad audit path means no log appears.
     # Neither surfaces as an error in `kubectl`.
-    _ah = API_HARDENING or {}
+    _ah = API_HARDENING
     api_extra_args = {}
     hardening_files = ""
 
-    _enc_key = (_ah.get("secrets_encryption_key") or "").strip()
+    _enc_key = (_ah.secrets_encryption_key or "").strip()
     if _enc_key:
         api_extra_args["encryption-provider-config"] = "/etc/k0s/encryption.yaml"
         # `secretbox` (XSalsa20-Poly1305) rather than aescbc, whose CBC padding
@@ -356,11 +356,11 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
                   - identity: {{}}
 """
 
-    _audit_path = (_ah.get("audit_log_path") or "").strip()
+    _audit_path = (_ah.audit_log_path or "").strip()
     if _audit_path:
         api_extra_args["audit-policy-file"] = "/etc/k0s/audit-policy.yaml"
         api_extra_args["audit-log-path"] = _audit_path
-        api_extra_args["audit-log-maxage"] = str(_ah.get("audit_log_maxage", "30"))
+        api_extra_args["audit-log-maxage"] = str(_ah.audit_log_maxage or "30")
         # Levels, from the top down. Order matters: the FIRST matching rule wins,
         # so the noise-suppression rules have to come before the catch-all.
         hardening_files += """        - path: /etc/k0s/audit-policy.yaml
@@ -577,10 +577,10 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     # reviewable. Pinned by version AND verified by checksum, so it is still
     # reproducible — the checksum is what guarantees that, not the tag.
     flux = _CFG_FLUX
-    registry = flux["oci_repository"].split("/")[0]
+    registry = flux.oci_repository.split("/")[0]
     pull_secret_yaml = ""
     sync_pull_secret = ""
-    if flux.get("ghcr_token"):
+    if flux.ghcr_token:
         # The ONE irreducible bootstrap credential (ADR-019): Flux needs it to
         # pull the private config artifact, before External Secrets exists.
         import base64 as _b64
@@ -590,7 +590,7 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
                 "auths": {
                     registry: {
                         "auth": _b64.b64encode(
-                            f"{flux['ghcr_username']}:{flux['ghcr_token']}".encode()
+                            f"{flux.ghcr_username}:{flux.ghcr_token}".encode()
                         ).decode()
                     }
                 }
@@ -623,8 +623,8 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     # namespace that does not exist, and k0s applies manifests in filename
     # order within a directory, not dependency order.
     eso_yaml = ""
-    _eso = EXTERNAL_SECRETS or {}
-    if _eso.get("client_id") and _eso.get("client_secret"):
+    _eso = EXTERNAL_SECRETS
+    if _eso.client_id and _eso.client_secret:
         eso_yaml = f"""        - path: /var/lib/k0s/manifests/external-secrets-bootstrap/creds.yaml
           permissions: 0600
           content: |
@@ -640,8 +640,8 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
               namespace: external-secrets
             type: Opaque
             stringData:
-              clientId: {_eso['client_id']}
-              clientSecret: {_eso['client_secret']}
+              clientId: {_eso.client_id}
+              clientSecret: {_eso.client_secret}
 """
 
     k0s_args_yaml = "\n".join(f"    - {arg}" for arg in args)
@@ -727,7 +727,7 @@ stages:
               namespace: flux-system
             spec:
               distribution:
-                version: {flux["distribution_version"]}
+                version: {flux.distribution_version}
                 registry: ghcr.io/fluxcd
               # EXPLICIT component set. Left unset, flux-operator installs its
               # default four, which includes helm-controller.
@@ -797,8 +797,8 @@ stages:
                               subject: "^https://github\\\\.com/bradpenney/substrate_config/\\\\.github/workflows/publish\\\\.yaml@refs/heads/main$"
               sync:
                 kind: OCIRepository
-                url: oci://{flux["oci_repository"]}
-                ref: {flux["oci_tag"]}
+                url: oci://{flux.oci_repository}
+                ref: {flux.oci_tag}
                 path: clusters/homelab{sync_pull_secret}
   network:
 {storage_prepare_yaml}    - name: fetch the pinned flux-operator manifest
@@ -810,8 +810,8 @@ stages:
           # reboot would re-download 97KB for no reason.
           [ -f "$D/install.yaml" ] && exit 0
           mkdir -p "$D"
-          curl -fsSL -o /tmp/flux-operator.yaml {flux["operator_url"]}
-          echo "{flux["operator_sha256"]}  /tmp/flux-operator.yaml" | sha256sum -c -
+          curl -fsSL -o /tmp/flux-operator.yaml {flux.operator_url}
+          echo "{flux.operator_sha256}  /tmp/flux-operator.yaml" | sha256sum -c -
           mv /tmp/flux-operator.yaml "$D/install.yaml"
 """
 

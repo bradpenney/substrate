@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+import models
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -520,7 +522,9 @@ def _origin(
         pc,
         "site",
         types.SimpleNamespace(
-            POSTURE={"public_hostname": hostname, "origin_ip": "203.0.113.1"}
+            POSTURE=models.PostureConfig(
+                public_hostname=hostname, origin_ip="203.0.113.1"
+            )
         ),
         raising=False,
     )
@@ -561,7 +565,9 @@ def test_origin_lock_skipped_when_no_hostname_is_configured(pc, monkeypatch):
     """site.yml is gitignored, so a fresh clone has no hostname. That must be a
     skip note, not a failure — otherwise the check cries wolf on every new
     machine."""
-    monkeypatch.setattr(pc, "site", types.SimpleNamespace(POSTURE={}), raising=False)
+    monkeypatch.setattr(
+        pc, "site", types.SimpleNamespace(POSTURE=models.PostureConfig()), raising=False
+    )
     pc.check_origin_lock()
     assert pc.failures == []
     assert any("skipped" in n for n in pc.notes), pc.notes
@@ -747,7 +753,9 @@ def test_origin_lock_skips_the_bypass_check_without_an_origin_ip(pc, monkeypatch
     monkeypatch.setattr(
         pc,
         "site",
-        types.SimpleNamespace(POSTURE={"public_hostname": "hello.example.invalid"}),
+        types.SimpleNamespace(
+            POSTURE=models.PostureConfig(public_hostname="hello.example.invalid")
+        ),
         raising=False,
     )
     monkeypatch.setattr(

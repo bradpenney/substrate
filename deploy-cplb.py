@@ -32,11 +32,11 @@ import sys
 
 import siteconfig
 
-CFG = siteconfig.load()
-CP = CFG["control_plane"]
-VIP = CP["vip"]
-ADMIN = CFG["admin_user"]
-BRIDGE = CFG["network"]["bridge"]
+CFG = siteconfig.load_model()
+CP = CFG.control_plane
+VIP = CP.vip
+ADMIN = CFG.admin_user
+BRIDGE = CFG.network.bridge
 
 # 6443 API · 8132 konnectivity · 9443 controller join API.
 # All three must be balanced: konnectivity is what was broken, but a VIP that
@@ -50,7 +50,7 @@ def controllers() -> list:
     Sorted so the rendered config is stable: an unordered dict would produce a
     different file on every run and make a real change indistinguishable from
     reordering in a diff."""
-    return sorted(((n, c["ip"]) for n, c in CFG["nodes"].items()), key=lambda x: x[1])
+    return sorted(((n, c.ip) for n, c in CFG.nodes.items()), key=lambda x: x[1])
 
 
 def haproxy_cfg() -> str:
@@ -111,12 +111,8 @@ def keepalived_cfg(host: str) -> str:
 
     Differs per host: the priority decides which node holds the VIP, so identical
     config on both would leave them contesting it."""
-    prio = (CP.get("priorities") or {}).get(host, 100)
-    state = (
-        "MASTER"
-        if prio == max((CP.get("priorities") or {100: 100}).values())
-        else "BACKUP"
-    )
+    prio = CP.priorities.get(host, 100)
+    state = "MASTER" if prio == max(CP.priorities.values(), default=100) else "BACKUP"
     return f"""# Managed by substrate deploy-cplb.py — do not edit by hand.
 global_defs {{
     enable_script_security
@@ -139,12 +135,12 @@ vrrp_script chk_haproxy {{
 vrrp_instance CPLB {{
     state {state}
     interface {BRIDGE}
-    virtual_router_id {CP['vrrp_router_id']}
+    virtual_router_id {CP.vrrp_router_id}
     priority {prio}
     advert_int 1
     authentication {{
         auth_type PASS
-        auth_pass {CP['auth_pass']}
+        auth_pass {CP.auth_pass}
     }}
     virtual_ipaddress {{
         {VIP}/24
@@ -160,7 +156,7 @@ def remote(host: str) -> list:
     """The ssh prefix for reaching a host, or an empty list when it is local.
 
     Returning a list lets callers build one command that works either way."""
-    tgt = CFG["hypervisors"][host].get("ssh_target")
+    tgt = CFG.hypervisors[host].ssh_target
     if not tgt:
         return []
     return ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", tgt]
@@ -240,11 +236,11 @@ def main() -> int:
     for node, ip in controllers():
         print(f"      {node:<8} {ip}")
     print("  hypervisors:")
-    for h in CFG["hypervisors"]:
-        prio = (CP.get("priorities") or {}).get(h, 100)
+    for h in CFG.hypervisors:
+        prio = CP.priorities.get(h, 100)
         print(
             f"      {h:<8} priority {prio}"
-            f"{'   <- holds the VIP by default' if prio == max((CP.get('priorities') or {}).values()) else ''}"
+            f"{'   <- holds the VIP by default' if prio == max(CP.priorities.values(), default=100) else ''}"
         )
 
     if not args.apply:
@@ -254,7 +250,7 @@ def main() -> int:
         return 0
 
     rc = 0
-    for h in CFG["hypervisors"]:
+    for h in CFG.hypervisors:
         print(f"\n=== installing on {h} ===")
         r = run(h, install_script(h), True)
         if r != 0:
