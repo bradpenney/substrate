@@ -9,6 +9,8 @@ does not do what the file appears to say.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -16,8 +18,16 @@ UNIT_DIR_NAME = "systemd"
 
 
 def _units(repo_root):
+    """Every unit this repo ships, at any depth.
+
+    RECURSIVE deliberately. `iterdir()` was not, so the moment units were
+    grouped into `systemd/observability/` they became invisible to every
+    assertion in this file — silently, while the suite stayed green. A test
+    that stops covering new files is worse than no test, because it reports
+    confidence it no longer has.
+    """
     d = repo_root / UNIT_DIR_NAME
-    return sorted(p for p in d.iterdir() if p.suffix in (".service", ".timer"))
+    return sorted(p for p in d.rglob("*") if p.suffix in (".service", ".timer"))
 
 
 def _sections(path):
@@ -77,6 +87,12 @@ def test_onfailure_targets_are_shipped_by_this_repo(repo_root):
         for key, value in _sections(unit).get("Unit", []):
             if key == "OnFailure":
                 for target in value.split():
+                    # A template instance `foo@%n.service` is shipped as the
+                    # template `foo@.service`. Comparing the literal string
+                    # would reject a correct reference.
+                    if "@" in target:
+                        prefix, _, suffix = target.partition("@")
+                        target = f"{prefix}@{suffix[suffix.index('.'):]}"
                     assert (
                         target in names
                     ), f"{unit.name}: OnFailure={target} is not shipped by this repo"
@@ -111,9 +127,21 @@ def test_admin_user_stays_a_placeholder(repo_root):
             ), f"auto-roll.service {key}={value} — a real identity leaked into the repo"
 
 
-def test_units_that_retry_also_bound_their_retries(repo_root):
-    """`Restart=on-failure` without a start limit can loop indefinitely on a
-    permanent fault, and each entry into the failed state fires OnFailure again."""
+def test_units_that_retry_declare_their_retry_policy(repo_root):
+    """A restarting unit must say EXPLICITLY whether its retries are bounded.
+
+    The original rule required `StartLimitBurst`, which is correct for the
+    oneshot units — a permanent fault would otherwise loop forever, firing
+    OnFailure on every entry into the failed state.
+
+    It is wrong for a long-running daemon. Grafana and VictoriaMetrics should
+    restart forever: giving up after five attempts leaves no observability at
+    exactly the moment something is wrong. `StartLimitIntervalSec=0` is how you
+    say "unbounded, deliberately".
+
+    So the rule is not "bounded" but "not silently defaulted": one or the other
+    must be present, in [Unit], and the choice is visible in the file.
+    """
     for unit in _units(repo_root):
         secs = _sections(unit)
         restarts = [
@@ -122,6 +150,85 @@ def test_units_that_retry_also_bound_their_retries(repo_root):
         if not restarts:
             continue
         unit_keys = {k for k, _ in secs.get("Unit", [])}
-        assert (
-            "StartLimitBurst" in unit_keys
-        ), f"{unit.name}: Restart={restarts[0]} without StartLimitBurst is unbounded"
+        assert unit_keys & {"StartLimitBurst", "StartLimitIntervalSec"}, (
+            f"{unit.name}: Restart={restarts[0]} with no retry policy. Declare "
+            f"StartLimitBurst (bounded) or StartLimitIntervalSec=0 (deliberately "
+            f"unbounded) in [Unit]."
+        )
+
+
+def test_start_limit_keys_are_in_the_unit_section(repo_root):
+    """`StartLimitIntervalSec`/`StartLimitBurst` in [Service] are IGNORED.
+
+    systemd moved them to [Unit] and says so only as
+    `Unknown key 'StartLimitIntervalSec' in section [Service], ignoring.` —
+    which nothing reads. The file then appears to configure a retry policy while
+    the default ("give up after 5 restarts in 10s") silently remains in force.
+
+    Same family as OnFailure-in-[Service], and made in this repo on 2026-08-30
+    while writing the comment warning about OnFailure. Caught by
+    `systemd-analyze verify`; asserted here so it cannot recur unnoticed.
+    """
+    for unit in _units(repo_root):
+        misplaced = [
+            k
+            for k, _ in _sections(unit).get("Service", [])
+            if k.startswith("StartLimit")
+        ]
+        assert not misplaced, (
+            f"{unit.name}: {misplaced[0]} in [Service] is ignored by systemd — "
+            f"move it to [Unit]"
+        )
+
+
+def test_systemd_itself_accepts_every_unit(repo_root):
+    """Ask systemd, rather than only asserting what we remember about systemd.
+
+    The static checks above encode specific traps this estate has hit. They
+    cannot catch the next one. `systemd-analyze verify` parses a unit with the
+    real parser and reports unknown keys, bad section names and malformed
+    directives — which is how the misplaced StartLimitIntervalSec was found.
+
+    Missing-binary warnings are expected and ignored: these units reference
+    /usr/local/bin paths that exist on the hypervisors, not in a checkout or on
+    a CI runner. Everything else is a failure.
+    """
+    if shutil.which("systemd-analyze") is None:
+        pytest.skip("systemd-analyze not available")
+
+    problems = []
+    for unit in _units(repo_root):
+        proc = subprocess.run(
+            ["systemd-analyze", "verify", str(unit)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in (proc.stderr + proc.stdout).splitlines():
+            if not line.strip():
+                continue
+            # Not a defect in the unit: the binary lives on the target host.
+            if "is not executable" in line or "does not exist" in line:
+                continue
+            problems.append(f"{unit.name}: {line.strip()}")
+
+    assert not problems, "systemd rejected a unit:\n  " + "\n  ".join(problems)
+
+
+def test_onfailure_instances_do_not_double_the_unit_suffix(repo_root):
+    """`OnFailure=notify@%n.service` yields `notify@foo.service.service`.
+
+    `%n` is the FULL unit name, suffix included, so appending `.service`
+    duplicates it. systemd loads the doubled name without complaint, which is
+    why this shipped: the alert works and reads wrong, and nothing fails. `%p`
+    is the prefix without the suffix.
+    """
+    for unit in _units(repo_root):
+        for key, value in _sections(unit).get("Unit", []):
+            if key != "OnFailure":
+                continue
+            for target in value.split():
+                assert "%n" not in target, (
+                    f"{unit.name}: OnFailure={target} — %n includes the unit "
+                    f"suffix, so this expands to a doubled '.service'. Use %p."
+                )

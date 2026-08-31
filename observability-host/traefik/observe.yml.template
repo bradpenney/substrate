@@ -1,0 +1,37 @@
+# Route __HOSTNAME__ to Grafana. TEMPLATE — rendered from site.yml, because the
+# hostname is this estate's identity and substrate is going public (ADR-094).
+#
+# An HTTP router, NOT the TCP/SNI passthrough used for the cluster's names. The
+# passthrough exists so the CLUSTER's cert-manager certificate is served; Grafana
+# is a HOST-tier service, so this edge terminates TLS for it with the same
+# Let's Encrypt resolver as everything else here.
+#
+# ⚠️ TCP routers match BEFORE HTTP routers on the same entrypoint. A HostSNI rule
+# for this name in k8s-passthrough.yml would silently shadow this router and send
+# the dashboards to the cluster. Each name belongs to exactly ONE tier.
+#
+# NO auth middleware. Authentication is Grafana's, against a GitHub organisation
+# (ADR-103) — a BasicAuth middleware here would mean two login prompts for one
+# door, and one shared credential that cannot revoke a single person.
+http:
+  routers:
+    observe:
+      entryPoints:
+        - websecure
+      rule: "Host(`__HOSTNAME__`)"
+      service: observe
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    observe:
+      loadBalancer:
+        servers:
+          # The docker bridge gateway. Grafana binds this address ONLY, so it is
+          # unreachable from the LAN and from the internet except through here.
+          #
+          # This becomes 127.0.0.1 when the edge moves to a native systemd
+          # Traefik: a host process reaching another host process over loopback
+          # needs no bridge at all, and removes docker from this path entirely.
+          - url: "http://__GRAFANA_ADDR__:3000"
+        passHostHeader: true

@@ -7,6 +7,8 @@ the staging directory is cleaned up even when the installer fails.
 
 from __future__ import annotations
 
+import re
+
 import io
 import tarfile
 import types
@@ -345,3 +347,35 @@ def test_deploy_skips_a_host_with_no_peer(monkeypatch, capsys):
     du.deploy(lonely, "K")
     assert called == []
     assert "SKIP" in capsys.readouterr().out
+
+
+def test_the_notifier_fails_when_delivery_fails(repo_root):
+    """`curl` without `-f` exits 0 on an HTTP error.
+
+    Verified: `curl -sS` against a request ntfy rejects returns 0; `curl -fsS`
+    returns 22. Without the flag the notifier reports success having delivered
+    nothing, systemd logs "Finished", and a total alerting outage looks exactly
+    like a quiet night — the same defect as the component nag calling `gh`,
+    which exits 0 with no credentials.
+
+    This is the channel every other alert depends on, so its silent failure
+    would hide all the others.
+    """
+    script = (repo_root / "notify.sh").read_text()
+    # `curl` may not start the line — the invocation is wrapped in `if ! curl`
+    # so a failure can be handled — but COMMENTS mention curl too, and a comment
+    # explaining the flag is not an invocation carrying it. Check code only.
+    send = [
+        ln
+        for ln in script.splitlines()
+        if re.search(r"\bcurl\b", ln) and not ln.strip().startswith("#")
+    ]
+    assert send, "no curl invocation found in notify.sh"
+    for line in send:
+        assert (
+            "-fsS" in line or " -f " in line
+        ), f"notify.sh: {line.strip()} lacks -f, so HTTP errors exit 0"
+    assert "DELIVERY FAILED" in script, (
+        "notify.sh must log the alert text when the push fails — losing the "
+        "message entirely because the transport was down is the worst outcome"
+    )

@@ -1,0 +1,21 @@
+[Unit]
+Description=Check hourly for drift between the repository and this host
+Documentation=https://github.com/bradpenney/substrate
+
+[Timer]
+# `Unit=`, NOT `[Unit] Requires=`. On a timer, Requires= is a START dependency:
+# systemd would run the service at every boot in addition to on schedule
+# (bug-017). Same trap that made the nightly hypervisor update fire at boot.
+Unit=substrate-reconcile.service
+OnCalendar=hourly
+# Spread the two hypervisors apart. Both hitting GitHub on the same second is
+# pointless, and identical timing makes a correlated failure look like a
+# coincidence.
+RandomizedDelaySec=600
+# A host that was off at the scheduled time must still check when it returns —
+# otherwise drift on a machine that reboots often is the drift least likely to
+# be noticed.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

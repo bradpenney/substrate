@@ -31,6 +31,7 @@ import sys
 import time
 from pathlib import Path
 
+import hosts
 from hosts import (
     FLUX as _CFG_FLUX,
     PRIMARY_NIC,
@@ -38,7 +39,6 @@ from hosts import (
     HOSTS,
     GATEWAY,
     DNS_SERVERS,
-    SSH_PUBLIC_KEY,
     KAIROS_ISO_URL,
     KAIROS_ISO_SHA256,
     K0S_ARGS,
@@ -653,7 +653,7 @@ users:
   groups:
     - admin
   ssh_authorized_keys:
-    - {SSH_PUBLIC_KEY}
+    - {hosts.SSH_PUBLIC_KEY}
 install:
   device: /dev/vda
   reboot: true

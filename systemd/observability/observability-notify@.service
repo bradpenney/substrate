@@ -1,0 +1,16 @@
+[Unit]
+Description=Announce that %i failed
+Documentation=https://github.com/bradpenney/substrate
+# Templated, so one unit covers every observability service rather than one
+# notifier each. %i is the failing unit's name, passed by OnFailure=%n.
+#
+# ⚠️ OnFailure= belongs in the FAILING unit's [Unit] section. Put in [Service]
+# it is silently ignored — no error, no notification, and the first evidence is
+# a service that has been dead for days. That has already happened here once.
+
+[Service]
+Type=oneshot
+# Same notifier the hypervisor units use. One channel for host-tier failures,
+# so a new one does not have to be discovered separately.
+ExecStart=/usr/local/bin/homelab-notify.sh "Observability: %i failed" \
+    "systemctl status %i on server1"

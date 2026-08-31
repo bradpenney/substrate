@@ -1,0 +1,67 @@
+[Unit]
+Description=VictoriaMetrics (metrics store and scraper)
+Documentation=https://github.com/bradpenney/substrate
+# Chosen over Prometheus on measured grounds (ADR-096): server2's three nodes
+# have ~2.4 Gi of schedulable memory BETWEEN them once the ADR-064 reservation
+# is taken. This runs on the HOST tier instead, so that constraint no longer
+# binds it — but the reason it was chosen still holds for the agents.
+# %p, not %n: %n expands to the FULL unit name INCLUDING the .service
+# suffix, so `@%n.service` produced observability-notify@node-exporter
+# .service.service — which systemd loads, so nothing complained.
+# WHY THIS IS A SYSTEMD UNIT AND NOT A DEPLOYMENT
+# The PRINCIPLE: observability lives outside the rebuildable unit. The observer
+# must not share a failure domain — or a LIFECYCLE — with the observed, and
+# `gate.py rebuild` destroys this cluster deliberately and routinely.
+# The metrics store has to outlive that, and be able to watch it happen.
+#
+# The COMPROMISE: it runs on a hypervisor because there is no second cluster to
+# put it on. Ideally this would be separate infrastructure-grade hardware with
+# its own failure domain. It is not — so if this host dies, observability dies
+# with it. That is a resource constraint, not the design (ADR-098).
+#
+# Moving it later is: change one address in the in-cluster agents. The boundary
+# is the architecture; this machine is an annotation on it.
+OnFailure=observability-notify@%p.service
+After=network-online.target
+Wants=network-online.target
+
+# Restart forever. StartLimitIntervalSec/StartLimitBurst live in [Unit], NOT
+# [Service] — systemd silently ignores them there ("Unknown key ... ignoring"),
+# which would leave the default of "give up after 5 restarts in 10 seconds" in
+# force while the file appeared to say otherwise. Exactly the same class of
+# defect as OnFailure= in [Service]. Caught by `systemd-analyze verify`, which
+# is now part of the test suite.
+StartLimitIntervalSec=0
+
+[Service]
+# 127.0.0.1 ONLY. Grafana runs on the same host and reaches it over loopback;
+# nothing else may query it directly. The in-cluster vmagent pushes to the
+# separate remote-write listener, which the installer opens to the cluster
+# CIDRs alone.
+ExecStart=/usr/local/bin/victoria-metrics-prod \
+    -storageDataPath=/var/lib/victoria-metrics \
+    -httpListenAddr=127.0.0.1:8428 \
+    -promscrape.config=/etc/victoria-metrics/scrape.yml \
+    -retentionPeriod=6 \
+    -memory.allowedPercent=25 \
+    -loggerFormat=json
+Restart=always
+RestartSec=5s
+
+# SIGINT, not SIGTERM: VictoriaMetrics flushes its in-memory parts on SIGINT.
+# SIGTERM loses the most recent, unflushed data on every restart — a slow leak
+# of exactly the datapoints most likely to be interesting.
+KillSignal=SIGINT
+TimeoutStopSec=60
+
+User=victoriametrics
+Group=victoriametrics
+StateDirectory=victoria-metrics
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

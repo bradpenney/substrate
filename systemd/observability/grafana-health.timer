@@ -1,0 +1,13 @@
+[Unit]
+Description=Check every two minutes that Grafana is actually serving
+Documentation=https://github.com/bradpenney/substrate
+
+[Timer]
+# `Unit=`, not `[Unit] Requires=` — on a timer that is a START dependency and
+# would run the check at every boot as well as on schedule (bug-017).
+Unit=grafana-health.service
+OnBootSec=3min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,50 @@
+[Unit]
+Description=Prometheus node_exporter (hypervisor metrics)
+Documentation=https://github.com/bradpenney/substrate
+# The HYPERVISOR tier, deliberately separate from the node_exporter DaemonSet
+# inside the cluster (ADR-098). This one keeps reporting while the cluster is
+# being destroyed and rebuilt, which is the single most interesting thing this
+# estate has to observe — and something running inside that cluster cannot.
+# %p, not %n: %n expands to the FULL unit name INCLUDING the .service
+# suffix, so `@%n.service` produced observability-notify@node-exporter
+# .service.service — which systemd loads, so nothing complained.
+OnFailure=observability-notify@%p.service
+After=network-online.target
+Wants=network-online.target
+
+# Restart forever. StartLimitIntervalSec/StartLimitBurst live in [Unit], NOT
+# [Service] — systemd silently ignores them there ("Unknown key ... ignoring"),
+# which would leave the default of "give up after 5 restarts in 10 seconds" in
+# force while the file appeared to say otherwise. Exactly the same class of
+# defect as OnFailure= in [Service]. Caught by `systemd-analyze verify`, which
+# is now part of the test suite.
+StartLimitIntervalSec=0
+
+[Service]
+# Binds the LAN address, not 0.0.0.0. VictoriaMetrics on server1 scrapes both
+# hypervisors over the LAN; nothing beyond it has any business reading these.
+# firewalld restricts 9100 to the LAN in the installer.
+#
+# --collector.systemd is deliberately ABSENT. It queries the systemd D-Bus,
+# which DynamicUser cannot reach, so enabling it would mean running this as
+# root for one collector. Unit health is already asserted by posture-check on
+# the hypervisor tier, so nothing is lost — and granting privilege should be a
+# deliberate decision, not a side effect of wanting a metric.
+ExecStart=/usr/local/bin/node_exporter \
+    --web.listen-address=:9100 \
+    --collector.processes
+Restart=always
+RestartSec=5s
+
+# It reads /proc and /sys and needs no privileges beyond that.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

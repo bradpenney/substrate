@@ -1,0 +1,33 @@
+name: critical paths
+
+# Say plainly, on the pull request, when a change touches something that runs as
+# root on a hypervisor or decides what does.
+#
+# WHY A COMMENT AND NOT JUST A FAILING CHECK
+# A red X teaches nothing and gets clicked past. A reviewer needs to know WHICH
+# files and WHY they are dangerous — the risk is not "a file changed", it is
+# "this file becomes a root shell on both hypervisors tonight". CODEOWNERS
+# requests the review; this explains what the review is for.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  flag:
+    name: flag critical-path changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Identify and comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/flag_critical_paths.py

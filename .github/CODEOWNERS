@@ -1,0 +1,38 @@
+# Paths whose contents EXECUTE AS ROOT on a hypervisor, or decide what does.
+#
+# substrate is going public, so the set of people who can open a pull request is
+# no longer the set of people who should have root on these machines. Requiring
+# a code-owner review on these paths is what keeps those two sets apart.
+#
+# ⚠️ This file is ADVISORY until "Require review from Code Owners" is enabled in
+# branch protection for `main`. GitHub will show the reviewer request either
+# way, which is exactly the kind of control that looks enforced and is not —
+# so it is said here rather than assumed.
+
+# Everything, by default.
+*                               @bradpenney
+
+# --- root-executing surface -------------------------------------------------
+# Unit files: what systemd starts, as whom, with what privileges.
+/systemd/                       @bradpenney
+# Shell run by those units, most of it as root.
+/*.sh                           @bradpenney
+# The deployers: they compose the privileged installer itself.
+/deploy_updates.py              @bradpenney
+/deploy-observability.py        @bradpenney
+/deploy-cplb.py                 @bradpenney
+/provision.py                   @bradpenney
+
+# --- supply chain -----------------------------------------------------------
+# Pinned versions AND checksums. Changing a sha256 here changes which bytes run
+# on every node and hypervisor.
+/versions.yml                   @bradpenney
+# CI has write access to this repository and publishes signed artifacts.
+/.github/                       @bradpenney
+
+# --- what the cluster trusts ------------------------------------------------
+# Renders the cosign identity the cluster verifies against, the node SSH key,
+# and the k0s API server flags.
+/models.py                      @bradpenney
+/siteconfig.py                  @bradpenney
+/site.example.yml               @bradpenney

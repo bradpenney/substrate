@@ -1,0 +1,42 @@
+[Unit]
+Description=Grafana (observe.bradpenney.io)
+Documentation=https://github.com/bradpenney/substrate
+# WHY THIS IS A SYSTEMD UNIT AND NOT A DEPLOYMENT
+# The PRINCIPLE: observability lives outside the rebuildable unit. `gate.py
+# rebuild` destroys the cluster deliberately and routinely; the dashboards have
+# to outlive that and be able to show it happening.
+#
+# The COMPROMISE: it runs on a hypervisor because there is no second cluster to
+# put it on. If this host dies, the dashboards die with it. That is a resource
+# constraint, not the design (ADR-098).
+OnFailure=observability-notify@%p.service
+After=network-online.target victoria-metrics.service
+Wants=network-online.target
+# Restart forever. Giving up after five attempts leaves no dashboards at exactly
+# the moment someone is trying to find out what went wrong.
+StartLimitIntervalSec=0
+
+[Service]
+# The admin password ONLY (GF_SECURITY_ADMIN_PASSWORD), 0600 root:grafana. Never
+# in grafana.ini, which is checksummed by the drift check and lives in git.
+EnvironmentFile=/etc/grafana/grafana.env
+ExecStart=/usr/local/share/grafana/bin/grafana server \
+    --config=/etc/grafana/grafana.ini \
+    --homepath=/usr/local/share/grafana
+Restart=always
+RestartSec=5s
+
+User=grafana
+Group=grafana
+WorkingDirectory=/usr/local/share/grafana
+StateDirectory=grafana
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

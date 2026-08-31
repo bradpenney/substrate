@@ -187,3 +187,24 @@ flux:
 dns:
   domain: example.com
   vercel_team: team_xxxxxxxxxxxxxxxxxxxxxxxx
+
+# Host-tier observability (ADR-098). Optional; omit to skip the metrics store.
+#
+# Runs as systemd units on ONE hypervisor rather than in the cluster, so that it
+# survives a cluster rebuild and can observe one happening. node_exporter is
+# installed on every hypervisor regardless.
+observability:
+  # Which hypervisor carries the store and Grafana. Name one from `hypervisors`
+  # above — the one with memory to spare.
+  host: server1
+  # The public name Grafana answers on. Sets Grafana's root_url; without it,
+  # Grafana emits redirects to its bind address and login breaks confusingly.
+  hostname: observe.example.com
+  retention_months: 6
+  # Membership of this GitHub org is the dashboard access list. Leave empty to
+  # use Grafana's own logins instead.
+  #
+  # ⚠️ Grafana's `allowed_organizations` is load-bearing: with GitHub auth on and
+  # no org set, ANY GitHub account can sign in. The deploy refuses that
+  # combination rather than rendering it.
+  github_org: your-github-org

@@ -154,6 +154,30 @@ pub struct PostureConfig {
     pub origin_ip: Option<String>,
 }
 
+/// Where the host-tier observability stack runs (ADR-098).
+///
+/// `host` names a hypervisor from the `hypervisors` map. Configuration rather
+/// than a constant because this repository is going public: a hardcoded name
+/// would ship one estate's topology to everyone who clones it — the mistake
+/// ADR-094 caught in the cosign identity.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ObservabilityConfig {
+    #[serde(default)]
+    pub host: Option<String>,
+    /// The public name Grafana answers on. Sets Grafana's `root_url`; without
+    /// it Grafana emits redirects to its bind address and login fails in a way
+    /// that looks like a proxy fault.
+    #[serde(default)]
+    pub hostname: Option<String>,
+    #[serde(default = "default_retention_months")]
+    pub retention_months: u32,
+}
+
+fn default_retention_months() -> u32 {
+    6
+}
+
 /// Where seed ISOs live on each hypervisor.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -241,6 +265,8 @@ pub struct SiteConfig {
     pub api_hardening: ApiHardeningConfig,
     #[serde(default)]
     pub posture: PostureConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
     #[serde(default)]
     pub dns: DnsConfig,
 }

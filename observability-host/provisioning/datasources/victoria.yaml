@@ -1,0 +1,30 @@
+# Datasources, provisioned. `editable: false` is ENFORCED by Grafana: the UI
+# will not modify these at all (ADR-102).
+apiVersion: 1
+
+datasources:
+  - name: VictoriaMetrics
+    uid: victoriametrics
+    # An EXPLICIT uid. Left unset Grafana generates a random one at first start,
+    # so a dashboard referencing it would bind to whatever that host happened to
+    # generate — and rebuilding the host would silently orphan every panel. A
+    # fixed uid is what makes the dashboards portable across a rebuild.
+    type: prometheus
+    access: proxy
+    # Loopback. VictoriaMetrics binds 127.0.0.1 and is reached only from this
+    # host — Grafana is the sole client, so there is no reason to expose it.
+    url: http://127.0.0.1:8428
+    isDefault: true
+    editable: false
+    jsonData:
+      # VictoriaMetrics implements the Prometheus query API; naming the flavour
+      # keeps Grafana from offering features it does not have.
+      prometheusType: Prometheus
+      timeInterval: 30s
+
+  - name: VictoriaLogs
+    uid: victorialogs
+    type: victoriametrics-logs-datasource
+    access: proxy
+    url: http://127.0.0.1:9428
+    editable: false

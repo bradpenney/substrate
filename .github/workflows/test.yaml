@@ -14,6 +14,16 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Actions are pinned to a COMMIT SHA, not a tag. A tag is mutable: whoever can
+# push to the action's repository can move `v7` to different code, and every
+# workflow that trusts the tag runs it on the next build. The trailing comment
+# records which release the sha was, so a human can still read the version — and
+# `gh api repos/OWNER/REPO/git/ref/tags/TAG` resolves the next one.
+#
+# This is the same argument as pinning the Kairos image by checksum rather than
+# by tag (versions.yml): the tag says what was ASKED for, the digest says what
+# will actually run.
+
 permissions:
   contents: read
 
@@ -28,8 +38,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - name: Install test dependencies
@@ -124,7 +134,7 @@ jobs:
     name: rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned toolchain
         # rust-toolchain.toml pins the channel and the musl target. Pinned for
         # the same reason every other version here is: a rebuild months from now
@@ -161,8 +171,8 @@ jobs:
     name: lint & format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - name: Install linters and the imports they resolve
@@ -189,7 +199,7 @@ jobs:
     name: shell
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Lint every shipped script
         # PINNED to a specific shellcheck, run from the same container image used
         # locally. The first version of this step used ubuntu-latest's
@@ -209,8 +219,8 @@ jobs:
     name: ansible
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - name: Install ansible-core

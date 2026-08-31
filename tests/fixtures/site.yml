@@ -81,3 +81,10 @@ dns:
   domain: example.invalid
   proxied: [hello]
   vercel_team: fake-team
+
+# Host-tier observability (ADR-098). hvA is the fixture's "local" hypervisor,
+# standing in for the machine with memory to spare.
+observability:
+  host: hvA
+  hostname: observe.example.invalid
+  retention_months: 6

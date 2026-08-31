@@ -1,0 +1,17 @@
+[Unit]
+Description=Restart Grafana if it is alive but not serving
+Documentation=https://github.com/bradpenney/substrate
+# THE GAP THIS CLOSES
+# `Restart=always` only sees the process EXIT. A process that is alive and
+# wedged — deadlocked, out of file descriptors, stuck on a database lock —
+# stays `active (running)` forever while serving nothing, and systemd is
+# perfectly happy about it.
+#
+# "The service is running" and "the service is working" are different claims,
+# and only one of them is worth making. This checks the second.
+OnFailure=observability-notify@%p.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/grafana-health.sh
+TimeoutStartSec=120

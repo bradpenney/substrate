@@ -1,0 +1,32 @@
+[Unit]
+Description=Report drift between the substrate repository and this host
+Documentation=https://github.com/bradpenney/substrate
+# THE HOST TIER'S RECONCILER — except it does not reconcile (ADR-100).
+#
+# Flux reconciles Kubernetes objects; there is no systemd controller, so it
+# cannot manage these units. The workaround that suggests itself — a privileged
+# DaemonSet writing unit files through a hostPath — MUST NOT be built: it would
+# make the observer reconciled BY the observed, so a cluster that failed to
+# reconcile could no longer repair the thing meant to report that failure.
+#
+# It is also deliberately OFFLINE. A root timer that pulls from git and
+# executes means push access to the repository is root on the hypervisor —
+# rejected. It compares against a manifest written at deploy time instead, so
+# it needs no network and no credentials. Staleness (is this host running the
+# current version?) is a separate question answered by a signed, semantically
+# versioned OCI artifact, not by a git pull (ADR-101).
+#
+# It ALERTS, it does not apply. Flux can revert a bad reconcile because a
+# Kubernetes object has a previous version; a hypervisor has none, and an
+# automatic root-level apply that goes wrong takes down the host carrying the
+# cluster. Observe first, automate second — auto-apply is opt-in later, once
+# this has been quiet long enough to have earned it.
+OnFailure=observability-notify@%p.service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/substrate-reconcile.sh
+TimeoutStartSec=600

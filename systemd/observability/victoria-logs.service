@@ -1,0 +1,59 @@
+[Unit]
+Description=VictoriaLogs (log store)
+Documentation=https://github.com/bradpenney/substrate
+# The log half of the host tier (ADR-098). Logs are FILES on a node, so unlike
+# metrics they cannot be pulled from here — a collector inside the cluster ships
+# them out to this listener. That is the only reason server2 needs a per-node
+# agent at all.
+# WHY THIS IS A SYSTEMD UNIT AND NOT A DEPLOYMENT
+# The PRINCIPLE: observability lives outside the rebuildable unit. The observer
+# must not share a failure domain — or a LIFECYCLE — with the observed, and
+# `gate.py rebuild` destroys this cluster deliberately and routinely.
+# The log store has to outlive that, and be able to watch it happen.
+#
+# The COMPROMISE: it runs on a hypervisor because there is no second cluster to
+# put it on. Ideally this would be separate infrastructure-grade hardware with
+# its own failure domain. It is not — so if this host dies, observability dies
+# with it. That is a resource constraint, not the design (ADR-098).
+#
+# Moving it later is: change one address in the in-cluster agents. The boundary
+# is the architecture; this machine is an annotation on it.
+OnFailure=observability-notify@%p.service
+After=network-online.target
+Wants=network-online.target
+# Restart forever; see the note in victoria-metrics.service. A log store that
+# gives up after five attempts stops recording at exactly the moment something
+# is generating interesting logs.
+StartLimitIntervalSec=0
+
+[Service]
+# Binds all interfaces because the INGEST path comes from inside the cluster,
+# which reaches this host over the LAN — unlike VictoriaMetrics, which only ever
+# talks to Grafana over loopback. firewalld restricts 9428 to the cluster's node
+# addresses; the port being open is not the same as it being reachable.
+ExecStart=/usr/local/bin/victoria-logs-prod \
+    -storageDataPath=/var/lib/victoria-logs \
+    -httpListenAddr=:9428 \
+    -retentionPeriod=7d \
+    -memory.allowedPercent=15 \
+    -loggerFormat=json
+Restart=always
+RestartSec=5s
+
+# SIGINT, not SIGTERM: the VictoriaMetrics family flushes in-memory parts on
+# SIGINT. SIGTERM discards the most recent data on every restart — a slow leak
+# of exactly the entries most likely to explain a restart.
+KillSignal=SIGINT
+TimeoutStopSec=60
+
+User=victorialogs
+Group=victorialogs
+StateDirectory=victoria-logs
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

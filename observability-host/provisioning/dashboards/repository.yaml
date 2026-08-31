@@ -1,0 +1,21 @@
+# The dashboard provider. Everything under `path` is loaded from disk, which is
+# to say from this repository (ADR-102).
+apiVersion: 1
+
+providers:
+  - name: repository
+    orgId: 1
+    type: file
+    # ENFORCED, not advisory: with this false, Grafana disables Save on every
+    # dashboard it loaded from disk. A viewer cannot overwrite one, and neither
+    # can an admin who meant to "just tweak it quickly".
+    allowUiUpdates: false
+    # Deleting the file deletes the dashboard. The repository is the only place
+    # a dashboard exists, so removing one there must remove it here.
+    disableDeletion: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards
+      # Directory names become folders, so the layout in git is the layout in
+      # the UI — one fewer thing that can differ.
+      foldersFromFilesStructure: true

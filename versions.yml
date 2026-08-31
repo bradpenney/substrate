@@ -35,3 +35,50 @@ kairos:
   # from the release rather than guessing.
   iso_url: "https://github.com/kairos-io/kairos/releases/download/v4.2.0/kairos-hadron-v0.5.1-standard-amd64-generic-v4.2.0-k0sv1.36.3%2Bk0s.2.iso"
   iso_sha256: "f59abdafdfca95fd15bd2d92b1bb766f125a92e9b50e7d920c245e31032c3cf3"
+
+# --- observability, host tier (ADR-098) --------------------------------------
+#
+# These run on the HYPERVISORS as systemd units, not in the cluster, so that the
+# metrics store survives a cluster rebuild and can watch one happen. Pinned here
+# with the rest for the same reason everything else is: a rebuild months from
+# now must install the same bytes, and the checksum is what guarantees that —
+# the tag only records what was asked for.
+#
+# `sha256` is the checksum of the TARBALL, taken from the release's own
+# published checksums file, not computed locally from a download that could
+# already have been the wrong one.
+observability:
+  node_exporter:
+    version: v1.12.1
+    url: https://github.com/prometheus/node_exporter/releases/download/{version}/node_exporter-1.12.1.linux-amd64.tar.gz
+    sha256: b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63
+    # Path of the binary INSIDE the tarball; these three projects each lay it
+    # out differently, so it cannot be derived from the name.
+    member: node_exporter-1.12.1.linux-amd64/node_exporter
+    install_as: node_exporter
+
+  victoria_metrics:
+    version: v1.150.0
+    url: https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/{version}/victoria-metrics-linux-amd64-{version}.tar.gz
+    sha256: 22bfe77be3de1ad03f214a005129312536d77ed4e293b66c186df417ee40a61d
+    member: victoria-metrics-prod
+    install_as: victoria-metrics-prod
+
+  victoria_logs:
+    version: v1.52.0
+    url: https://github.com/VictoriaMetrics/VictoriaLogs/releases/download/{version}/victoria-logs-linux-amd64-{version}.tar.gz
+    sha256: d14f585144b8d6813f15e11f0041f487e15e10e5f5e5a31be0311367e93d3494
+    member: victoria-logs-prod
+    install_as: victoria-logs-prod
+
+  grafana:
+    version: v13.2.0
+    # NOT a GitHub release asset — Grafana publishes the tarball and its
+    # checksum at dl.grafana.com, so that is where both come from. The version
+    # appears twice because the tag carries a `v` and the filename does not.
+    url: https://dl.grafana.com/oss/release/grafana-13.2.0.linux-amd64.tar.gz
+    sha256: 4669384cdb0bb5b4a3f804927e57490d17f4cc47258cd1698fc124e99ee58265
+    # A TREE, not a single binary (455 MB: bin/, conf/, public/). Installed by
+    # the install_tree path, not install_binary — see ADR-102.
+    tree_root: grafana-13.2.0
+    install_to: /usr/local/share/grafana

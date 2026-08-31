@@ -149,7 +149,24 @@ PRIMARY_NIC = _CFG.network.primary_nic
 # Resolved at runtime from the environment or ~/.ssh/id_ed25519.pub, never
 # stored — so the repo carries nobody's identity and anyone cloning it
 # provisions nodes trusting THEIR key.
-SSH_PUBLIC_KEY = siteconfig.resolve_ssh_public_key()
+#
+# LAZY, via module __getattr__ (PEP 562). Resolving it at import time made
+# EVERY consumer of the topology require an admin SSH key, including tools that
+# never render a cloud-config — deploy-observability.py failed on a missing
+# /root/.ssh/id_ed25519.pub while installing metrics agents, which have nothing
+# to do with node identity. An import-time side effect is a dependency whether
+# or not the value is used.
+#
+# `from hosts import SSH_PUBLIC_KEY` still works and still resolves eagerly for
+# the callers that genuinely need it (provision.py renders it into every node).
+
+
+def __getattr__(name: str) -> str:
+    """Resolve SSH_PUBLIC_KEY on first access, not on import."""
+    if name == "SSH_PUBLIC_KEY":
+        return siteconfig.resolve_ssh_public_key()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Pinned to a specific release, not "latest", so a re-run months from now
 # still builds identical nodes. The checksum is what actually guarantees it.

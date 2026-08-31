@@ -1,0 +1,81 @@
+; TEMPLATE. Rendered by deploy-observability.py from site.yml; never edited on
+; the host — the drift check hashes the rendered result, so a hand-edit is
+; reported.
+;
+; It is a template because the public hostname and the GitHub org are THIS
+; ESTATE'S identity, and this repository is going public. Hardcoding them would
+; repeat the mistake ADR-094 caught in the cosign identity: a public repo
+; carrying one deployment's names, which everyone else then has to find and
+; strip. Values come from site.yml, which is gitignored.
+
+[server]
+; The docker bridge gateway ONLY — not 0.0.0.0, not the LAN. Nothing on the
+; network can reach Grafana except through the edge that terminates TLS.
+; Stricter than the existing docker services, which listen on 0.0.0.0.
+http_addr = 172.18.0.1
+http_port = 3000
+; LOAD-BEARING. Without it Grafana generates redirects to its bind address, and
+; login fails in a way that looks like a proxy fault rather than a config one.
+root_url = https://__HOSTNAME__/
+
+[security]
+; From a 0600 EnvironmentFile via GF_SECURITY_ADMIN_PASSWORD. Never here.
+admin_user = admin
+disable_gravatar = true
+cookie_secure = true
+cookie_samesite = lax
+content_security_policy = true
+
+[users]
+; ADR-102. Anyone who signs in can look and cannot author. This is the control
+; that stops a NEW dashboard being created beside the provisioned ones —
+; allowUiUpdates only stops the provisioned ones being overwritten.
+allow_sign_up = false
+allow_org_create = false
+auto_assign_org_role = Viewer
+viewers_can_edit = false
+
+[auth.anonymous]
+enabled = false
+
+[auth.github]
+; Membership of ONE GitHub organisation is the whole access-control list, and
+; it lives here — reviewed, in git, rebuildable. GitHub owns the credentials,
+; the 2FA and the account recovery; revoking someone is removing them from the
+; org. Nothing about a user is stored on this host.
+;
+; ⚠️ allowed_organizations is LOAD-BEARING. Without it ANY GitHub account on
+; earth can sign in — the default is not "nobody", it is "everybody".
+enabled = __GITHUB_ENABLED__
+allowed_organizations = __GITHUB_ORG__
+; read:org is required to see membership at all; user:email to identify who.
+scopes = user:email,read:org
+; client_id and client_secret come from grafana.env (0640 root:grafana),
+; never from this file.
+auto_login = false
+
+[auth]
+disable_login_form = false
+; Grafana's own brute-force protection. On by default; stated so that turning it
+; off is a visible act rather than an omission.
+disable_brute_force_login_protection = false
+
+[analytics]
+; A homelab does not need to phone home, and an outbound call from the
+; observability host is a call nobody is watching.
+reporting_enabled = false
+check_for_updates = false
+feedback_links_enabled = false
+
+[snapshots]
+; Publishing a snapshot externally would send cluster internals to a third
+; party from the one host that can see everything.
+external_enabled = false
+
+[log]
+mode = console
+level = info
+
+[dashboards]
+; The dashboard shown at /. Provisioned like every other.
+default_home_dashboard_path = /var/lib/grafana/dashboards/fleet-overview.json

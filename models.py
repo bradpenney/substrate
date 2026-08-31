@@ -179,6 +179,36 @@ class PostureConfig(_Strict):
     origin_ip: str | None = None
 
 
+class ObservabilityConfig(_Strict):
+    """Where the host-tier observability stack runs (ADR-098).
+
+    `host` names a hypervisor from the `hypervisors` map. It is configuration
+    rather than a constant because this repository is going public: a hardcoded
+    `server1` would ship one estate's topology to everyone who clones it, which
+    is the mistake ADR-094 caught in the cosign identity.
+
+    Empty disables the host tier entirely — node_exporter still installs on
+    every hypervisor, since node metrics are useful with or without a store.
+    """
+
+    host: str | None = None
+    # The public name Grafana answers on. Used to set Grafana's root_url,
+    # without which it generates redirects to its bind address and login fails
+    # in a way that looks like a proxy fault.
+    hostname: str | None = None
+    # Metrics retention, in months. Sized from the fleet in ADR-096: ~10k
+    # active series at a 30s scrape is on the order of 30 MB/day compressed.
+    retention_months: int = 6
+    # Membership of this GitHub organisation IS the access-control list for the
+    # dashboards (ADR-103). GitHub owns the credentials, the 2FA and the account
+    # recovery; revoking someone is removing them from the org.
+    #
+    # Empty disables GitHub auth entirely and leaves Grafana's own login. It is
+    # config rather than a constant for the ADR-094 reason: this repository is
+    # going public and must not carry one deployment's org name.
+    github_org: str | None = None
+
+
 class LibvirtConfig(_Strict):
     """Where seed ISOs live on each hypervisor."""
 
@@ -256,4 +286,5 @@ class SiteConfig(_Strict):
     )
     api_hardening: ApiHardeningConfig = Field(default_factory=ApiHardeningConfig)
     posture: PostureConfig = Field(default_factory=PostureConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     dns: DnsConfig = Field(default_factory=DnsConfig)
