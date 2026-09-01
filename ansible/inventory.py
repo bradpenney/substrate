@@ -42,6 +42,7 @@ Usage is the standard dynamic-inventory contract:
 """
 
 import argparse
+import base64
 import json
 import sys
 from pathlib import Path
@@ -60,16 +61,14 @@ def _pull_secret_b64(flux: models.FluxConfig) -> str:
     """
     if not flux.ghcr_token:
         return ""
-    import base64
-    import json
     registry = flux.oci_repository.split("/")[0]
-    auth = base64.b64encode(
-        f"{flux.ghcr_username}:{flux.ghcr_token}".encode()).decode()
+    auth = base64.b64encode(f"{flux.ghcr_username}:{flux.ghcr_token}".encode()).decode()
     cfg = json.dumps({"auths": {registry: {"auth": auth}}})
     return base64.b64encode(cfg.encode()).decode()
 
 
 def build() -> dict:
+    """Build the full dynamic-inventory document from site.yml."""
     cfg = siteconfig.load_model()
     net = cfg.network
     defaults = cfg.defaults
@@ -130,14 +129,14 @@ def build() -> dict:
                 "kairos_iso_url": cfg.kairos.iso_url,
                 "kairos_iso_sha256": cfg.kairos.iso_sha256,
                 "k0s_args": list(cfg.k0s.args),
-            # Empty string when no LB is configured — Jinja tests truthiness.
-            "control_plane_vip": cfg.control_plane.vip or "",
+                # Empty string when no LB is configured — Jinja tests truthiness.
+                "control_plane_vip": cfg.control_plane.vip or "",
                 "k0s_token_expiry": cfg.k0s.token_expiry,
                 "vm_memory_mib": defaults.memory_mib,
                 "vm_vcpu": defaults.vcpu,
                 "vm_disk_gb": defaults.disk_gb,
-            # ADR-050: dedicated Longhorn disk. 0 = do not attach one.
-            "vm_storage_disk_gb": defaults.storage_disk_gb,
+                # ADR-050: dedicated Longhorn disk. 0 = do not attach one.
+                "vm_storage_disk_gb": defaults.storage_disk_gb,
                 "iso_pool": cfg.libvirt.iso_pool,
                 "iso_pool_path": cfg.libvirt.iso_pool_path,
                 # GitOps bootstrap (ADR-018). The pull secret is pre-rendered
@@ -156,9 +155,7 @@ def build() -> dict:
                 # credentials, so cert-manager could not solve DNS-01 and the
                 # PV backups had no remote — the exact silent failure the
                 # bootstrap manifest exists to prevent.
-                "external_secrets": cfg.external_secrets.model_dump(
-                    exclude_none=True
-                ),
+                "external_secrets": cfg.external_secrets.model_dump(exclude_none=True),
                 # API server hardening: secrets-at-rest encryption key and
                 # audit log settings (ADR-066).
                 "api_hardening": cfg.api_hardening.model_dump(exclude_none=True),
@@ -181,6 +178,7 @@ def build() -> dict:
 
 
 def main() -> int:
+    """Serve the Ansible dynamic-inventory contract (--list / --host)."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--host")

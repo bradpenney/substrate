@@ -1,0 +1,20 @@
+# substrate — runtime dependencies.
+#
+# Pinned exactly. This tree provisions a cluster; a dependency that drifts
+# between server1 and server2 is a difference in the thing being built, not
+# just in the build environment.
+#
+# Install:
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# NOTE ON THE VENV AND SYSTEMD: units must NOT execute this venv's interpreter.
+# Fedora labels everything under /home as user_home_t and a systemd service
+# cannot exec a user_home_t binary (203/EXEC). posture-check.service therefore
+# runs /usr/bin/python3 against RPM-provided python3-pydantic and python3-pyyaml.
+# This file covers development, CI, and interactive use only.
+
+pydantic==2.13.5          # typed site.yml -> models.py, siteconfig.py
+PyYAML==6.0.3             # site.yml parsing (siteconfig._StrictLoader)
+Jinja2==3.1.6             # cloud-config / manifest rendering
+cryptography==50.0.0      # create-client-cert.py
+ansible-core==2.21.3      # ansible/ — being retired by the Rust port

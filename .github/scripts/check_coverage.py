@@ -47,15 +47,21 @@ ORCHESTRATION_MODULES = ["gate.py", "provision.py"]
 
 
 def main() -> int:
+    """Gate logic coverage, report orchestration coverage, emit the badge input.
+
+    Returns 0 when every gated module clears LOGIC_TARGET, 1 otherwise.
+    """
     data = json.loads(
-        Path(sys.argv[1] if len(sys.argv) > 1 else "coverage.json").read_text()
+        Path(sys.argv[1] if len(sys.argv) > 1 else "coverage.json").read_text(
+            encoding="utf-8"
+        )
     )
     files = {Path(k).name: v for k, v in data["files"].items()}
 
     failures = []
     covered = missing = 0
 
-    print("LOGIC — unit tested, gated at {}%".format(LOGIC_TARGET))
+    print(f"LOGIC — unit tested, gated at {LOGIC_TARGET}%")
     for name in LOGIC_MODULES:
         f = files.get(name)
         if f is None:
@@ -85,7 +91,7 @@ def main() -> int:
                 f"  [    ] {name:<24} {s['percent_covered']:5.1f}%  ({s['missing_lines']} uncovered)"
             )
 
-    Path("logic-coverage.txt").write_text(f"{round(logic_pct)}\n")
+    Path("logic-coverage.txt").write_text(f"{round(logic_pct)}\n", encoding="utf-8")
 
     if failures:
         print("\n" + "\n".join(f"FAIL: {f}" for f in failures), file=sys.stderr)

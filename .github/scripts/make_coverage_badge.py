@@ -26,6 +26,7 @@ LABEL = "logic coverage"
 
 
 def colour(pct: int) -> str:
+    """Return the shields.io bar colour for a coverage percentage."""
     if pct >= 80:
         return "#4c1"
     if pct >= 60:
@@ -36,6 +37,7 @@ def colour(pct: int) -> str:
 
 
 def main() -> int:
+    """Write an SVG coverage badge for the percentage given as argv[1]."""
     if len(sys.argv) != 2:
         raise SystemExit(__doc__)
     pct = int(sys.argv[1])

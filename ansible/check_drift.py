@@ -26,8 +26,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-import hosts as py
 import inventory as ans
+import hosts as py
 
 
 def from_python() -> dict:
@@ -125,25 +125,34 @@ def diff(a: dict, b: dict, path: str = "") -> list[str]:
         if key not in a:
             problems.append(f"  {where}: absent in hosts.py (inventory has {b[key]!r})")
         elif key not in b:
-            problems.append(f"  {where}: absent in inventory.py (hosts.py has {a[key]!r})")
+            problems.append(
+                f"  {where}: absent in inventory.py (hosts.py has {a[key]!r})"
+            )
         elif isinstance(a[key], dict) and isinstance(b[key], dict):
             problems.extend(diff(a[key], b[key], where))
         elif a[key] != b[key]:
-            problems.append(f"  {where}: hosts.py={a[key]!r} vs inventory.py={b[key]!r}")
+            problems.append(
+                f"  {where}: hosts.py={a[key]!r} vs inventory.py={b[key]!r}"
+            )
     return problems
 
 
 def main() -> int:
+    """Fail if hosts.py and inventory.py read site.yml differently."""
     problems = diff(from_python(), from_ansible())
     if problems:
-        print("INTERPRETATION DRIFT — hosts.py and inventory.py read site.yml differently:")
+        print(
+            "INTERPRETATION DRIFT — hosts.py and inventory.py read site.yml differently:"
+        )
         print("\n".join(problems))
         print("\nBoth read the same site.yml, so this is a logic difference, not a")
         print("data one. Left unfixed, the two bootstrap methods would build")
         print("different clusters and the gate would compare them as if identical.")
         return 1
     n = len(from_python()["vms"])
-    print(f"both implementations interpret site.yml identically ({n} VMs, all settings match)")
+    print(
+        f"both implementations interpret site.yml identically ({n} VMs, all settings match)"
+    )
     return 0
 
 

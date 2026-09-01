@@ -27,15 +27,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from jinja2 import Environment, FileSystemLoader
 
+import inventory
 import hosts as py
 import provision
-import inventory
 
 TEMPLATE_DIR = Path(__file__).parent / "roles" / "k0s_node" / "templates"
 
 
-def render_jinja(vm_name: str, static_ip: str, join_token: str | None,
-                 hostvars: dict | None = None) -> str:
+def render_jinja(
+    vm_name: str, static_ip: str, join_token: str | None, hostvars: dict | None = None
+) -> str:
+    """Render the k0s_node cloud-config through the Ansible Jinja template."""
     # Group vars come from the dynamic inventory — the same source the playbook
     # itself uses, so this compares what Ansible would ACTUALLY render rather
     # than a hand-maintained approximation of it.
@@ -68,6 +70,7 @@ def render_jinja(vm_name: str, static_ip: str, join_token: str | None,
 
 
 def compare(label: str, vm: py.VM, join_token: str | None) -> bool:
+    """Report whether the Python and Jinja renderers agree for one VM."""
     expected = provision.render_cloud_config(vm, join_token)
     hostvars = {}
     if vm.storage_disk_gb is not None:
@@ -91,6 +94,7 @@ def compare(label: str, vm: py.VM, join_token: str | None) -> bool:
 
 
 def main() -> int:
+    """Compare every representative VM shape across both renderers."""
     ok = True
     ok &= compare(
         "bootstrap node (no token)",
@@ -112,7 +116,9 @@ def main() -> int:
         "TESTTOKEN123abc",
     )
     if not ok:
-        print("\nThe two implementations would build DIFFERENT nodes. Fix before running the gate.")
+        print(
+            "\nThe two implementations would build DIFFERENT nodes. Fix before running the gate."
+        )
         return 1
     print("cloud-config renderers agree")
     return 0

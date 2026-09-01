@@ -44,6 +44,7 @@ def k0s_version(url: str):
 
 
 def main() -> int:
+    """Pick the Kairos release asset matching the currently installed one."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--current-url", required=True)
     args = ap.parse_args()

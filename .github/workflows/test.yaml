@@ -178,12 +178,23 @@ jobs:
       - name: Install linters and the imports they resolve
         # pylint follows imports, so the runtime dependencies have to be present
         # or it reports import-error for code that is fine.
-        run: python -m pip install --quiet pylint pylint-pydantic black pyyaml jinja2 cryptography pydantic
+        #
+        # PINNED, from the repo's own requirements. This list used to be spelled
+        # out here and unpinned, which meant an upstream release could change
+        # CI's verdict with no commit to this repository — a green build turning
+        # red, or worse a rule quietly relaxing, with nothing to bisect.
+        run: python -m pip install --quiet -r requirements-dev.txt
 
       - name: black
         # --check only: CI reports drift, it does not rewrite the repo. A
         # formatter that edits on the server makes the local copy wrong.
-        run: black --check --diff --line-length 88 *.py tests/*.py .github/scripts/*.py
+        #
+        # WHOLE TREE. This was `*.py tests/*.py .github/scripts/*.py` — three
+        # globs, none of which recurse. ansible/, dns/ and tests/golden/ were
+        # matched by nothing and drifted unformatted while CI reported green;
+        # five files had to be reformatted when it was finally run over
+        # everything. A fixed glob list silently stops covering new directories.
+        run: black --check --diff --line-length 88 .
 
       - name: pylint (10.00/10 required)
         # SOURCE only. Test files legitimately trip pytest idioms — fixtures
@@ -193,7 +204,14 @@ jobs:
         env:
           SUBSTRATE_SITE_FILE: ${{ github.workspace }}/tests/fixtures/site.yml
           HOMELAB_SSH_PUBLIC_KEY: "ssh-ed25519 AAAATESTKEYONLY ci@fixture"
-        run: pylint *.py --fail-under=10
+        # Every tracked .py EXCEPT tests/, rather than a top-level glob that
+        # covered 12 of 44 files. Derived from git, so a new source directory is
+        # included the day it is added instead of the day someone notices.
+        # PYTHONPATH: ansible/ and dns/ scripts import repo-root modules after a
+        # sys.path.insert at runtime, which pylint cannot see statically.
+        run: |
+          PYTHONPATH="${{ github.workspace }}" \
+          pylint $(git ls-files '*.py' | grep -v '^tests/') --fail-under=10
 
   shellcheck:
     name: shell

@@ -1,0 +1,17 @@
+# substrate — development and CI dependencies.
+#
+#   .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+#
+# Versions match what CI enforces; see .github/workflows/. Note that
+# pylint_pydantic SILENCES no-member on pydantic models rather than teaching
+# pylint the field names — a typo like _CFG.network.gatewya still scores 10.00.
+# The test suite, not the linter, is the net that catches those.
+
+-r requirements.txt
+
+pytest==9.1.1
+pytest-cov==7.1.0
+coverage==7.16.0
+pylint==4.0.8
+pylint-pydantic==0.4.1
+black==26.5.1

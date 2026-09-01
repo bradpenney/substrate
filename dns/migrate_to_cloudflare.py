@@ -64,6 +64,7 @@ def load_env() -> dict:
 
 
 def api(url, headers, method="GET", body=None):
+    """Issue a JSON API request and return the decoded response body."""
     data = json.dumps(body).encode() if body is not None else None
     if data:
         headers = {**headers, "Content-Type": "application/json"}
@@ -81,9 +82,13 @@ def api(url, headers, method="GET", body=None):
 
 
 def vercel_records(env) -> list:
+    """Return every DNS record Vercel holds for the domain."""
     h = {"Authorization": f"Bearer {env['VERCEL_TOKEN']}"}
-    d = api(f"https://api.vercel.com/v4/domains/{DOMAIN}/records"
-            f"?teamId={TEAM}&limit=100", h)
+    d = api(
+        f"https://api.vercel.com/v4/domains/{DOMAIN}/records"
+        f"?teamId={TEAM}&limit=100",
+        h,
+    )
     return d.get("records") or []
 
 
@@ -102,9 +107,14 @@ def translate(rec) -> dict | None:
 
     if rtype == "ALIAS":
         # Not a rename: Cloudflare flattens a CNAME at the apex natively.
-        return {"type": "CNAME", "name": fqdn, "content": value.rstrip("."),
-                "ttl": ttl, "proxied": False,
-                "comment": "was ALIAS on Vercel (apex/wildcard flattening)"}
+        return {
+            "type": "CNAME",
+            "name": fqdn,
+            "content": value.rstrip("."),
+            "ttl": ttl,
+            "proxied": False,
+            "comment": "was ALIAS on Vercel (apex/wildcard flattening)",
+        }
 
     if rtype == "CAA":
         # "0 issue \"letsencrypt.org\"" -> structured fields.
@@ -112,25 +122,32 @@ def translate(rec) -> dict | None:
         if not m:
             return {"_unparsed": True, "type": "CAA", "name": fqdn, "raw": value}
         flags, tag, ca = m.groups()
-        return {"type": "CAA", "name": fqdn, "ttl": ttl,
-                "data": {"flags": int(flags), "tag": tag, "value": ca}}
+        return {
+            "type": "CAA",
+            "name": fqdn,
+            "ttl": ttl,
+            "data": {"flags": int(flags), "tag": tag, "value": ca},
+        }
 
-    return {"type": rtype, "name": fqdn, "content": value, "ttl": ttl,
-            "proxied": False}
-
+    return {"type": rtype, "name": fqdn, "content": value, "ttl": ttl, "proxied": False}
 
 
 def cf_zone_id(cfh):
+    """Return the Cloudflare zone id for the domain, or None if absent."""
     r = api(f"https://api.cloudflare.com/client/v4/zones?name={DOMAIN}", cfh)
     res = r.get("result") or []
     return res[0]["id"] if res else None
 
 
 def cf_records(cfh, zone_id) -> list:
+    """Return every DNS record in the Cloudflare zone, following pagination."""
     out, page = [], 1
     while True:
-        r = api(f"https://api.cloudflare.com/client/v4/zones/{zone_id}"
-                f"/dns_records?per_page=100&page={page}", cfh)
+        r = api(
+            f"https://api.cloudflare.com/client/v4/zones/{zone_id}"
+            f"/dns_records?per_page=100&page={page}",
+            cfh,
+        )
         batch = r.get("result") or []
         out.extend(batch)
         info = r.get("result_info") or {}
@@ -187,7 +204,7 @@ def verify(env, cfh, quiet=False) -> int:
     have = {}
     for r in cf_records(cfh, zone_id):
         if r["type"] in ("NS", "SOA"):
-            continue           # Cloudflare's own, never ours to manage
+            continue  # Cloudflare's own, never ours to manage
         have[key(r)] = r
 
     missing = sorted(want.keys() - have.keys())
@@ -196,13 +213,16 @@ def verify(env, cfh, quiet=False) -> int:
 
     # Proxy status is not part of the identity key, so it is checked separately
     # — a record can match on (type, name, value) and still be orange-clouded.
-    proxied = [r for r in have.values() if r.get("proxied")
-               and r["name"].rstrip(".").lower() not in PROXY_OK]
+    proxied = [
+        r
+        for r in have.values()
+        if r.get("proxied") and r["name"].rstrip(".").lower() not in PROXY_OK
+    ]
 
     if quiet:
         return 0 if not (missing or extra or proxied) else 1
 
-    print(f"=== diff: Vercel (source of truth) vs Cloudflare ===\n")
+    print("=== diff: Vercel (source of truth) vs Cloudflare ===\n")
     print(f"  matching : {len(match)}")
     print(f"  missing  : {len(missing)}   (in Vercel, NOT in Cloudflare)")
     print(f"  extra    : {len(extra)}   (in Cloudflare, not in Vercel)")
@@ -224,10 +244,15 @@ def verify(env, cfh, quiet=False) -> int:
         print("    the traffic path to the homelab. Turn these grey.")
 
     ok = not missing and not extra and not proxied
-    print("\n  " + ("CLEAN — safe to change nameservers at Hostinger."
-                     if ok else "NOT CLEAN — do not change nameservers yet."))
+    print(
+        "\n  "
+        + (
+            "CLEAN — safe to change nameservers at Hostinger."
+            if ok
+            else "NOT CLEAN — do not change nameservers yet."
+        )
+    )
     return 0 if ok else 1
-
 
 
 def _dig(name, rtype, server=None) -> list:
@@ -236,6 +261,7 @@ def _dig(name, rtype, server=None) -> list:
     function exists."""
     import shutil
     import subprocess
+
     if not shutil.which("dig"):
         return []
     cmd = ["dig", "+short", "+time=3", "+tries=2"]
@@ -243,11 +269,14 @@ def _dig(name, rtype, server=None) -> list:
         cmd.append("@" + server)
     cmd += [name, rtype]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        # check=False deliberately: dig exits non-zero for NXDOMAIN and
+        # SERVFAIL, which are answers this function reports, not failures.
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=15, check=False
+        )
         return [l for l in out.stdout.splitlines() if l.strip()]
     except Exception:
         return []
-
 
 
 def parent_delegation(domain) -> tuple:
@@ -266,21 +295,35 @@ def parent_delegation(domain) -> tuple:
     """
     import shutil
     import subprocess
+
     if not shutil.which("dig"):
         return ([], None)
     tld = domain.rsplit(".", 1)[-1]
     try:
-        out = subprocess.run(["dig", "+short", "+time=3", tld, "NS", "@1.1.1.1"],
-                             capture_output=True, text=True, timeout=15)
+        # check=False deliberately: see the note above — a failed lookup is
+        # handled by the empty-result path, not by an exception.
+        out = subprocess.run(
+            ["dig", "+short", "+time=3", tld, "NS", "@1.1.1.1"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
         servers = [l.rstrip(".") for l in out.stdout.split() if l.strip()][:4]
     except Exception:
         return ([], None)
 
     for srv in servers:
         try:
+            # check=False deliberately: a nameserver that refuses or times
+            # out is a RESULT of this probe, and the loop tries the next one.
             r = subprocess.run(
                 ["dig", "+norecurse", "+time=3", "+tries=1", "@" + srv, domain, "NS"],
-                capture_output=True, text=True, timeout=15)
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
         except Exception:
             continue
         ns, in_auth = [], False
@@ -297,7 +340,6 @@ def parent_delegation(domain) -> tuple:
         if ns:
             return (sorted(set(ns)), srv)
     return ([], None)
-
 
 
 # Public resolvers polled to decide whether DNSSEC is safe to switch on. Not
@@ -364,7 +406,8 @@ def preflight(env, cfh) -> int:
             "DNSSEC is ACTIVE (a DS record exists in the parent zone).\n"
             "      Remove the DS record at the registrar and wait for it to\n"
             "      expire from the parent BEFORE changing nameservers. Moving\n"
-            "      with a stale DS takes the domain down globally. (ADR-039)")
+            "      with a stale DS takes the domain down globally. (ADR-039)"
+        )
         print("  [!!] DNSSEC:   DS record present — " + "; ".join(sorted(set(ds))))
     else:
         print("  [ok] DNSSEC:   unsigned, no DS in parent — safe to move")
@@ -382,15 +425,23 @@ def preflight(env, cfh) -> int:
     current, via = parent_delegation(DOMAIN)
     cached = sorted(x.rstrip(".").lower() for x in _dig(DOMAIN, "NS"))
     zone_id = cf_zone_id(cfh)
-    z = api(f"https://api.cloudflare.com/client/v4/zones/{zone_id}", cfh) if zone_id else {}
+    z = (
+        api(f"https://api.cloudflare.com/client/v4/zones/{zone_id}", cfh)
+        if zone_id
+        else {}
+    )
     zres = z.get("result") or {}
     target = sorted(x.rstrip(".").lower() for x in (zres.get("name_servers") or []))
     status = zres.get("status")
 
-    print(f"  [--] status:   Cloudflare zone is '{status}'"
-          + ("  (expected until delegation)" if status != "active" else ""))
-    print(f"  [--] parent:   {', '.join(current) or '?'}"
-          + (f"   (per {via}, uncached)" if via else ""))
+    print(
+        f"  [--] status:   Cloudflare zone is '{status}'"
+        + ("  (expected until delegation)" if status != "active" else "")
+    )
+    print(
+        f"  [--] parent:   {', '.join(current) or '?'}"
+        + (f"   (per {via}, uncached)" if via else "")
+    )
     if cached and cached != current:
         print(f"  [--] resolvers:{', '.join(cached)}   (cached; parent is truth)")
     print(f"  [--] target:   {', '.join(target) or '?'}")
@@ -399,9 +450,11 @@ def preflight(env, cfh) -> int:
     if done:
         print("\n  DELEGATION HAS MOVED — the parent zone points at Cloudflare.")
     elif current:
-        print("\n  Delegation has NOT moved yet. The parent registry still hands"
-              "\n  out the old nameservers, so the registrar has not pushed the"
-              "\n  change. This is uncached — waiting longer is the only fix.")
+        print(
+            "\n  Delegation has NOT moved yet. The parent registry still hands"
+            "\n  out the old nameservers, so the registrar has not pushed the"
+            "\n  change. This is uncached — waiting longer is the only fix."
+        )
 
     print()
     if done and status == "active":
@@ -450,16 +503,30 @@ def preflight(env, cfh) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--apply", action="store_true",
-                    help="actually create the zone and records (default: dry run)")
-    ap.add_argument("--prune", action="store_true",
-                    help="with --apply, delete Cloudflare records absent from Vercel")
-    ap.add_argument("--preflight", action="store_true",
-                    help="all checks that must pass BEFORE changing nameservers")
-    ap.add_argument("--verify", action="store_true",
-                    help="diff Cloudflare against Vercel and exit (read-only)")
+    """Parse arguments and dispatch the requested migration subcommand."""
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually create the zone and records (default: dry run)",
+    )
+    ap.add_argument(
+        "--prune",
+        action="store_true",
+        help="with --apply, delete Cloudflare records absent from Vercel",
+    )
+    ap.add_argument(
+        "--preflight",
+        action="store_true",
+        help="all checks that must pass BEFORE changing nameservers",
+    )
+    ap.add_argument(
+        "--verify",
+        action="store_true",
+        help="diff Cloudflare against Vercel and exit (read-only)",
+    )
     args = ap.parse_args()
 
     env = load_env()
@@ -498,8 +565,10 @@ def main() -> int:
         print(f"  {src_desc} ->  {dst}{note}")
 
     if skipped:
-        print(f"\n  skipped (Cloudflare manages these): "
-              f"{', '.join(s.get('type') for s in skipped)}")
+        print(
+            f"\n  skipped (Cloudflare manages these): "
+            f"{', '.join(s.get('type') for s in skipped)}"
+        )
     if problems:
         print("\n  *** COULD NOT TRANSLATE ***")
         for p in problems:
@@ -523,10 +592,16 @@ def main() -> int:
             body["account"] = {"id": env["CLOUDFLARE_ACCOUNT_ID"]}
         z = api("https://api.cloudflare.com/client/v4/zones", cfh, "POST", body)
         if not z.get("success"):
-            print("  zone creation failed:",
-                  [e.get("message") for e in z.get("errors") or []], file=sys.stderr)
-            print("  (the token likely lacks account-level Zone:Edit — create the"
-                  " zone in the dashboard instead)", file=sys.stderr)
+            print(
+                "  zone creation failed:",
+                [e.get("message") for e in z.get("errors") or []],
+                file=sys.stderr,
+            )
+            print(
+                "  (the token likely lacks account-level Zone:Edit — create the"
+                " zone in the dashboard instead)",
+                file=sys.stderr,
+            )
             return 1
         zone_id = z["result"]["id"]
         print(f"\n  zone created: {zone_id}")
@@ -561,9 +636,11 @@ def main() -> int:
     # 1. remove what the scan invented
     extra = [r for k, r in have.items() if k not in want]
     if extra and not args.prune:
-        print(f"\n  {len(extra)} EXTRA record(s) in Cloudflare but not in Vercel."
-              f"\n  Re-run with --prune to remove them. Records that conflict"
-              f"\n  (A at a name that needs a CNAME) cannot be created until then:")
+        print(
+            f"\n  {len(extra)} EXTRA record(s) in Cloudflare but not in Vercel."
+            f"\n  Re-run with --prune to remove them. Records that conflict"
+            f"\n  (A at a name that needs a CNAME) cannot be created until then:"
+        )
         for r in extra:
             print(f"    {r['type']:<6} {r['name']:<34} {r.get('content','')}")
     elif extra:
@@ -571,8 +648,10 @@ def main() -> int:
         for r in extra:
             d = api(f"{base}/{r['id']}", cfh, "DELETE")
             ok = d.get("success") or (d.get("result") or {}).get("id")
-            print(f"    {'del ' if ok else 'FAIL'} {r['type']:<6} {r['name']:<32}"
-                  f" {r.get('content','')}")
+            print(
+                f"    {'del ' if ok else 'FAIL'} {r['type']:<6} {r['name']:<32}"
+                f" {r.get('content','')}"
+            )
             if not ok:
                 failed += 1
 
@@ -601,8 +680,11 @@ def main() -> int:
     # it redirect-loops; in front of the homelab it changes the traffic path and
     # breaks direct ingress. Proxying is a deliberate per-record decision AFTER
     # the cutover, not a default inherited from an import.
-    proxied = [r for r in cf_records(cfh, zone_id) if r.get("proxied")
-               and r["name"].rstrip(".").lower() not in PROXY_OK]
+    proxied = [
+        r
+        for r in cf_records(cfh, zone_id)
+        if r.get("proxied") and r["name"].rstrip(".").lower() not in PROXY_OK
+    ]
     print(f"\n  un-proxying {len(proxied)} record(s):")
     for r in proxied:
         u = api(f"{base}/{r['id']}", cfh, "PATCH", {"proxied": False})
@@ -610,14 +692,18 @@ def main() -> int:
             print(f"    grey {r['type']:<6} {r['name']}")
         else:
             failed += 1
-            print(f"    FAIL {r['type']:<6} {r['name']}: "
-                  f"{[e.get('message') for e in u.get('errors') or []]}")
+            print(
+                f"    FAIL {r['type']:<6} {r['name']}: "
+                f"{[e.get('message') for e in u.get('errors') or []]}"
+            )
     if not proxied:
         print("    (none)")
 
     print(f"\n  {'DONE' if not failed else str(failed) + ' FAILED'}")
-    print("  Re-run with --verify to confirm the diff is clean before touching"
-          " nameservers.")
+    print(
+        "  Re-run with --verify to confirm the diff is clean before touching"
+        " nameservers."
+    )
     return 1 if failed else 0
 
 

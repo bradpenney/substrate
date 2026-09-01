@@ -217,9 +217,7 @@ def build(check_only: bool) -> int:
                 changed = not target.exists() or target.read_text() != python_out
                 target.write_text(python_out)
                 state = "updated" if changed else "unchanged"
-                print(
-                    f"  [{state:9}] {archetype['file']} — {archetype['why']}"
-                )
+                print(f"  [{state:9}] {archetype['file']} — {archetype['why']}")
         finally:
             for path in stack:
                 path.unlink(missing_ok=True)
