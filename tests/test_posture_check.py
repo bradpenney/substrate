@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import types
@@ -781,3 +782,173 @@ def test_cluster_admin_reports_both_new_and_removed_subjects(pc):
     )
     pc.check_cluster_admin()
     assert any("newcomer" in f for f in pc.failures), pc.failures
+
+
+# -------------------------------------------------------------------- firewall
+
+
+def _probe(pc, monkeypatch, results):
+    """Stub the TCP probe. `results` maps (prober_substring, port) -> OPEN/CLOSED.
+
+    Anything unlisted answers CLOSED, so a test only has to state the cases it
+    cares about.
+    """
+
+    def _run(cmd, **_kw):
+        joined = " ".join(cmd)
+        # The port comes from /dev/tcp/<host>/<port>, NOT from the last slash in
+        # the line -- that one belongs to the 2>/dev/null redirect.
+        m = re.search(r"/dev/tcp/[0-9.]+/(\d+)", joined)
+        port = m.group(1) if m else ""
+        for prober, prober_port in results:
+            if prober in joined and prober_port == port:
+                out = results[(prober, prober_port)]
+                if out == "UNREACHABLE":
+                    return types.SimpleNamespace(returncode=255, stdout="", stderr="")
+                return types.SimpleNamespace(returncode=0, stdout=out + "\n", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="CLOSED\n", stderr="")
+
+    monkeypatch.setattr(pc.subprocess, "run", _run)
+
+
+def _node_and_peer(pc, monkeypatch):
+    """Give the check a coherent world built from the fixture site.
+
+    The suite runs against tests/fixtures/site.yml (conftest), whose hypervisors
+    are hvA/hvB — so socket.gethostname() matches neither and _local_address()
+    returns "". Without this the check would bail with "site config incomplete"
+    and every assertion below would pass against a check that ran nothing.
+    """
+    me, other = pc.site.HOSTS[0], pc.site.HOSTS[-1]
+    monkeypatch.setattr(pc.socket, "gethostname", lambda: me.name)
+    peer = other.peer_target or other.ssh_target
+    monkeypatch.setattr(pc, "PEER", peer)
+    node = [vm.static_ip for h in pc.site.HOSTS for vm in h.vms][0]
+    return node, peer
+
+
+def test_firewall_flags_a_port_reachable_from_a_denied_source(pc, monkeypatch):
+    """The defect of 2026-09-02, as a test.
+
+    9100/9428/8428 all answered 200 from hosts that were never allow-listed,
+    because the zone opens 1025-65535 and an `accept` on top of that restricts
+    nothing. Every rule existed; none of them filtered.
+    """
+    node, peer = _node_and_peer(pc, monkeypatch)
+    peer_host = peer.rpartition("@")[2]
+    _probe(pc, monkeypatch, {(peer_host, "8428"): "OPEN", (node, "8428"): "OPEN"})
+    pc.check_firewall_restrictions()
+    assert any(
+        "8428" in f and "NOT allow-listed" in f for f in pc.failures
+    ), pc.failures
+
+
+def test_firewall_quiet_when_denied_is_refused_and_allowed_gets_through(
+    pc, monkeypatch
+):
+    """The good state must be silent, or the check is useless in practice."""
+    node, peer = _node_and_peer(pc, monkeypatch)
+    _probe(
+        pc,
+        monkeypatch,
+        {
+            (node, "8428"): "OPEN",
+            (node, "9428"): "OPEN",
+            (peer.rpartition("@")[2], "9100"): "OPEN",
+        },
+    )
+    pc.check_firewall_restrictions()
+    assert pc.failures == [], pc.failures
+    assert any("refuse non-allow-listed" in n for n in pc.notes), pc.notes
+
+
+def test_firewall_flags_a_port_refused_for_a_source_that_must_reach_it(pc, monkeypatch):
+    """A firewall that blocks everything is also broken.
+
+    That direction fails silently in production — it looks like a healthy
+    firewall and shows up much later as a scrape target that never came up.
+    """
+    node, peer = _node_and_peer(pc, monkeypatch)
+    _probe(pc, monkeypatch, {(peer.rpartition("@")[2], "9100"): "CLOSED"})
+    pc.check_firewall_restrictions()
+    assert any("MUST reach it" in f for f in pc.failures), pc.failures
+
+
+def test_firewall_notes_an_unreachable_prober_rather_than_passing(pc, monkeypatch):
+    """An unreachable prober is inconclusive, not evidence of a closed port.
+
+    Scoring it as a pass is how a check degrades into always-passing — the
+    failure this whole file exists to prevent.
+    """
+    node, peer = _node_and_peer(pc, monkeypatch)
+    _probe(
+        pc,
+        monkeypatch,
+        {
+            (k, p): "UNREACHABLE"
+            for k in (node, peer.rpartition("@")[2])
+            for p in ("9100", "9428", "8428")
+        },
+    )
+    pc.check_firewall_restrictions()
+    assert pc.failures == []
+    assert any("not checked" in n for n in pc.notes), pc.notes
+
+
+def test_firewall_skips_cleanly_when_site_config_is_incomplete(pc, monkeypatch):
+    monkeypatch.setattr(pc, "_local_address", lambda: "")
+    pc.check_firewall_restrictions()
+    assert pc.failures == []
+    assert any("site config incomplete" in n for n in pc.notes), pc.notes
+
+
+def test_port_probe_maps_output_to_a_tri_state(pc, monkeypatch):
+    """OPEN / CLOSED / anything else must not collapse into a boolean.
+
+    `None` means "did not find out", and the caller treats it differently from
+    "closed". Collapsing the two turns an unreachable prober into a pass.
+    """
+    for stdout, code, expected in (
+        ("OPEN\n", 0, True),
+        ("CLOSED\n", 0, False),
+        ("", 255, None),
+        ("garbage\n", 0, None),
+    ):
+        monkeypatch.setattr(
+            pc.subprocess,
+            "run",
+            lambda *_a, _s=stdout, _c=code, **_k: types.SimpleNamespace(
+                returncode=_c, stdout=_s, stderr=""
+            ),
+        )
+        assert pc._port_reachable_from("u@h", "1.2.3.4", 80) is expected
+
+
+# ------------------------------------------------------------------- addresses
+
+
+def test_peer_and_local_addresses_come_from_config_not_literals():
+    """These carried a hardcoded LAN address until 2026-09-02.
+
+    site.yml is gitignored so addresses live in one place and substrate can be
+    published without them; a convenient default quietly undid that.
+    """
+    source = (REPO / "posture-check.py").read_text()
+    assert (
+        'os.environ.get("POSTURE_PEER", "' not in source
+    ), "POSTURE_PEER has a hardcoded address default again"
+
+
+def test_peer_target_picks_the_other_hypervisor(pc, monkeypatch):
+    other = [h for h in pc.site.HOSTS][-1]
+    monkeypatch.setattr(pc.socket, "gethostname", lambda: pc.site.HOSTS[0].name)
+    assert (
+        pc._peer_target().rpartition("@")[2]
+        == (other.peer_target or other.ssh_target).rpartition("@")[2]
+    )
+
+
+def test_local_address_is_this_hosts_own(pc, monkeypatch):
+    me = pc.site.HOSTS[0]
+    monkeypatch.setattr(pc.socket, "gethostname", lambda: me.name)
+    assert pc._local_address() == (me.peer_target or me.ssh_target).rpartition("@")[2]
