@@ -9,6 +9,10 @@ Documentation=https://github.com/bradpenney/substrate
 OnFailure=hypervisor-update-notify.service
 After=network-online.target libvirtd.service
 Wants=network-online.target
+# Ordering only -- it does not stop the backup starting later, so the real
+# protection is the interlock gate inside hypervisor-update.sh. This just means
+# that when both are queued in one transaction, the backup goes first.
+After=nextcloud-backup.service
 
 [Service]
 Type=oneshot
@@ -16,5 +20,6 @@ Type=oneshot
 # deploy-updates.sh since each hypervisor's peer is the other one.
 EnvironmentFile=/etc/homelab/update.env
 ExecStart=/usr/local/bin/hypervisor-update.sh
-# Updates + drain + guest shutdown grace can legitimately take a while.
-TimeoutStartSec=3600
+# Updates + drain + guest shutdown grace can legitimately take a while, and the
+# backup interlock may now add up to BACKUP_WAIT_SECS (default 1800) on top.
+TimeoutStartSec=5400

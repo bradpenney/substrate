@@ -118,6 +118,49 @@ if [[ -n "$not_ready" ]]; then
 fi
 log "gates passed: peer healthy, all $(echo "$nodes" | wc -l) cluster nodes Ready"
 
+# ------------------------------------------------------- backup interlock ---
+
+# A reboot mid-backup does not merely kill the backup -- it kills the alert too.
+# systemd REFUSES to enqueue an OnFailure= job once a reboot transaction is
+# queued:
+#
+#   Failed to enqueue OnFailure=nextcloud-backup-notify.service job, ignoring:
+#   Transaction for ... is destructive (local-fs-pre.target has 'stop' queued)
+#
+# This unit and nextcloud-backup.timer were both OnCalendar=03:00 with no
+# ordering between them, and this script won the race five nights out of six
+# (2026-08-28..09-02). Every one of those backups died by signal and every one
+# of the notifications was silently dropped. The timers are now separated, but
+# separation is a schedule assumption; this gate is the actual guarantee.
+#
+# Wait a bounded time, then refuse. Updates are already applied and
+# needs-restarting will still ask for the reboot tomorrow, so the cost of
+# refusing is one night of delay. The cost of not refusing is a lost backup
+# nobody hears about.
+BACKUP_UNIT="${BACKUP_UNIT:-nextcloud-backup.service}"
+BACKUP_WAIT_SECS="${BACKUP_WAIT_SECS:-1800}"
+
+# is-active is false for a unit that does not exist, so this is vacuously true
+# on a hypervisor that hosts no backup (server2 today). That is correct.
+if systemctl is-active --quiet "$BACKUP_UNIT"; then
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "DRY RUN: $BACKUP_UNIT is in flight — would wait up to ${BACKUP_WAIT_SECS}s"
+    else
+        log "$BACKUP_UNIT in flight — waiting up to ${BACKUP_WAIT_SECS}s before reboot"
+        waited=0
+        while systemctl is-active --quiet "$BACKUP_UNIT"; do
+            (( waited >= BACKUP_WAIT_SECS )) && break
+            sleep 30
+            waited=$(( waited + 30 ))
+        done
+        if systemctl is-active --quiet "$BACKUP_UNIT"; then
+            log "ABORT: $BACKUP_UNIT still running after ${waited}s — refusing to reboot"
+            exit 1
+        fi
+        log "$BACKUP_UNIT finished after ${waited}s — continuing"
+    fi
+fi
+
 # ----------------------------------------------------------- graceful down ---
 
 if [[ "$DRY_RUN" == "1" ]]; then
