@@ -53,6 +53,30 @@ while IFS= read -r line; do
     fi
 done < <(sed -n 's/^# pinned: //p' "$MANIFEST")
 
+# Running processes. THE BLIND SPOT this check had until 2026-09-02: sha256sum
+# above verifies the FILE, and a unit file can be perfectly correct while the
+# process still runs the previous command line. VictoriaMetrics sat bound to
+# 127.0.0.1 for hours after its unit said otherwise, and both this check and
+# deploy-observability.py reported the host in sync the entire time.
+#
+# systemd does not surface it either: NeedDaemonReload goes back to `no` as soon
+# as the config is loaded, and whether the RUNNING process predates that config
+# is not tracked anywhere.
+UNIT_STAMPS=/usr/local/lib/substrate-observability/units
+if [ -d "$UNIT_STAMPS" ]; then
+    for stamp in "$UNIT_STAMPS"/*.sha256; do
+        [ -e "$stamp" ] || continue
+        unit=$(basename "$stamp" .sha256)
+        file="/etc/systemd/system/$unit"
+        [ -e "$file" ] || continue
+        systemctl is-active --quiet "$unit" || continue
+        if [ "$(sha256sum "$file" | cut -d' ' -f1)" != "$(cat "$stamp")" ]; then
+            log "DRIFT: $unit is running an older configuration than its unit file"
+            drift=1
+        fi
+    done
+fi
+
 if [ "$drift" -ne 0 ]; then
     log "re-run deploy-observability.py to restore the deployed state"
     exit 1

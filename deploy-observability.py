@@ -191,22 +191,82 @@ if __WANTS_STORE__; then
     install -d -m 0750 -o victorialogs -g victorialogs /var/lib/victoria-logs
 fi
 
-# ALLOW-LIST, not a LAN range (the standing rule). Only the hosts that actually
-# scrape may reach 9100; everything else is refused, including the rest of the
-# LAN.
+# ALLOW-LIST, not a LAN range (the standing rule) — and, since 2026-09-02,
+# actually enforced.
+#
+# THE DEFECT THIS REPLACES. These were plain `accept` rich rules, and Fedora
+# Workstation's default zone opens 1025-65535/tcp. An accept on top of an
+# already-open range restricts NOTHING: 9100 and 9428 were reachable from every
+# host on the LAN for as long as the rules had existed, under a comment claiming
+# they were allow-listed. Found by connecting from a host that was never on the
+# list and getting HTTP 200.
+#
+# So each port now gets TWO rules. Negative priorities are evaluated ahead of the
+# zone's own port accepts, which is what makes the drop bite:
+#
+#   priority -100   accept from each allow-listed source
+#   priority  -50   drop everything else on that port
+#
+# Loopback is unaffected — it lives in the `trusted` zone — so Grafana keeps
+# reaching VictoriaMetrics locally.
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    for src in __SCRAPERS__; do
-        firewall-cmd --permanent --quiet \\
-            --add-rich-rule="rule family=ipv4 source address=$src port port=9100 protocol=tcp accept" || true
-    done
-    if __WANTS_STORE__; then
-        for src in __CLUSTER_NODES__; do
-            firewall-cmd --permanent --quiet \\
-                --add-rich-rule="rule family=ipv4 source address=$src port port=9428 protocol=tcp accept" || true
+    # The zone that owns the LAN interface, not merely the default zone. Writing
+    # rules into the wrong zone is another way to produce rules that look right
+    # and filter nothing.
+    LAN_IF=$(ip -o -4 addr show | awk -v a="__HOST_ADDR__" '$4 ~ "^"a"/" {print $2; exit}')
+    ZONE=$(firewall-cmd --get-zone-of-interface="$LAN_IF" 2>/dev/null || true)
+    [ -n "$ZONE" ] || ZONE=$(firewall-cmd --get-default-zone)
+    echo "  firewalld: zone $ZONE (interface $LAN_IF)"
+
+    # Drop this deploy's own previous rules first, so a node removed from
+    # site.yml stops being allow-listed instead of lingering forever.
+    firewall-cmd --permanent --zone="$ZONE" --list-rich-rules 2>/dev/null \\
+      | grep -E 'port="(9100|9428|8428)"' \\
+      | while IFS= read -r old_rule; do
+            firewall-cmd --permanent --quiet --zone="$ZONE" \\
+                --remove-rich-rule="$old_rule" || true
         done
+
+    # Built with printf and passed as one argument. Writing the rule inline
+    # inside a double-quoted string collapses its inner quotes — firewalld needs
+    # priority="-100", not priority=-100, and rejects the latter. With --quiet
+    # and `|| true` that rejection would be invisible, which is how a firewall
+    # ends up full of rules that were never accepted. shellcheck caught it.
+    rich() { firewall-cmd --permanent --quiet --zone="$ZONE" --add-rich-rule="$1" || true; }
+    allow_from() {
+        rich "$(printf 'rule priority="-100" family="ipv4" source address="%s" port port="%s" protocol="tcp" accept' "$1" "$2")"
+    }
+    deny_port() {
+        rich "$(printf 'rule priority="-50" family="ipv4" port port="%s" protocol="tcp" drop' "$1")"
+    }
+
+    for src in __SCRAPERS__; do
+        allow_from "$src" 9100
+    done
+    deny_port 9100
+
+    if __WANTS_STORE__; then
+        # 9428 (logs, pushed by Vector) and 8428 (metrics, remote_written by
+        # vmagent) are reached FROM the cluster, so both admit the node
+        # addresses and nothing else.
+        #
+        # 8428 also serves the QUERY and DELETE apis — VictoriaMetrics has no
+        # per-path authorisation — so this allow-list is the only boundary
+        # between a host and the ability to read or destroy series.
+        for src in __CLUSTER_NODES__; do
+            allow_from "$src" 9428
+            allow_from "$src" 8428
+        done
+        deny_port 9428
+        deny_port 8428
     fi
+
     firewall-cmd --reload >/dev/null
-    echo "  firewalld: 9100 from __SCRAPERS__"
+    echo "  firewalld: 9100 accept __SCRAPERS__, drop all else"
+    if __WANTS_STORE__; then
+        echo "  firewalld: 9428 + 8428 accept __CLUSTER_NODES__, drop all else"
+    fi
+    echo "  firewalld: verify with posture-check (check_firewall_restrictions)"
 else
     echo "  firewalld not active — 9100 is NOT restricted on this host"
 fi
@@ -215,6 +275,63 @@ systemctl daemon-reload
 systemctl enable --now node-exporter.service >/dev/null
 systemctl enable --now substrate-reconcile.timer >/dev/null
 __ENABLE_STORE__
+
+# RESTART WHAT CHANGED — added 2026-09-02.
+#
+# `enable --now` STARTS a unit; it does nothing to one already running. So a
+# changed ExecStart was written to disk, loaded by daemon-reload, and then never
+# reached the running process: the host kept executing the previous command line
+# indefinitely. This is how VictoriaMetrics stayed bound to 127.0.0.1 through a
+# deploy whose entire purpose was to rebind it.
+#
+# substrate-reconcile.sh cannot catch this either — it verifies FILE checksums,
+# and the file was correct. Both the deploy and the drift check agreed the host
+# matched the repository while the process disagreed with both.
+#
+# The comparison is the unit FILE's mtime against the service's
+# ActiveEnterTimestamp — "is this process older than its own configuration?" —
+# NOT whether the file changed during this deploy. The first version of this fix
+# made that mistake and was blind to exactly the host it was written for: the
+# file had been updated by an earlier run, so the second run saw no change and
+# restarted nothing while the process stayed 17 hours stale.
+#
+# systemd will not tell you this. NeedDaemonReload reports `no` once the config
+# is loaded; whether the RUNNING process predates it is not tracked at all.
+UNIT_STAMPS=/usr/local/lib/substrate-observability/units
+install -d -m 0755 "$UNIT_STAMPS"
+
+for u in __UNIT_FILES__; do
+    case "$u" in *@*) continue ;; esac          # templates are not restartable
+    f="/etc/systemd/system/$u"
+    [ -e "$f" ] || continue
+    # Stopped units stay stopped. Restarting one the operator deliberately shut
+    # down would be the deploy overriding a human decision.
+    systemctl is-active --quiet "$u" || continue
+
+    cur=$(sha256sum "$f" | cut -d" " -f1)
+    stamp="$UNIT_STAMPS/$u.sha256"
+    stale=0
+    if [ -r "$stamp" ]; then
+        # CONTENT, not mtime. The payload rewrites every unit file on every
+        # deploy, so an mtime comparison would call everything stale and restart
+        # the whole stack each time — gaps in the metrics store for nothing.
+        [ "$(cat "$stamp")" = "$cur" ] || stale=1
+    else
+        # No stamp yet: first run after this check existed, or a host deployed
+        # by an older version. Fall back to asking whether the process predates
+        # its own configuration — the question systemd does not answer, and the
+        # one that catches a host already drifted before this code shipped.
+        started=$(systemctl show "$u" -p ActiveEnterTimestamp --value)
+        started_epoch=$(date -d "$started" +%s 2>/dev/null || echo 0)
+        [ "$(stat -c %Y "$f")" -gt "$started_epoch" ] && stale=1
+    fi
+
+    if [ "$stale" -eq 1 ]; then
+        echo "  process does not match its unit, restarting: $u"
+        systemctl try-restart "$u" || echo "    WARNING: $u failed to restart"
+    fi
+    printf "%s" "$cur" > "$stamp"
+done
 
 echo "  node-exporter:   $(systemctl is-active node-exporter.service) / $(systemctl is-enabled node-exporter.service)"
 echo "  OnFailure:       $(systemctl show -p OnFailure --value node-exporter.service)"
@@ -225,6 +342,32 @@ echo "  drift timer:     $(systemctl is-enabled substrate-reconcile.timer)"
 /usr/local/bin/substrate-reconcile.sh || echo "  (drift reported above)"
 __VERIFY_STORE__
 """
+
+
+def host_address(cfg, host_name: str) -> str:
+    """This host's own LAN address, as its peers reach it.
+
+    Used to find which firewalld zone owns the LAN interface. Writing rules into
+    the default zone when the interface lives in another is one more way to
+    produce a firewall that looks configured and filters nothing.
+    """
+    hv = cfg.hypervisors[host_name]
+    target = hv.peer_target or hv.ssh_target or ""
+    return target.rpartition("@")[2]
+
+
+def unit_files_for(cfg, host_name: str) -> list[str]:
+    """The systemd unit basenames this host receives.
+
+    Derived from the same payload the host is actually sent, rather than listed
+    separately — a hand-maintained second list is one that silently stops
+    matching, which is the failure this whole module keeps running into.
+    """
+    return sorted(
+        Path(dest).name
+        for _, dest, *_ in files_for(cfg, host_name)
+        if dest.endswith((".service", ".timer"))
+    )
 
 
 def render_installer(cfg, host_name: str) -> str:
@@ -270,6 +413,8 @@ def render_installer(cfg, host_name: str) -> str:
         .replace("__WANTS_STORE__", "true" if wants_store else "false")
         .replace("__SCRAPERS__", " ".join(peer_addresses(cfg)))
         .replace("__CLUSTER_NODES__", " ".join(node_addresses(cfg)))
+        .replace("__UNIT_FILES__", " ".join(unit_files_for(cfg, host_name)))
+        .replace("__HOST_ADDR__", host_address(cfg, host_name))
         .replace(
             "__ENABLE_STORE__",
             (
@@ -285,7 +430,18 @@ def render_installer(cfg, host_name: str) -> str:
             (
                 'echo "  victoria-metrics: $(systemctl is-active victoria-metrics.service)"\n'
                 'echo "  victoria-logs:    $(systemctl is-active victoria-logs.service)"\n'
-                'echo "  grafana:          $(systemctl is-active grafana.service)"'
+                # Grafana carries ConditionPathExists on its EnvironmentFile, so
+                # an unconfigured host reports `inactive` rather than failing —
+                # correct, but indistinguishable from "stopped" unless we say
+                # why. Before that condition existed this component took the
+                # WHOLE fleet deploy down with it: server1's installer exited
+                # non-zero and server2 was never reached.
+                "if [ ! -e /etc/grafana/grafana.env ]; then\n"
+                '  echo "  grafana:          NOT CONFIGURED — '
+                '/etc/grafana/grafana.env is missing (GitHub OAuth secret)"\n'
+                "else\n"
+                '  echo "  grafana:          $(systemctl is-active grafana.service)"\n'
+                "fi"
                 if wants_store
                 else ""
             ),

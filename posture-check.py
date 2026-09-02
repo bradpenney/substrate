@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -347,7 +348,30 @@ def check_admission_policies() -> None:
 # notification path of its own -- no notify.sh, no ntfy topic -- and duplicating
 # the topic onto a second host would mean two copies of a secret to rotate.
 # Watching it from here keeps ONE alerting path for both machines.
-PEER = os.environ.get("POSTURE_PEER", "brad@192.168.2.101")
+def _peer_target() -> str:
+    """The other hypervisor, derived from typed config rather than a literal.
+
+    This default used to be a hardcoded LAN address in a repository that is on
+    its way to being public. site.yml is gitignored precisely so addresses live
+    in exactly one place; a "convenient" default quietly undid that.
+    """
+    me = socket.gethostname()
+    for host in site.HOSTS:
+        if host.name != me:
+            return host.peer_target or host.ssh_target or ""
+    return ""
+
+
+def _local_address() -> str:
+    """This hypervisor's own LAN address, as its peers reach it."""
+    me = socket.gethostname()
+    for host in site.HOSTS:
+        if host.name == me:
+            return (host.peer_target or host.ssh_target or "").rpartition("@")[2]
+    return ""
+
+
+PEER = os.environ.get("POSTURE_PEER") or _peer_target()
 PEER_UNITS = ["hypervisor-update.service"]
 
 
@@ -627,6 +651,86 @@ def check_origin_lock() -> None:
 KUBECTL = ""
 
 
+def _port_reachable_from(prober: str, host: str, port: int):
+    """Can `prober` open a TCP connection to host:port? None = inconclusive.
+
+    A bare TCP connect, not an HTTP request: the question is whether the packet
+    is allowed through, and a service that answers 403 is still reachable.
+    """
+    probe = (
+        f"timeout 4 bash -c 'exec 3<>/dev/tcp/{host}/{port}' 2>/dev/null "
+        f"&& echo OPEN || echo CLOSED"
+    )
+    r = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", prober, probe],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if r.returncode != 0:
+        return None
+    out = r.stdout.strip()
+    return True if out == "OPEN" else False if out == "CLOSED" else None
+
+
+def check_firewall_restrictions() -> None:
+    """The firewall must REFUSE what its allow-list claims to restrict.
+
+    WHY THIS EXISTS. deploy-observability.py has always written per-source
+    `accept` rich rules for 9100 and 9428, under a comment reading "ALLOW-LIST,
+    not a LAN range (the standing rule)". On 2026-09-02 a negative test showed
+    all of them reachable from hosts that were never allow-listed. The default
+    zone on this workstation opens 1025-65535/tcp, and an `accept` rule on top of
+    an already-open range restricts nothing at all. The rules had been decorative
+    since the day they were written, and every check in this file passed
+    throughout — because nothing here asked whether a refusal actually refuses.
+
+    Asserting the rules EXIST would have reproduced the original mistake. So this
+    connects from a source that must be denied and fails if it succeeds, and from
+    one that must be allowed and warns if it does not. Both directions: a
+    firewall that blocks everything is not correct either, it is just broken in
+    the direction nobody notices until a scrape goes missing.
+    """
+    local = _local_address()
+    nodes = [vm.static_ip for h in site.HOSTS for vm in h.vms]
+    if not local or not nodes or not PEER:
+        notes.append("firewall: site config incomplete, not checked")
+        return
+
+    admin = site.ADMIN_USER
+    a_node = f"{admin}@{nodes[0]}"
+
+    # port, what it is, who MUST reach it, who MUST NOT
+    matrix = [
+        (9100, "node_exporter", PEER, a_node),
+        (9428, "log ingest", a_node, PEER),
+        (8428, "metrics write + query + delete", a_node, PEER),
+    ]
+    checked = 0
+    for port, what, allowed, denied in matrix:
+        leaked = _port_reachable_from(denied, local, port)
+        if leaked is None:
+            notes.append(f"firewall: {port} not checked ({denied} unreachable)")
+            continue
+        if leaked:
+            failures.append(
+                f"firewall: {port} ({what}) is reachable from {denied}, "
+                "which is NOT allow-listed"
+            )
+            continue
+        permitted = _port_reachable_from(allowed, local, port)
+        if permitted is False:
+            failures.append(
+                f"firewall: {port} ({what}) is refused for {allowed}, "
+                "which MUST reach it"
+            )
+            continue
+        checked += 1
+    if checked:
+        notes.append(f"firewall: {checked} port(s) refuse non-allow-listed sources")
+
+
 def main() -> int:
     """Run every invariant and report.
 
@@ -650,6 +754,7 @@ def main() -> int:
         check_credentials,
         check_selinux,
         check_origin_lock,
+        check_firewall_restrictions,
     ):
         try:
             check()

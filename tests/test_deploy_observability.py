@@ -216,10 +216,10 @@ def test_log_ingest_is_only_opened_on_the_store_host(dobs, cfg):
     for name in cfg.hypervisors:
         rendered = dobs.render_installer(cfg, name)
         if name == cfg.observability.host:
-            assert "port=9428" in rendered
+            assert 'allow_from "$src" 9428' in rendered
             continue
         # The block may be present but must be unreachable.
-        if "port=9428" in rendered:
+        if 'allow_from "$src" 9428' in rendered:
             assert (
                 "if false; then" in rendered
             ), f"{name}: 9428 would be opened on a host with no log store"
@@ -267,3 +267,205 @@ def test_the_drift_check_reports_a_missing_file(dobs, cfg, monkeypatch):
         lambda *a, **k: types.SimpleNamespace(returncode=1, stdout=""),
     )
     assert any("is MISSING" in p for p in dobs.check(host, cfg))
+
+
+def test_remote_write_port_is_opened_on_the_store_host(dobs, cfg):
+    """vmagent's remote_write destination must actually be reachable.
+
+    This is the defect that made ADR-098's whole cluster tier inert. The unit
+    bound 127.0.0.1 and the installer opened nothing for 8428, under a comment
+    asserting that a "separate remote-write listener" was opened to the cluster
+    — a listener single-node VictoriaMetrics does not have. It read as correct
+    for as long as nobody tried to push to it.
+    """
+    for name in cfg.hypervisors:
+        rendered = dobs.render_installer(cfg, name)
+        if name == cfg.observability.host:
+            assert 'allow_from "$src" 8428' in rendered
+            continue
+        if 'allow_from "$src" 8428' in rendered:
+            assert (
+                "if false; then" in rendered
+            ), f"{name}: 8428 would be opened on a host with no metrics store"
+
+
+def test_the_cluster_write_ports_admit_only_node_addresses(dobs, cfg):
+    """8428 carries the QUERY api as well as the write path.
+
+    VictoriaMetrics has no per-path authorisation, so this allow-list is the
+    only thing between a node address and the ability to read or delete series.
+    A range here would hand that to every device on the LAN.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+
+    loops = re.findall(r"for src in ([^;]+); do", rendered)
+    assert loops, "no allow-list loop is rendered at all"
+    cluster_loop = [l for l in loops if set(l.split()) == set(dobs.node_addresses(cfg))]
+    assert cluster_loop, f"no loop iterates exactly the k0s nodes; got {loops}"
+
+    # An accept WITHOUT a matching drop restricts nothing when the zone already
+    # opens the port range — which is exactly how 9100 and 9428 came to be
+    # reachable from the whole LAN under a comment saying otherwise.
+    for port in ("8428", "9428"):
+        assert f'allow_from "$src" {port}' in rendered, f"{port} is never allowed"
+        assert f"deny_port {port}" in rendered, (
+            f"{port} has an accept but no drop — an accept on top of the zone's "
+            "open range restricts nothing"
+        )
+
+    assert "/24" not in rendered
+
+
+def test_victoria_metrics_listens_beyond_loopback():
+    """The unit must not go back to binding 127.0.0.1.
+
+    Guarding the regression directly rather than only its firewall half: a
+    loopback bind makes the store unreachable from the cluster no matter what
+    firewalld allows, and the symptom is a vmagent that looks healthy while
+    writing nowhere.
+    """
+    unit = (REPO / "systemd/observability/victoria-metrics.service").read_text()
+    listen = re.search(r"-httpListenAddr=(\S+)", unit)
+    assert listen, "victoria-metrics.service declares no -httpListenAddr"
+    assert not listen.group(1).startswith(
+        "127.0.0.1"
+    ), "victoria-metrics is bound to loopback; the in-cluster vmagent cannot reach it"
+
+
+def test_grafana_is_skipped_rather_than_looping_when_unconfigured():
+    """An optional component must not page the operator forever.
+
+    Grafana cannot start without /etc/grafana/grafana.env, and that file holds a
+    secret so the deploy never creates it. Combined with Restart=always,
+    RestartSec=5s, StartLimitIntervalSec=0 and an OnFailure notifier, that sent
+    9 push notifications in 20 minutes and would not have stopped.
+
+    ConditionPathExists makes systemd skip the unit instead: no start, no
+    failure, no notification — and it starts normally once the file exists.
+    """
+    unit = (REPO / "systemd/observability/grafana.service").read_text()
+    assert (
+        "ConditionPathExists=/etc/grafana/grafana.env" in unit
+    ), "grafana.service would crash-loop on a host where it is not configured"
+
+
+def test_the_failure_notifier_is_rate_limited():
+    """OnFailure fires on EVERY restart attempt, so the notifier needs a bound.
+
+    Without one, any permanently-broken observability unit becomes an unbounded
+    alert loop — and an alert repeating every five seconds is less informative
+    than one arriving once, because it buries everything else.
+    """
+    unit = (REPO / "systemd/observability/observability-notify@.service").read_text()
+    assert "ExecCondition=" in unit, "observability-notify@ has no rate limit"
+    assert "-lt 900" in unit, "the rate-limit window is not the documented 15 minutes"
+
+
+def test_a_changed_unit_is_actually_restarted(dobs, cfg):
+    """Writing a unit file is not applying it.
+
+    `enable --now` starts a stopped unit and does nothing to a running one, so a
+    changed ExecStart reached disk, was loaded by daemon-reload, and never
+    reached the running process. VictoriaMetrics stayed bound to 127.0.0.1
+    through a deploy whose whole purpose was to rebind it, and
+    substrate-reconcile.sh reported the host in sync because the FILE was
+    correct.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "try-restart" in rendered, "the installer never restarts a changed unit"
+    # try-restart specifically: `restart` would start a unit the operator had
+    # deliberately stopped.
+    assert "systemctl restart" not in rendered
+
+
+def test_the_restart_list_comes_from_the_payload(dobs, cfg):
+    """The units checked for change must be the units actually shipped.
+
+    A separately maintained list is one that silently stops matching — the same
+    failure as a lint glob that stops covering new directories.
+    """
+    for name in cfg.hypervisors:
+        shipped = {
+            Path(dest).name
+            for _, dest, *_ in dobs.files_for(cfg, name)
+            if dest.endswith((".service", ".timer"))
+        }
+        assert set(dobs.unit_files_for(cfg, name)) == shipped
+
+
+def test_templates_are_not_restarted(dobs, cfg):
+    """`systemctl try-restart foo@.service` on a template is an error.
+
+    The notifier is a template and is never itself running; skipping it keeps a
+    clean deploy from printing a spurious warning every time.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "*@*) continue" in rendered
+
+
+def test_the_restart_check_is_content_based_not_mtime(dobs, cfg):
+    """Restarting on mtime would restart the whole stack on every deploy.
+
+    The payload rewrites every unit file each run, so mtime alone marks
+    everything stale — gaps in the metrics store for no change. The stamp holds
+    the file's sha256 as of the last (re)start, so only a real content change
+    triggers a restart. mtime survives ONLY as the bootstrap fallback, for a host
+    that has no stamp yet and may already be running a stale process.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "sha256sum" in rendered and "UNIT_STAMPS" in rendered
+    # The fallback must be present too, or a host drifted before this shipped
+    # never self-corrects.
+    assert "ActiveEnterTimestamp" in rendered
+
+
+def test_the_drift_check_notices_a_stale_process():
+    """A correct file is not a correct process.
+
+    substrate-reconcile.sh verified file checksums and reported the host in sync
+    while VictoriaMetrics ran a command line its unit no longer contained.
+    """
+    script = (REPO / "substrate-reconcile.sh").read_text()
+    assert "UNIT_STAMPS" in script, "the drift check still only looks at files"
+    assert "older configuration than its unit file" in script
+
+
+def test_every_restricted_port_has_a_drop(dobs, cfg):
+    """The lesson of 2026-09-02, as an assertion.
+
+    Fedora Workstation's default zone opens 1025-65535/tcp. A rich rule that
+    ACCEPTS from an allow-listed source adds nothing on top of that: the port was
+    already open to everyone. Only a drop, ordered ahead of the zone's own
+    accept, actually restricts. Every port this installer claims to allow-list
+    must therefore carry both halves.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    for port in ("9100", "9428", "8428"):
+        assert f"deny_port {port}" in rendered, f"{port} is 'allow-listed' with no drop"
+    # Ordering is the whole mechanism: the accept must outrank the drop, and both
+    # must outrank the zone's port range.
+    assert 'priority="-100"' in rendered and 'priority="-50"' in rendered
+
+
+def test_the_rich_rules_keep_their_inner_quotes(dobs, cfg):
+    """firewalld needs priority="-100"; priority=-100 is rejected.
+
+    Written inline inside a double-quoted bash string the inner quotes collapse,
+    and with --quiet and `|| true` the rejection is silent — a firewall full of
+    rules that were never accepted. shellcheck caught this; printf fixes it.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "printf 'rule priority=" in rendered, "rules are not built with printf"
+    assert 'priority="-100"' in rendered
+
+
+def test_the_firewall_zone_is_the_lan_interfaces_own(dobs, cfg):
+    """Rules written into the wrong zone filter nothing.
+
+    The default zone is not necessarily the one holding the LAN interface, and
+    a rule in the wrong zone is another way to look configured while allowing
+    everything.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "get-zone-of-interface" in rendered
+    assert dobs.host_address(cfg, cfg.observability.host) in rendered

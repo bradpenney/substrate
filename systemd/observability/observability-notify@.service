@@ -10,6 +10,20 @@ Documentation=https://github.com/bradpenney/substrate
 
 [Service]
 Type=oneshot
+# RATE LIMIT, added 2026-09-02. A crash-looping service with RestartSec=5s
+# triggers OnFailure= on EVERY attempt, and this template had no bound: one
+# permanently-broken unit sent 9 push notifications in 20 minutes and would have
+# continued indefinitely. An alert that repeats every five seconds is not more
+# informative than one that arrives once; it is less, because it buries every
+# other alert.
+#
+# ExecCondition SKIPS the unit when it exits non-zero — the notifier is not
+# marked failed, it simply does not fire. The stamp lives in /run (tmpfs), so a
+# reboot legitimately re-alerts rather than staying silent about a fault that
+# survived it.
+ExecCondition=/bin/bash -c 'stamp=/run/observability-notify-%i; \
+    if [ -e "$stamp" ] && [ $(( $(date +%%s) - $(stat -c %%Y "$stamp") )) -lt 900 ]; then exit 1; fi; \
+    touch "$stamp"'
 # Same notifier the hypervisor units use. One channel for host-tier failures,
 # so a new one does not have to be discovered separately.
 ExecStart=/usr/local/bin/homelab-notify.sh "Observability: %i failed" \

@@ -34,13 +34,29 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-# 127.0.0.1 ONLY. Grafana runs on the same host and reaches it over loopback;
-# nothing else may query it directly. The in-cluster vmagent pushes to the
-# separate remote-write listener, which the installer opens to the cluster
-# CIDRs alone.
+# CORRECTED 2026-09-02. This previously bound 127.0.0.1 only, above a comment
+# claiming the in-cluster vmagent "pushes to the separate remote-write listener,
+# which the installer opens to the cluster CIDRs alone".
+#
+# There is no separate listener. Single-node VictoriaMetrics serves
+# /api/v1/write on this same -httpListenAddr; there is no second port and the
+# installer opened nothing for one. So ADR-098's cluster tier — vmagent
+# remote_writing cluster metrics to the host — had no reachable destination and
+# could never have worked. The sentence sounded right and was never tested
+# against a running vmagent, because there was not one yet.
+#
+# Now bound on all interfaces, with firewalld allow-listing 8428 to the five k0s
+# node addresses alone (deploy-observability.py), the same shape already used
+# for 9428. Grafana still reaches it over loopback, which :8428 includes.
+#
+# KNOWN TRADE-OFF, stated rather than discovered later: the write path and the
+# QUERY path share this port, and VictoriaMetrics has no per-path authorisation.
+# The firewall allow-list is therefore the only thing standing between a node
+# and the ability to read or delete series. It must stay an allow-list of node
+# addresses — never a LAN range.
 ExecStart=/usr/local/bin/victoria-metrics-prod \
     -storageDataPath=/var/lib/victoria-metrics \
-    -httpListenAddr=127.0.0.1:8428 \
+    -httpListenAddr=:8428 \
     -promscrape.config=/etc/victoria-metrics/scrape.yml \
     -retentionPeriod=6 \
     -memory.allowedPercent=25 \

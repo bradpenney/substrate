@@ -16,6 +16,20 @@ Wants=network-online.target
 # the moment someone is trying to find out what went wrong.
 StartLimitIntervalSec=0
 
+# ADDED 2026-09-02, after this combination paged a phone 9 times in 20 minutes.
+#
+# `Restart=always` + `RestartSec=5s` + `StartLimitIntervalSec=0` + an OnFailure
+# notifier is correct for a TRANSIENT failure and catastrophic for a PERMANENT
+# one: the unit can never succeed, so "restart forever" becomes "alert forever".
+# Grafana cannot start until its EnvironmentFile exists, and that file holds a
+# secret so it is never created by the deploy.
+#
+# A missing config is not a crash. ConditionPathExists makes systemd SKIP the
+# unit — inactive, condition failed, no OnFailure — so a host where Grafana has
+# not been configured yet stays quiet instead of alarming. Once the file is
+# written the condition passes and the unit starts normally.
+ConditionPathExists=/etc/grafana/grafana.env
+
 [Service]
 # The admin password ONLY (GF_SECURITY_ADMIN_PASSWORD), 0600 root:grafana. Never
 # in grafana.ini, which is checksummed by the drift check and lives in git.
