@@ -173,6 +173,25 @@ install_tree() {
     [ -d "$dest" ] && mv "$dest" "$dest.old"
     mv "$dest.new" "$dest"
     rm -rf "$dest.old"
+
+    # `mv` PRESERVES the SELinux context; `cp` and `install` relabel. The tree
+    # was extracted under mktemp -d, so every file arrives here wearing
+    # /tmp's label (user_tmp_t) and systemd refuses to exec it:
+    #
+    #   Unable to locate executable '/usr/local/share/grafana/bin/grafana':
+    #   Permission denied ... status=203/EXEC
+    #
+    # The mode is fine and the path is fine; only the label is wrong, and
+    # `ls -l` shows nothing. install_binary never hit this because `install`
+    # relabels — which is exactly why Grafana was the only component affected.
+    #
+    # tar also preserves the archive's uid, leaving a system tree owned by
+    # whichever unprivileged user happened to build it upstream.
+    chown -R root:root "$dest"
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -R "$dest"
+    fi
+
     printf '%s' "$version" > "$STAMP/$name"
 }
 

@@ -469,3 +469,18 @@ def test_the_firewall_zone_is_the_lan_interfaces_own(dobs, cfg):
     rendered = dobs.render_installer(cfg, cfg.observability.host)
     assert "get-zone-of-interface" in rendered
     assert dobs.host_address(cfg, cfg.observability.host) in rendered
+
+
+def test_an_extracted_tree_is_relabelled_and_owned_by_root(dobs, cfg):
+    """`mv` preserves the SELinux context; the tree is built under /tmp.
+
+    Grafana arrived at /usr/local/share/grafana wearing user_tmp_t and systemd
+    refused to exec it with 203/EXEC. The mode was correct, the path was
+    correct, and `ls -l` showed nothing wrong. install_binary was unaffected
+    because `install` relabels — so this was the one component that could hit it.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "restorecon -R" in rendered, "an extracted tree is never relabelled"
+    assert "chown -R root:root" in rendered, "an extracted tree keeps the archive's uid"
+    # Guarded, because not every host runs SELinux.
+    assert "command -v restorecon" in rendered
