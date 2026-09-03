@@ -8,6 +8,29 @@
 ; carrying one deployment's names, which everyone else then has to find and
 ; strip. Values come from site.yml, which is gitignored.
 
+[paths]
+# WITHOUT THIS Grafana defaults every path to $homepath/... — i.e. INSIDE
+# /usr/local/share/grafana, the program tree. Two things go wrong:
+#
+#   1. ProtectSystem=strict makes /usr read-only, so it cannot even create its
+#      database: "failed to create SQLite database file ...: read-only file
+#      system". That is the sandbox working.
+#
+#   2. Far worse if it HAD been writable: install_tree upgrades a component with
+#      `mv "$dest" "$dest.old"` followed by `rm -rf "$dest.old"`. The database
+#      would have lived inside the directory the next Grafana upgrade deletes.
+#      The read-only mount is the only reason that was not discovered later, by
+#      losing every dashboard during a routine version bump.
+#
+# data/ and logs/ go to the StateDirectory=grafana the unit already creates
+# (/var/lib/grafana, owned by User=grafana). Provisioning is CONFIGURATION, not
+# state, so it stays under /etc where the deploy writes it and the drift check
+# checksums it.
+data = /var/lib/grafana
+logs = /var/lib/grafana/log
+plugins = /var/lib/grafana/plugins
+provisioning = /etc/grafana/provisioning
+
 [server]
 ; The docker bridge gateway ONLY — not 0.0.0.0, not the LAN. Nothing on the
 ; network can reach Grafana except through the edge that terminates TLS.

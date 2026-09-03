@@ -210,3 +210,28 @@ def test_the_public_hostname_is_not_hardcoded_in_the_repository():
     for name, text in (("grafana.ini.template", template), ("observe.yml", route)):
         assert "bradpenney" not in text, f"{name} hardcodes this estate's identity"
         assert "__HOSTNAME__" in text, f"{name} should template the hostname"
+
+
+def test_grafana_keeps_its_data_outside_the_program_tree():
+    """State must not live where an upgrade deletes it.
+
+    Grafana defaults data, logs and plugins to $homepath — inside
+    /usr/local/share/grafana. ProtectSystem=strict caught it as a read-only
+    filesystem error on first start, but the real hazard is install_tree, which
+    upgrades a component by `mv`ing the old tree aside and `rm -rf`ing it. A
+    writable data directory there would have survived exactly until the next
+    version bump, and taken every dashboard with it.
+    """
+    ini = (REPO / "observability-host" / "grafana.ini.template").read_text()
+    assert "[paths]" in ini, "grafana.ini declares no paths; data defaults into /usr"
+    assert "data = /var/lib/grafana" in ini
+    assert "logs = /var/lib/grafana" in ini
+    # Provisioning is configuration, not state: it belongs where the deploy
+    # writes it and the drift check can checksum it.
+    assert "provisioning = /etc/grafana/provisioning" in ini
+
+
+def test_the_unit_creates_the_state_directory_it_points_at():
+    """A path in grafana.ini that no one creates is a startup failure."""
+    unit = (REPO / "systemd/observability/grafana.service").read_text()
+    assert "StateDirectory=grafana" in unit
