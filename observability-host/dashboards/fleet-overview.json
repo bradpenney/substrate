@@ -1,18 +1,25 @@
 {
   "title": "Fleet Overview",
   "uid": "fleet-overview",
-  "tags": ["substrate", "hypervisor"],
+  "tags": ["substrate", "hypervisor", "cluster"],
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
     {
+      "type": "row",
+      "title": "Hypervisors",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
       "type": "timeseries",
-      "title": "Memory used",
-      "description": "Hypervisor memory. The whole observability design turns on these numbers: server2 has 15 GiB against server1's 60, which is why the metrics store runs here and not there (ADR-098).",
+      "title": "Memory used — hypervisors",
+      "description": "The whole observability design turns on these two numbers: server2 has 15 GiB against server1's 60, which is why the metrics store runs on server1 and not there (ADR-098). Kept on its own axis because a hypervisor and a 4 GiB guest on the same chart make both unreadable.",
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "fieldConfig": {
         "defaults": { "unit": "bytes", "min": 0 },
         "overrides": []
@@ -20,17 +27,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
-          "legendFormat": "{{instance}}"
+          "expr": "node_memory_MemTotal_bytes{tier=\"hypervisor\"} - node_memory_MemAvailable_bytes{tier=\"hypervisor\"}",
+          "legendFormat": "{{host}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "CPU busy",
-      "description": "Fraction of each hypervisor's CPU not idle.",
+      "title": "CPU busy — hypervisors",
+      "description": "Fraction of each hypervisor's CPU not idle. A hypervisor's figure includes the work its own guests are doing, so it is not comparable with a guest's — which is the other reason these are separated.",
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
       "fieldConfig": {
         "defaults": { "unit": "percentunit", "min": 0, "max": 1 },
         "overrides": []
@@ -38,16 +45,16 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))",
-          "legendFormat": "{{instance}}"
+          "expr": "1 - avg by (host) (rate(node_cpu_seconds_total{mode=\"idle\",tier=\"hypervisor\"}[5m]))",
+          "legendFormat": "{{host}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Root filesystem free",
+      "title": "Root filesystem free — hypervisors",
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
       "fieldConfig": {
         "defaults": { "unit": "bytes", "min": 0 },
         "overrides": []
@@ -55,17 +62,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "node_filesystem_avail_bytes{mountpoint=\"/\"}",
-          "legendFormat": "{{instance}}"
+          "expr": "node_filesystem_avail_bytes{mountpoint=\"/\",tier=\"hypervisor\"}",
+          "legendFormat": "{{host}}"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Uptime",
+      "title": "Uptime — hypervisors",
       "description": "server1 is the office workstation and reboots; server2 is the always-on machine. That asymmetry is why the etcd majority lives on server2 (ADR-046).",
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
       "fieldConfig": {
         "defaults": { "unit": "s" },
         "overrides": []
@@ -73,17 +80,102 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - node_boot_time_seconds",
-          "legendFormat": "{{instance}}"
+          "expr": "time() - node_boot_time_seconds{tier=\"hypervisor\"}",
+          "legendFormat": "{{host}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Cluster nodes",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory used — cluster nodes",
+      "description": "The k0s guests. These are the numbers that decide whether a workload fits; the hypervisor totals above include everything else the machine is doing.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_MemTotal_bytes{tier=\"cluster\"} - node_memory_MemAvailable_bytes{tier=\"cluster\"}",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU busy — cluster nodes",
+      "description": "Fraction of each k0s node's CPU not idle.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - avg by (node) (rate(node_cpu_seconds_total{mode=\"idle\",tier=\"cluster\"}[5m]))",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Root filesystem free — cluster nodes",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_avail_bytes{mountpoint=\"/\",tier=\"cluster\"}",
+          "legendFormat": "{{node}}"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Exporters up",
+      "title": "Uptime — cluster nodes",
+      "description": "A node that rebuilt recently reads as low uptime here. `gate.py rebuild` destroys and recreates these deliberately, so a fresh number is routine rather than an incident — unlike the hypervisor panel above.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - node_boot_time_seconds{tier=\"cluster\"}",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Collection",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Hypervisor exporters up",
       "description": "A hypervisor missing from this count is a silent gap in every panel above, not an error anywhere.",
       "datasource": { "type": "prometheus", "uid": "victoriametrics" },
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 16 },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 35 },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
@@ -97,6 +189,46 @@
         "overrides": []
       },
       "targets": [{ "refId": "A", "expr": "sum(up{job=\"hypervisors\"})" }]
+    },
+    {
+      "type": "stat",
+      "title": "Cluster exporters up",
+      "description": "One per k0s node. Drops to 4 during a rebuild and returns; a drop that does not return is a node that came back without its agent.",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "sum(up{job=\"node-exporter\"})" }]
+    },
+    {
+      "type": "stat",
+      "title": "All scrape targets up",
+      "description": "Every target the store believes it should be scraping, cluster and hypervisor together. `up` collapses many causes into one number — a target reading 0 needs the scraper's error AND the target's own log, not a guess (ADR-116).",
+      "datasource": { "type": "prometheus", "uid": "victoriametrics" },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [{ "refId": "A", "expr": "sum(up)" }]
     }
   ]
 }

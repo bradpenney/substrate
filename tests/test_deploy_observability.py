@@ -63,11 +63,20 @@ def test_every_scrape_target_is_a_host_that_installs_the_exporter(dobs, cfg):
     The reverse — an exporter nobody scrapes — is invisible, which is why the
     two lists are derived from the same source rather than maintained apart.
     """
-    rendered = dobs.scrape_config(cfg).decode()
-    # Match address:port specifically. A looser "starts with a dash" test also
-    # matched `- targets:` and `- job_name:`, which are yaml structure rather
-    # than scrape targets.
-    targets = set(re.findall(r"^\s+- (\d+\.\d+\.\d+\.\d+):\d+\s*$", rendered, re.M))
+    import yaml
+
+    # PARSED, not pattern-matched. This assertion has now been broken twice by a
+    # change to the config's LAYOUT rather than its meaning — first by a regex
+    # that also matched `- targets:`, then by splitting one target block into one
+    # per host so each could carry its own label. A test that reads the
+    # generated YAML as YAML cannot be broken by reformatting it.
+    parsed = yaml.safe_load(dobs.scrape_config(cfg).decode())
+    targets = {
+        target.rpartition(":")[0]
+        for job in parsed["scrape_configs"]
+        for block in job["static_configs"]
+        for target in block["targets"]
+    }
     assert targets == set(dobs.peer_addresses(cfg))
     assert targets, "no scrape targets — the config would be silently empty"
 
@@ -646,3 +655,122 @@ def test_victoria_metrics_is_not_restarted_for_a_config_change(dobs, cfg):
     body = rendered.split("restart_if_config_changed() {", 1)[1].split("\n}", 1)[0]
     assert "victoria" not in body.lower()
     assert "promscrape.configCheckInterval" in rendered
+
+
+# --- Telling the two tiers apart -------------------------------------------
+
+
+def test_each_hypervisor_is_labelled_with_its_name(dobs, cfg):
+    """A dashboard must be able to name a host without printing its address.
+
+    The cluster tier gets a readable `node` label from the in-cluster vmagent.
+    Without an equivalent here, `instance` is the only thing separating two
+    hypervisors — and `instance` is an IP address, which cannot go into a
+    committed dashboard.
+    """
+    rendered = dobs.scrape_config(cfg).decode()
+    names = [name for name, _ in dobs.peer_targets_by_name(cfg)]
+    assert len(names) == len(set(names)), "two hypervisors share a name"
+    for name in names:
+        assert f"host: {name}" in rendered, f"{name} is scraped without its name"
+    # One static_config per host: a single block listing every target can only
+    # carry one set of labels, so every host would get the same `host` value.
+    assert rendered.count("tier: hypervisor") == len(names)
+
+
+def test_the_dashboard_never_contains_an_address(cfg):
+    """substrate is intended to go public; substrate_config stays private.
+
+    Legends render from labels at query time, so nothing here needs an address —
+    and a dashboard is exactly the kind of file where one gets pasted in during
+    debugging and then committed.
+    """
+    board = (REPO / "observability-host/dashboards/fleet-overview.json").read_text()
+    assert not re.search(
+        r"\b\d{1,3}(\.\d{1,3}){3}\b", board
+    ), "an IP is in the dashboard"
+    for name, address in dobs_peer_targets(cfg):
+        assert address not in board, f"{name}'s address is in the dashboard"
+
+
+def dobs_peer_targets(cfg):
+    """Helper: import the CLI once for the address check above."""
+    spec = importlib.util.spec_from_file_location(
+        "deploy_observability", REPO / "deploy-observability.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["deploy_observability"] = module
+    spec.loader.exec_module(module)
+    return module.peer_targets_by_name(cfg)
+
+
+def test_no_dashboard_panel_mixes_the_hypervisors_with_the_cluster_nodes():
+    """The panels claimed to be about hypervisors; the queries returned both.
+
+    node_exporter runs on the hypervisors AND on the five k0s guests, and both
+    write to the same store. An unfiltered `node_memory_*` therefore silently
+    grew from two series to seven the day the in-cluster vmagent started, with
+    the panel titles and descriptions still saying "hypervisor". Nothing broke;
+    the chart just stopped meaning what it said.
+
+    Comparing them on one axis is also wrong on its own terms: a hypervisor's
+    numbers include the work of the guests plotted beside it.
+    """
+    import json
+
+    board = json.loads(
+        (REPO / "observability-host/dashboards/fleet-overview.json").read_text()
+    )
+    for panel in board["panels"]:
+        for target in panel.get("targets", []):
+            expr = target.get("expr", "")
+            if "node_" not in expr:
+                continue
+            assert (
+                'tier="hypervisor"' in expr or 'tier="cluster"' in expr
+            ), f"panel {panel['title']!r} queries node_* across both tiers: {expr}"
+
+
+def test_every_dashboard_grouping_uses_a_label_the_pipeline_produces(cfg):
+    """`avg by (host)` over data with no `host` label MERGES every host silently.
+
+    It does not error and it does not drop the series — it returns one line
+    labelled with nothing, which reads as a single well-behaved machine. This
+    was observed live: before the `host` label shipped, the hypervisor CPU panel
+    returned 1 series for 2 hosts.
+    """
+    import json
+
+    board = json.loads(
+        (REPO / "observability-host/dashboards/fleet-overview.json").read_text()
+    )
+    scrape = dobs_peer_targets  # noqa: F841  (kept for symmetry with the import)
+    produced = {"host", "node", "instance", "job", "tier", "cluster"}
+    for panel in board["panels"]:
+        for target in panel.get("targets", []):
+            expr = target.get("expr", "")
+            for label in re.findall(r"\bby\s*\(\s*([a-z_]+)\s*\)", expr):
+                assert label in produced, (
+                    f"panel {panel['title']!r} groups by {label!r}, "
+                    "which nothing in the pipeline emits"
+                )
+            for label in re.findall(
+                r"\{\{\s*([a-z_]+)\s*\}\}", target.get("legendFormat", "")
+            ):
+                assert label in produced, (
+                    f"panel {panel['title']!r} legends on {label!r}, "
+                    "which nothing in the pipeline emits"
+                )
+
+
+def test_grafana_gets_every_provisioning_directory_it_scans(dobs, cfg):
+    """Grafana logs an error for each provisioning subdirectory that is missing.
+
+    `plugins` and `alerting` hold nothing here, so they did not exist, so every
+    start logged two errors that would never stop. A permanent expected error is
+    worse than none: it teaches whoever reads this journal to skim red lines, on
+    the host whose journal is read only when something is already wrong.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    for directory in ("plugins", "alerting"):
+        assert f"/etc/grafana/provisioning/{directory}" in rendered
