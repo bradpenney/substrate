@@ -89,7 +89,16 @@ def components_for(cfg, host_name: str) -> list[str]:
     """
     which = ["node_exporter"]
     if cfg.observability.host == host_name:
-        which += ["victoria_metrics", "victoria_logs", "grafana"]
+        # The datasource plugin is tied to grafana, not to victoria_logs: it is
+        # the piece that lets GRAFANA read VictoriaLogs, and it installs into
+        # Grafana's data directory. A host storing logs without serving
+        # dashboards has no use for it.
+        which += [
+            "victoria_metrics",
+            "victoria_logs",
+            "grafana",
+            "victoria_logs_datasource",
+        ]
     return which
 
 
@@ -193,6 +202,60 @@ install_tree() {
     fi
 
     printf '%s' "$version" > "$STAMP/$name"
+}
+
+# A Grafana PLUGIN tree — the third shape, after a lone binary and a program
+# tree. It differs from install_tree in three ways that all matter:
+#
+#   1. It lands in /var/lib/grafana, not /usr/local. grafana.ini points
+#      `plugins` there, and ProtectSystem=strict makes /usr read-only to the
+#      service, so /usr is not a place Grafana could manage plugins even if it
+#      wanted to.
+#   2. Grafana only ever READS it. Left root-owned, so a compromised Grafana
+#      cannot rewrite the backend binary it is about to execute.
+#   3. Grafana enumerates plugins ONCE, at startup. Installing one under a
+#      running Grafana changes nothing until it restarts, so this records that
+#      a restart is owed rather than assuming the next deploy will do it.
+#
+# The plugin is signed (signatureType: commercial, signedByOrg: victoriametrics)
+# and its MANIFEST.txt ships inside the tarball, so Grafana validates it without
+# allow_loading_unsigned_plugins — which would have to be set globally and would
+# weaken every other plugin path at the same time.
+PLUGIN_INSTALLED=0
+install_plugin() {
+    local name=$1 version=$2 url=$3 sha=$4 root=$5 dest=$6
+    if [ -f "$STAMP/$name" ] && [ "$(cat "$STAMP/$name")" = "$version" ] && [ -d "$dest" ]; then
+        echo "  $name $version already installed"
+        return
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp'" RETURN
+    echo "  fetching $name $version (large)"
+    curl -fsSL -o "$tmp/pkg.tar.gz" "$url"
+    echo "$sha  $tmp/pkg.tar.gz" | sha256sum -c - >/dev/null
+    tar -xzf "$tmp/pkg.tar.gz" -C "$tmp"
+    install -d -m 0755 "$(dirname "$dest")"
+    rm -rf "$dest.new" "$dest.old"
+    mv "$tmp/$root" "$dest.new"
+    [ -d "$dest" ] && mv "$dest" "$dest.old"
+    mv "$dest.new" "$dest"
+    rm -rf "$dest.old"
+
+    # Same trap that produced 203/EXEC for Grafana itself (ADR-114): `mv`
+    # preserves the SELinux context, so a tree extracted under mktemp -d arrives
+    # wearing /tmp's user_tmp_t label. This plugin declares `backend: true`, so
+    # Grafana FORKS victoriametrics_logs_backend_plugin_linux_amd64 out of this
+    # directory — an exec, subject to exactly the same refusal, and equally
+    # invisible to `ls -l`.
+    chown -R root:root "$dest"
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -R "$dest"
+    fi
+
+    printf '%s' "$version" > "$STAMP/$name"
+    PLUGIN_INSTALLED=1
 }
 
 __INSTALL_CALLS__
@@ -319,6 +382,7 @@ __ENABLE_STORE__
 UNIT_STAMPS=/usr/local/lib/substrate-observability/units
 install -d -m 0755 "$UNIT_STAMPS"
 
+RESTARTED=""
 for u in __UNIT_FILES__; do
     case "$u" in *@*) continue ;; esac          # templates are not restartable
     f="/etc/systemd/system/$u"
@@ -348,9 +412,86 @@ for u in __UNIT_FILES__; do
     if [ "$stale" -eq 1 ]; then
         echo "  process does not match its unit, restarting: $u"
         systemctl try-restart "$u" || echo "    WARNING: $u failed to restart"
+        RESTARTED="$RESTARTED $u"
     fi
     printf "%s" "$cur" > "$stamp"
 done
+
+# CONFIG THAT IS ONLY READ AT STARTUP — the same defect, one layer over.
+#
+# The loop above watches unit FILES. grafana.ini is not a unit file, and Grafana
+# parses it exactly once, at startup. So a changed grafana.ini is shipped,
+# installed at the right path with the right mode, and confirmed by
+# substrate-reconcile.sh to match the repository byte for byte, while the running
+# Grafana goes on serving the configuration it was started with. Deploy, drift
+# check and `systemctl status` all report success and all three are describing
+# the file rather than the process.
+#
+# VictoriaMetrics is deliberately NOT listed. It runs with
+# -promscrape.configCheckInterval and re-reads its own scrape config, so
+# restarting it would discard scrape state to fix something that fixes itself.
+restart_if_config_changed() {
+    local u=$1 f=$2
+    [ -e "$f" ] || return 0
+    systemctl is-active --quiet "$u" || return 0
+
+    local cur stamp stale started started_epoch
+    cur=$(sha256sum "$f" | cut -d" " -f1)
+    stamp="$UNIT_STAMPS/config-$(echo "$f" | tr / _).sha256"
+    stale=0
+    if [ -r "$stamp" ]; then
+        # CONTENT, not mtime: the payload rewrites grafana.ini on every deploy,
+        # so an mtime test would restart Grafana every run for no change at all.
+        [ "$(cat "$stamp")" = "$cur" ] || stale=1
+    else
+        # No stamp: the same bootstrap question asked of the units above. Is the
+        # running process older than the configuration it claims to be using?
+        started=$(systemctl show "$u" -p ActiveEnterTimestamp --value)
+        started_epoch=$(date -d "$started" +%s 2>/dev/null || echo 0)
+        [ "$(stat -c %Y "$f")" -gt "$started_epoch" ] && stale=1
+    fi
+
+    if [ "$stale" -eq 1 ]; then
+        case " $RESTARTED " in
+            *" $u "*) ;;
+            *)
+                echo "  process has not read its config, restarting: $u ($f)"
+                systemctl try-restart "$u" || echo "    WARNING: $u failed to restart"
+                RESTARTED="$RESTARTED $u"
+                ;;
+        esac
+    fi
+    printf "%s" "$cur" > "$stamp"
+}
+
+restart_if_config_changed grafana.service /etc/grafana/grafana.ini
+
+# LOAD WHAT WAS INSTALLED — the plugin case of the same defect.
+#
+# Grafana enumerates its plugin directory ONCE, at startup. A plugin installed
+# under a running Grafana is on disk, checksum-verified, correctly labelled, and
+# completely absent from the running process. The datasource keeps reporting the
+# same "unknown type" it reported before the install, so the deploy looks like it
+# did nothing — the third layer to show this shape, after the unit files above
+# and the vmagent ConfigMap in the cluster (ADR-116).
+if [ "$PLUGIN_INSTALLED" -eq 1 ]; then
+    case " $RESTARTED " in
+        *" grafana.service "*)
+            echo "  plugin installed; grafana.service was already restarted above"
+            ;;
+        *)
+            # Not active means ConditionPathExists=/etc/grafana/grafana.env has
+            # not been satisfied yet. Nothing to reload: whenever Grafana is
+            # first started it will enumerate the plugin along with the rest.
+            if systemctl is-active --quiet grafana.service; then
+                echo "  plugin installed, restarting grafana.service to load it"
+                systemctl try-restart grafana.service || echo "    WARNING: grafana.service failed to restart"
+            else
+                echo "  plugin installed; grafana.service not running, will load at first start"
+            fi
+            ;;
+    esac
+fi
 
 echo "  node-exporter:   $(systemctl is-active node-exporter.service) / $(systemctl is-enabled node-exporter.service)"
 echo "  OnFailure:       $(systemctl show -p OnFailure --value node-exporter.service)"
@@ -401,10 +542,21 @@ def render_installer(cfg, host_name: str) -> str:
     for name in components_for(cfg, host_name):
         spec = versions[name]
         url = spec["url"].format(version=spec["version"])
-        # Two shapes: a single binary lifted out of the archive, or a whole
-        # directory tree. Which one is a property of the upstream release, so it
-        # is declared in versions.yml rather than guessed from the name.
-        if "tree_root" in spec:
+        # Three shapes: a single binary lifted out of the archive, a whole
+        # program tree, or a Grafana plugin tree. Which one is a property of the
+        # upstream release AND of where it has to land, so it is declared in
+        # versions.yml rather than guessed from the name.
+        if "plugin_root" in spec:
+            fields = (
+                name,
+                spec["version"],
+                url,
+                spec["sha256"],
+                spec["plugin_root"],
+                spec["install_to"],
+            )
+            verb = "install_plugin"
+        elif "tree_root" in spec:
             fields = (
                 name,
                 spec["version"],

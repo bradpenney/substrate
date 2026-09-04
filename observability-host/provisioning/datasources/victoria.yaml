@@ -11,8 +11,11 @@ datasources:
     # fixed uid is what makes the dashboards portable across a rebuild.
     type: prometheus
     access: proxy
-    # Loopback. VictoriaMetrics binds 127.0.0.1 and is reached only from this
-    # host — Grafana is the sole client, so there is no reason to expose it.
+    # Loopback, deliberately, even though VictoriaMetrics no longer BINDS
+    # loopback. It was rebound to 0.0.0.0 on 2026-09-02 so the in-cluster
+    # vmagent could remote_write to it, and what keeps it private now is the
+    # firewalld allow-list, not the bind address. Grafana is on this host, so
+    # it still has no reason to leave it.
     url: http://127.0.0.1:8428
     isDefault: true
     editable: false

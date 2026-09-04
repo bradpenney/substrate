@@ -71,6 +71,29 @@ observability:
     member: victoria-logs-prod
     install_as: victoria-logs-prod
 
+  victoria_logs_datasource:
+    version: v0.32.0
+    # The Grafana datasource plugin for VictoriaLogs. THIRD-PARTY: Grafana does
+    # not bundle it, so without it the provisioned VictoriaLogs datasource loads
+    # as an unknown type and every log panel fails silently. That is what 1.5M
+    # stored log lines did for a day — collected, retained, and unreachable.
+    #
+    # NOT `grafana cli plugins install`: that resolves a version over the
+    # network at run time, which is the single thing every other pin in this
+    # file exists to prevent.
+    #
+    # Upstream publishes SHA-1 checksums only, and SHA-1 is not collision
+    # resistant. The published SHA-1 was verified to match, and the sha256 below
+    # was then computed from that same reviewed artefact.
+    url: https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/{version}/victoriametrics-logs-datasource-{version}.tar.gz
+    sha256: e100b767f19cd614ac8ac3860458a3fb33f5aa7a876e924d0340010e40d1c0d4
+    # A PLUGIN tree: installed into Grafana's data directory, not /usr/local,
+    # because grafana.ini points `plugins` there and ProtectSystem=strict makes
+    # /usr read-only to the service. Third shape after install_binary and
+    # install_tree — see install_plugin.
+    plugin_root: victoriametrics-logs-datasource
+    install_to: /var/lib/grafana/plugins/victoriametrics-logs-datasource
+
   grafana:
     version: v13.2.0
     # NOT a GitHub release asset — Grafana publishes the tarball and its

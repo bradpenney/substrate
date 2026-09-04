@@ -165,6 +165,23 @@ def test_it_does_not_phone_home(ini):
     assert ini["analytics"]["check_for_updates"] == "false"
     assert ini["snapshots"]["external_enabled"] == "false"
     assert ini["auth.anonymous"]["enabled"] == "false"
+    # check_for_updates covers Grafana's own version and nothing else. Plugin
+    # update checks are a separate default-true setting, and this assertion
+    # passed for the whole time Grafana was calling grafana.com every ten
+    # minutes: the test asserted the setting that was named, not the behaviour
+    # the docstring claims.
+    assert ini["analytics"]["check_for_plugin_updates"] == "false"
+
+
+def test_grafana_does_not_try_to_write_into_its_own_program_tree(ini):
+    """Preinstalled plugins are installed into the homepath, which is read-only.
+
+    ProtectSystem=strict is doing its job when this fails; the error is Grafana
+    asking for something it should not have. Granting the write would be the
+    wrong repair — the plugins involved (mysql, elasticsearch) are datasources
+    nothing here provisions.
+    """
+    assert ini["plugins"]["preinstall_disabled"] == "true"
 
 
 def test_github_auth_is_never_enabled_without_an_organisation():

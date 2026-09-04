@@ -89,6 +89,27 @@ disable_brute_force_login_protection = false
 reporting_enabled = false
 check_for_updates = false
 feedback_links_enabled = false
+; check_for_updates covers GRAFANA's version only. Plugin update checking is a
+; SEPARATE setting that defaults to true, and it was making a GET to
+; grafana.com every ten minutes -- 142 outbound calls in the 24 hours this was
+; found, from the one host whose whole job is to notice things, none of them
+; noticed. The block above already said this must not happen; it only half did.
+check_for_plugin_updates = false
+
+[plugins]
+; Grafana 11 moved several core datasources (mysql, elasticsearch, ...) out to
+; preinstalled plugins that a background installer writes into the homepath at
+; startup. ProtectSystem=strict makes that path read-only, so each start logged
+; a stack of
+;
+;   Failed to install plugin ... unlinkat
+;   /usr/local/share/grafana/data/plugins-bundled/mysql: read-only file system
+;
+; -- 90 of them. Nothing here uses those datasources: the two that are
+; provisioned are core Prometheus and the VictoriaLogs plugin, which is pinned
+; and installed by the deploy. Turning preinstall off removes the writes rather
+; than granting Grafana somewhere to make them.
+preinstall_disabled = true
 
 [snapshots]
 ; Publishing a snapshot externally would send cluster internals to a third

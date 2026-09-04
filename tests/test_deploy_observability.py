@@ -480,7 +480,169 @@ def test_an_extracted_tree_is_relabelled_and_owned_by_root(dobs, cfg):
     because `install` relabels — so this was the one component that could hit it.
     """
     rendered = dobs.render_installer(cfg, cfg.observability.host)
-    assert "restorecon -R" in rendered, "an extracted tree is never relabelled"
-    assert "chown -R root:root" in rendered, "an extracted tree keeps the archive's uid"
+    # Scoped to install_tree's own body, NOT the whole rendered script. This
+    # assertion used to search the entire installer, and adding install_plugin
+    # -- which relabels for the same reason -- silently disarmed it: deleting
+    # install_tree's restorecon left the substring present elsewhere and the
+    # test still passed. A whole-file `in` assertion stops testing the thing it
+    # names as soon as a second component says the same words.
+    fn = rendered.split("install_tree() {", 1)[1].split("\n}", 1)[0]
+    assert "restorecon -R" in fn, "an extracted tree is never relabelled"
+    assert "chown -R root:root" in fn, "an extracted tree keeps the archive's uid"
     # Guarded, because not every host runs SELinux.
-    assert "command -v restorecon" in rendered
+    assert "command -v restorecon" in fn
+
+
+# --- The VictoriaLogs datasource plugin -------------------------------------
+#
+# Grafana does not bundle it. Without it the provisioned VictoriaLogs datasource
+# loads as an unknown type and every log panel fails, which is not visible from
+# either end: VictoriaLogs keeps ingesting and Grafana keeps starting cleanly.
+
+
+def test_the_logs_plugin_is_tied_to_grafana_not_to_the_log_store(dobs, cfg):
+    """It is what lets GRAFANA read VictoriaLogs, so it follows Grafana.
+
+    A host that stores logs but serves no dashboards has no use for a Grafana
+    plugin, and installing one into a /var/lib/grafana that no Grafana reads
+    would be 78 MB of cargo.
+    """
+    on_store = dobs.components_for(cfg, cfg.observability.host)
+    assert "victoria_logs_datasource" in on_store
+    assert "grafana" in on_store
+
+    for name in cfg.hypervisors:
+        which = dobs.components_for(cfg, name)
+        assert ("victoria_logs_datasource" in which) == (
+            "grafana" in which
+        ), f"{name}: the plugin and Grafana must travel together"
+
+
+def test_the_plugin_is_installed_as_a_plugin_not_a_program_tree(dobs, cfg):
+    """Three install shapes exist and the plugin must dispatch to the third.
+
+    install_tree would put it under /usr/local/share, which Grafana never scans
+    and ProtectSystem=strict makes read-only anyway; install_binary would try to
+    lift a single member out of a directory tree and fail outright.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    calls = [
+        line
+        for line in rendered.splitlines()
+        if line.startswith(("install_binary ", "install_tree ", "install_plugin "))
+    ]
+    plugin_calls = [c for c in calls if "victoria_logs_datasource" in c]
+    assert len(plugin_calls) == 1, "the plugin is installed exactly once"
+    assert plugin_calls[0].startswith("install_plugin "), plugin_calls[0]
+
+
+def test_the_plugin_lands_where_grafana_is_configured_to_look(dobs, cfg):
+    """versions.yml and grafana.ini.template must agree on ONE directory.
+
+    Grafana scans exactly the path in its `plugins` setting. If these two drift,
+    the plugin installs successfully, verifies successfully, is reported by the
+    drift check as present at the pinned version — and is never loaded, because
+    Grafana is looking somewhere else. Nothing in the deploy would say so.
+    """
+    import siteconfig
+
+    dest = siteconfig.load_versions()["observability"]["victoria_logs_datasource"][
+        "install_to"
+    ]
+    template = (REPO / "observability-host/grafana.ini.template").read_text()
+    configured = re.search(r"^plugins\s*=\s*(\S+)", template, re.M)
+    assert configured, "grafana.ini.template declares no plugins directory"
+    assert dest.startswith(
+        configured.group(1).rstrip("/") + "/"
+    ), f"plugin installs to {dest} but Grafana scans {configured.group(1)}"
+
+
+def test_the_plugin_directory_name_matches_the_provisioned_datasource_type(cfg):
+    """Grafana resolves a datasource `type` to a plugin id, which is the dirname.
+
+    The provisioned datasource names `victoriametrics-logs-datasource`. If the
+    installed tree is called anything else, Grafana provisions the datasource
+    against a plugin that does not exist and reports it as an unknown type —
+    the exact symptom this whole component was added to fix.
+    """
+    import siteconfig
+
+    spec = siteconfig.load_versions()["observability"]["victoria_logs_datasource"]
+    provisioned = (
+        REPO / "observability-host/provisioning/datasources/victoria.yaml"
+    ).read_text()
+    declared = re.search(r"^\s*type:\s*(victoriametrics-\S+)", provisioned, re.M)
+    assert declared, "no VictoriaLogs datasource type is provisioned"
+    assert spec["plugin_root"] == declared.group(1)
+    assert spec["install_to"].rsplit("/", 1)[-1] == declared.group(1)
+
+
+def test_installing_the_plugin_restarts_grafana_to_load_it(dobs, cfg):
+    """Grafana enumerates plugins ONCE, at startup.
+
+    Installed-under-a-running-process is the same defect as a changed unit file
+    that nothing restarts and a ConfigMap the pod never re-reads (ADR-116). The
+    files are correct, every check passes, and the running process has never
+    seen them.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "PLUGIN_INSTALLED=1" in rendered, "install_plugin records nothing"
+    body = rendered.split('if [ "$PLUGIN_INSTALLED" -eq 1 ]; then', 1)
+    assert len(body) == 2, "nothing acts on PLUGIN_INSTALLED"
+    assert "try-restart grafana.service" in body[1]
+    # And it must not restart a Grafana the unit loop already restarted, nor one
+    # that ConditionPathExists is deliberately holding down.
+    assert "$RESTARTED" in body[1]
+    assert "is-active --quiet grafana.service" in body[1]
+
+
+def test_the_plugin_tree_is_relabelled_and_root_owned(dobs, cfg):
+    """The plugin declares `backend: true`, so Grafana EXECS a binary from it.
+
+    That is the same exec that gave Grafana itself 203/EXEC: `mv` preserves the
+    SELinux context, so a tree staged under mktemp -d arrives wearing
+    user_tmp_t. Mode and path look correct; only the label is wrong.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    fn = rendered.split("install_plugin() {", 1)[1].split("\n}", 1)[0]
+    assert "restorecon -R" in fn, "an unlabelled plugin binary cannot be exec'd"
+    assert "chown -R root:root" in fn, "tar restores the upstream builder's uid"
+    # Root-owned, not grafana-owned: Grafana only reads it, and a compromised
+    # Grafana must not be able to rewrite the backend binary it then executes.
+    assert "chown -R grafana" not in fn
+
+
+def test_a_changed_grafana_ini_actually_restarts_grafana(dobs, cfg):
+    """grafana.ini is not a unit file, and Grafana reads it once, at startup.
+
+    The unit-file loop watches /etc/systemd/system. It cannot see this, so a
+    changed grafana.ini shipped without this block is installed at the right
+    path, with the right mode, and confirmed byte-identical to the repository by
+    the drift check — while the running Grafana serves the configuration it was
+    started with. Every report is about the file; none is about the process.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "/etc/grafana/grafana.ini" in rendered
+    assert (
+        "restart_if_config_changed grafana.service /etc/grafana/grafana.ini" in rendered
+    ), "no config file is watched for a restart"
+    body = rendered.split("restart_if_config_changed() {", 1)[1].split("\n}", 1)[0]
+    assert "try-restart" in body
+    # Content, not mtime — the payload rewrites grafana.ini every deploy, so an
+    # mtime test would restart Grafana on every run for nothing.
+    assert "sha256sum" in body
+    # And it must not restart a unit the unit-file loop already restarted.
+    assert "$RESTARTED" in body
+
+
+def test_victoria_metrics_is_not_restarted_for_a_config_change(dobs, cfg):
+    """It re-reads its own scrape config; restarting would drop scrape state.
+
+    The point of the config-restart list is that membership is a decision about
+    each component's reload behaviour, not a blanket rule. VictoriaMetrics runs
+    with -promscrape.configCheckInterval precisely so it does not need this.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    body = rendered.split("restart_if_config_changed() {", 1)[1].split("\n}", 1)[0]
+    assert "victoria" not in body.lower()
+    assert "promscrape.configCheckInterval" in rendered
