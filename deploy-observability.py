@@ -802,7 +802,18 @@ restart_if_config_changed() {
     systemctl is-active --quiet "$u" || return 0
 
     local cur stamp stale started started_epoch
-    cur=$(sha256sum "$f" | cut -d" " -f1)
+    # A DIRECTORY is hashed as a whole, not just a single file. Grafana reads
+    # its entire provisioning tree at startup -- datasources, dashboards config
+    # and alerting -- so watching only grafana.ini answers the wrong question.
+    # Found 2026-09-03: six alert rules were installed correctly and Grafana had
+    # been running for an hour, so it had never read them. `find | sort` because
+    # find's order is filesystem-dependent and an unstable hash would restart
+    # Grafana on every deploy.
+    if [ -d "$f" ]; then
+        cur=$(find "$f" -type f -exec sha256sum {} + | sort | sha256sum | cut -d" " -f1)
+    else
+        cur=$(sha256sum "$f" | cut -d" " -f1)
+    fi
     stamp="$UNIT_STAMPS/config-$(echo "$f" | tr / _).sha256"
     stale=0
     if [ -r "$stamp" ]; then
@@ -831,6 +842,12 @@ restart_if_config_changed() {
 }
 
 restart_if_config_changed grafana.service /etc/grafana/grafana.ini
+# The provisioning TREE, not just the ini. Datasources and alert rules are read
+# once, at startup. Dashboards under /var/lib/grafana/dashboards are excluded
+# deliberately: Grafana's file provisioner rescans those on an interval, so they
+# do not need a restart and including them would bounce the store for a panel
+# edit.
+restart_if_config_changed grafana.service /etc/grafana/provisioning
 
 # LOAD WHAT WAS INSTALLED — the plugin case of the same defect.
 #

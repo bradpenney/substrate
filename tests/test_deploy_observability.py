@@ -988,3 +988,47 @@ def test_alert_rules_render_to_grafanas_schema(dobs):
         assert rule["data"][0]["datasourceUid"] == "victoriametrics"
         # If the rule itself cannot be evaluated, say so rather than stay green.
         assert rule["execErrState"] == "Alerting"
+
+
+def test_everything_grafana_reads_only_at_startup_is_watched(dobs, cfg, monkeypatch):
+    """Derived from the PAYLOAD, so a new provisioning file cannot be forgotten.
+
+    Grafana reads its whole provisioning tree once, at startup. On 2026-09-03 six
+    alert rules were installed correctly onto a Grafana that had been running for
+    an hour, so it had never read them — and every check passed, because the
+    files were right. That is ADR-118 again, introduced by the change meant to
+    close ADR-118.
+
+    The failure mode is the worst kind available here: an alerting system that
+    provisions cleanly and pages for nothing.
+    """
+    monkeypatch.setattr(dobs.deploy_updates, "ntfy_topic", lambda: "SENTINEL-TOPIC")
+    provisioned = [
+        path
+        for _, path, _ in dobs.files_for(cfg, cfg.observability.host)
+        if path.startswith("etc/grafana/provisioning/")
+    ]
+    assert provisioned, "no provisioning files — this test is asserting nothing"
+
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    watched = re.findall(r"^restart_if_config_changed \S+ (\S+)$", rendered, re.M)
+    assert watched, "nothing is watched for a config-driven restart"
+
+    for path in provisioned:
+        absolute = "/" + path
+        assert any(
+            absolute == w or absolute.startswith(w.rstrip("/") + "/") for w in watched
+        ), f"{absolute} is read only at startup and nothing restarts Grafana for it"
+
+
+def test_a_watched_directory_is_hashed_stably(dobs, cfg):
+    """`find` order is filesystem-dependent; an unstable hash restarts every run.
+
+    Restarting Grafana on every deploy would be a gap in every dashboard for no
+    change at all — the same reason the unit check is content-based rather than
+    mtime-based.
+    """
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    body = rendered.split("restart_if_config_changed() {", 1)[1].split("\n}", 1)[0]
+    assert "-d " in body, "directories are not handled at all"
+    assert "find" in body and "| sort" in body, "directory hash is not order-stable"
