@@ -648,13 +648,38 @@ def test_victoria_metrics_is_not_restarted_for_a_config_change(dobs, cfg):
     """It re-reads its own scrape config; restarting would drop scrape state.
 
     The point of the config-restart list is that membership is a decision about
-    each component's reload behaviour, not a blanket rule. VictoriaMetrics runs
-    with -promscrape.configCheckInterval precisely so it does not need this.
+    each component's reload behaviour, not a blanket rule. VictoriaMetrics is
+    excluded because it reloads -- and the ONLY thing that makes that true is the
+    flag asserted below.
     """
     rendered = dobs.render_installer(cfg, cfg.observability.host)
     body = rendered.split("restart_if_config_changed() {", 1)[1].split("\n}", 1)[0]
     assert "victoria" not in body.lower()
-    assert "promscrape.configCheckInterval" in rendered
+
+
+def test_victoria_metrics_actually_rereads_its_scrape_config():
+    """Asserted against the UNIT, not against a comment claiming it.
+
+    The first version of this checked `"promscrape.configCheckInterval" in
+    rendered` -- the rendered INSTALLER, which contains a bash comment saying
+    VictoriaMetrics reloads. The test therefore passed by matching the prose that
+    asserted the behaviour, while the flag was absent from the unit and checking
+    was disabled by default. Eighteen hours of scrape-config drift sat behind a
+    green test.
+
+    A test must read the artefact that decides the behaviour. For a process
+    flag, that is the ExecStart line.
+    """
+    unit = (REPO / "systemd/observability/victoria-metrics.service").read_text()
+    exec_start = unit.split("ExecStart=", 1)[1].split("\nRestart=", 1)[0]
+    # Strip systemd line continuations so a comment on its own line cannot
+    # satisfy this -- systemd would pass such a line to the binary as arguments.
+    argv = " ".join(exec_start.replace("\\\n", " ").split())
+    assert "-promscrape.config=" in argv
+    assert (
+        "-promscrape.configCheckInterval=" in argv
+    ), "the scrape config would be read once, at start, and never again"
+    assert "#" not in argv, "a comment inside ExecStart becomes an argument"
 
 
 # --- Telling the two tiers apart -------------------------------------------

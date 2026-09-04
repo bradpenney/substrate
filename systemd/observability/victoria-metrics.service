@@ -54,10 +54,25 @@ StartLimitIntervalSec=0
 # The firewall allow-list is therefore the only thing standing between a node
 # and the ability to read or delete series. It must stay an allow-list of node
 # addresses — never a LAN range.
+# -promscrape.configCheckInterval is NOT optional decoration. Checking is
+# DISABLED by default ("By default, the checking is disabled"), so without it the
+# scrape config is read exactly ONCE, at start, and a deploy that rewrites
+# scrape.yml leaves this process scraping the previous config indefinitely. Found
+# 2026-09-03 with 18 hours of drift: the file on disk carried the new host
+# labels, the running scraper did not, and both the deploy and the drift check
+# reported a match (ADR-118, ADR-122).
+#
+# A reload rather than a restart, deliberately: this unit stops with SIGINT
+# precisely so VictoriaMetrics flushes its in-memory parts, and bouncing the
+# store to pick up a label is a gap in every graph on the dashboard.
+#
+# NB comments cannot go inside the continued ExecStart below -- systemd passes
+# them through as arguments rather than treating them as comments.
 ExecStart=/usr/local/bin/victoria-metrics-prod \
     -storageDataPath=/var/lib/victoria-metrics \
     -httpListenAddr=:8428 \
     -promscrape.config=/etc/victoria-metrics/scrape.yml \
+    -promscrape.configCheckInterval=30s \
     -retentionPeriod=6 \
     -memory.allowedPercent=25 \
     -loggerFormat=json
