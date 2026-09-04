@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -71,10 +72,16 @@ def test_every_scrape_target_is_a_host_that_installs_the_exporter(dobs, cfg):
     # per host so each could carry its own label. A test that reads the
     # generated YAML as YAML cannot be broken by reformatting it.
     parsed = yaml.safe_load(dobs.scrape_config(cfg).decode())
+    # The `hypervisors` job SPECIFICALLY. The `observability` job scrapes this
+    # host's own stack on loopback and the docker bridge, which are not peers and
+    # do not run node_exporter — scoping to the job keeps this assertion about
+    # the thing it is named for.
+    hypervisors = next(
+        job for job in parsed["scrape_configs"] if job["job_name"] == "hypervisors"
+    )
     targets = {
         target.rpartition(":")[0]
-        for job in parsed["scrape_configs"]
-        for block in job["static_configs"]
+        for block in hypervisors["static_configs"]
         for target in block["targets"]
     }
     assert targets == set(dobs.peer_addresses(cfg))
@@ -799,3 +806,185 @@ def test_grafana_gets_every_provisioning_directory_it_scans(dobs, cfg):
     rendered = dobs.render_installer(cfg, cfg.observability.host)
     for directory in ("plugins", "alerting"):
         assert f"/etc/grafana/provisioning/{directory}" in rendered
+
+
+# --- The stack monitors itself ----------------------------------------------
+
+
+def test_the_observability_stack_is_scraped_too(dobs, cfg):
+    """A monitoring system that does not monitor itself fails silently.
+
+    Until 2026-09-03 nothing scraped VictoriaMetrics, VictoriaLogs or Grafana.
+    The omission was invisible because everything they monitor kept working —
+    892, 391 and 5,663 self-metrics respectively, all served, none collected. So
+    the questions that matter most about a monitoring system could not be asked:
+    has ingestion stopped, is the disk filling, is the store rejecting writes.
+    """
+    import yaml
+
+    parsed = yaml.safe_load(dobs.scrape_config(cfg).decode())
+    jobs = {job["job_name"]: job for job in parsed["scrape_configs"]}
+    assert "observability" in jobs, "the stack does not scrape itself"
+
+    scraped = {
+        block["labels"]["component"]
+        for block in jobs["observability"]["static_configs"]
+    }
+    assert scraped == {"victoria-metrics", "victoria-logs", "grafana"}
+
+
+def test_grafana_is_scraped_at_the_address_it_actually_binds(dobs, cfg):
+    """Two sources for one address is one source too many.
+
+    Grafana's bind address lives in GRAFANA_BIND *and* is written into
+    grafana.ini.template. If they drift, Grafana listens on one address while
+    the scrape job polls another — and the symptom is a permanently-down target
+    that looks like Grafana being broken rather than the config disagreeing
+    with itself.
+    """
+    import yaml
+
+    template = (REPO / "observability-host/grafana.ini.template").read_text()
+    configured = re.search(r"^http_addr\s*=\s*(\S+)", template, re.M)
+    assert configured, "grafana.ini.template declares no bind address"
+    assert (
+        configured.group(1) == dobs.GRAFANA_BIND
+    ), f"template binds {configured.group(1)}, deploy scrapes {dobs.GRAFANA_BIND}"
+
+    parsed = yaml.safe_load(dobs.scrape_config(cfg).decode())
+    jobs = {job["job_name"]: job for job in parsed["scrape_configs"]}
+    grafana = next(
+        block
+        for block in jobs["observability"]["static_configs"]
+        if block["labels"]["component"] == "grafana"
+    )
+    assert grafana["targets"] == [f"{dobs.GRAFANA_BIND}:3000"]
+
+
+def test_the_stores_are_scraped_on_loopback_not_the_lan(dobs, cfg):
+    """They are on this host by definition — this file only ships where the
+    store does — so there is no reason for self-scraping to leave the machine,
+    and every reason for it not to depend on the firewall allow-list it is
+    partly there to watch."""
+    import yaml
+
+    parsed = yaml.safe_load(dobs.scrape_config(cfg).decode())
+    jobs = {job["job_name"]: job for job in parsed["scrape_configs"]}
+    for block in jobs["observability"]["static_configs"]:
+        if block["labels"]["component"] == "grafana":
+            continue  # binds the docker bridge, asserted above
+        for target in block["targets"]:
+            assert target.startswith("127.0.0.1:"), target
+
+
+# --- Alerting ---------------------------------------------------------------
+
+
+def test_no_ntfy_topic_is_committed_anywhere(dobs):
+    """The topic is a capability URL: holding it is permission to publish.
+
+    It reaches the host from the operator's environment at deploy time, the same
+    way /etc/homelab/notify.env does. Nothing in this repository may contain a
+    concrete one — and this repo is intended to become public.
+    """
+    rendered = dobs.contact_points("SENTINEL-TOPIC").decode()
+    assert "https://ntfy.sh/SENTINEL-TOPIC" in rendered, "renderer is not wired"
+
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True
+    ).stdout.split()
+    for name in tracked:
+        path = REPO / name
+        if not path.is_file():
+            continue
+        try:
+            body = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        for hit in re.findall(r"ntfy\.sh/([A-Za-z0-9_-]+)", body):
+            assert hit in {
+                "SENTINEL-TOPIC",
+                "topic",
+            }, f"{name} contains what looks like a real ntfy topic"
+
+
+def test_the_contact_point_is_not_world_readable(dobs, cfg, monkeypatch):
+    """It holds the topic, so it cannot ship 0644 like the rest of provisioning."""
+    monkeypatch.setattr(dobs.deploy_updates, "ntfy_topic", lambda: "SENTINEL-TOPIC")
+    files = dobs.files_for(cfg, cfg.observability.host)
+    modes = {path: mode for _, path, mode in files}
+    contact = "etc/grafana/provisioning/alerting/contactpoints.yaml"
+    assert contact in modes, "no contact point was provisioned"
+    assert modes[contact] == 0o640, oct(modes[contact])
+    # And the installer must hand it to Grafana's account, or Grafana cannot read
+    # it — and provisions no contact point while still loading the rules, which
+    # is an alerting system that evaluates and delivers nothing.
+    rendered = dobs.render_installer(cfg, cfg.observability.host)
+    assert "chown root:grafana" in rendered
+    assert contact.replace("etc/", "/etc/") in rendered
+
+
+def test_no_contact_point_is_shipped_without_a_topic(dobs, cfg, monkeypatch):
+    """A policy routing to a receiver that does not exist is worse than neither.
+
+    Grafana would accept the rules, evaluate them, and have nowhere to deliver —
+    a silent alerting system, which is the failure this whole wave exists to
+    remove. Better to ship no contact point and warn loudly at deploy time.
+    """
+    monkeypatch.setattr(dobs.deploy_updates, "ntfy_topic", lambda: None)
+    paths = {path for _, path, _ in dobs.files_for(cfg, cfg.observability.host)}
+    assert "etc/grafana/provisioning/alerting/contactpoints.yaml" not in paths
+    # The rules still ship: they are not secret, and having them present means
+    # adding the topic later is the only remaining step.
+    assert "etc/grafana/provisioning/alerting/rules.yaml" in paths
+
+
+def test_every_alert_rule_waits_before_it_pages(dobs):
+    """`for` is part of each rule, not a default.
+
+    A target that blips for one scrape interval is noise; one gone for ten
+    minutes is an event. A rule with no wait turns every transient into a push
+    notification, and a channel that cries wolf is the same as no channel.
+    """
+    for rule in dobs.ALERT_RULES:
+        assert rule["for"].endswith("m"), rule["uid"]
+        assert int(rule["for"].rstrip("m")) >= 10, f"{rule['uid']} pages too eagerly"
+
+
+def test_alert_rule_uids_are_unique(dobs):
+    """Grafana keys provisioned rules by uid; a collision silently drops one."""
+    uids = [r["uid"] for r in dobs.ALERT_RULES]
+    assert len(uids) == len(set(uids))
+
+
+def test_the_filesystem_rule_excludes_read_only_roots(dobs):
+    """The cluster nodes' `/` is a 0.7 GiB read-only ext2, permanently 9.2% free.
+
+    A rule on mountpoint="/" fired on five of seven filesystems the moment it was
+    written. An alert that is always on is worse than no alert: it teaches
+    everyone to skim the channel (ADR-119). The exclusion uses the node's own
+    `node_filesystem_readonly` rather than a hardcoded mountpoint list, so it
+    keeps working when the disk layout changes.
+    """
+    rule = next(r for r in dobs.ALERT_RULES if r["uid"] == "root-filesystem-low")
+    assert "node_filesystem_readonly" in rule["expr"]
+    assert 'mountpoint="/"' not in rule["expr"]
+    # Collapsed per device, or the ~20 bind mounts of one partition alert 20 times.
+    assert "by (tier,host,node,device)" in rule["expr"]
+
+
+def test_alert_rules_render_to_grafanas_schema(dobs):
+    """Each rule is a query -> reduce -> threshold pipeline, condition on C."""
+    import yaml
+
+    doc = yaml.safe_load(dobs.alert_rules().decode())
+    assert doc["apiVersion"] == 1
+    rules = doc["groups"][0]["rules"]
+    assert len(rules) == len(dobs.ALERT_RULES)
+    for rule in rules:
+        assert rule["condition"] == "C"
+        refs = [d["refId"] for d in rule["data"]]
+        assert refs == ["A", "B", "C"]
+        assert rule["data"][0]["datasourceUid"] == "victoriametrics"
+        # If the rule itself cannot be evaluated, say so rather than stay green.
+        assert rule["execErrState"] == "Alerting"

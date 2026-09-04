@@ -38,6 +38,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 import deploy_updates
 import hosts
 import siteconfig
@@ -118,6 +120,285 @@ def components_for(cfg, host_name: str) -> list[str]:
     return which
 
 
+# ALERT RULES, as a compact spec rendered into Grafana's provisioning schema.
+#
+# Grafana's format needs ~25 lines of query/reduce/threshold plumbing per rule,
+# which is identical every time and is not where the thinking is. The thinking is
+# the expression, the threshold and the wait — so that is what is written here,
+# and the plumbing is generated. It also makes the rules testable as data.
+#
+# Every expression is checked against metrics that DEMONSTRABLY exist: each was
+# queried live on 2026-09-03 before being written down. A rule referencing a
+# metric nothing collects is not a safety net, it is a permanently-green panel.
+#
+# `for` is a deliberate part of each rule, not a default. A scrape target that
+# blips for one interval is noise; one that is gone for ten minutes is an event.
+ALERT_RULES = [
+    {
+        "uid": "target-down",
+        "title": "Scrape target down",
+        "expr": "up",
+        "op": "lt",
+        "threshold": 1,
+        "for": "10m",
+        "severity": "page",
+        "summary": "A scrape target has been unreachable for 10 minutes.",
+        # up=0 collapses at least six distinct causes (ADR-116 corollary): a
+        # loopback bind, a namespace default-deny, a hostNetwork target needing
+        # an ipBlock, a config never re-read, HTTPS scraped as HTTP, and missing
+        # RBAC on the target itself. Read the scraper's error AND the target's
+        # own log; fixing the first cause found is how five get left behind.
+        "runbook": "Check the scraper error and the target's own log, not just this alert.",
+    },
+    {
+        "uid": "hypervisor-memory-high",
+        "title": "Hypervisor memory high",
+        "expr": (
+            '100 * (1 - node_memory_MemAvailable_bytes{tier="hypervisor"}'
+            ' / node_memory_MemTotal_bytes{tier="hypervisor"})'
+        ),
+        "op": "gt",
+        "threshold": 90,
+        "for": "15m",
+        "severity": "page",
+        # server2 measured 83% on 2026-09-03 and nothing would ever have said so;
+        # it was found by hand. Its 15 GiB against server1's 60 is already the
+        # constraint that put the metrics store on server1 (ADR-098), so this is
+        # the host where memory pressure actually changes decisions.
+        "summary": "A hypervisor has been above 90% memory for 15 minutes.",
+        "runbook": "server2 has 15 GiB total; it runs hot by design. Check what grew.",
+    },
+    {
+        "uid": "root-filesystem-low",
+        "title": "Filesystem low",
+        # NOT mountpoint="/". The cluster nodes run an immutable OS whose `/` is
+        # a 0.7 GiB read-only ext2 on /dev/loop0, permanently 9.2% free. A rule
+        # on `/` fired on five of seven filesystems the moment it was written and
+        # would have paged forever, which is worse than no rule: an alert that is
+        # always on teaches everyone to ignore the channel (ADR-119).
+        #
+        # `unless node_filesystem_readonly == 1` excludes it using the node's own
+        # report rather than a hardcoded mountpoint list, so this keeps working
+        # if the layout changes. `min by (...device)` collapses the ~20 bind
+        # mounts of the single persistent partition into one alert instead of
+        # twenty identical ones. Pseudo filesystems are excluded because a full
+        # tmpfs is normal and is not a disk problem.
+        #
+        # What this actually watches, verified 2026-09-03: 20 real filesystems
+        # including each node's /dev/vdb -- the 196 GiB Longhorn data disk, which
+        # is the one that matters once apps start migrating.
+        "expr": (
+            "min by (tier,host,node,device) ("
+            '100 * node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|devtmpfs|overlay|squashfs|iso9660"}'
+            ' / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|devtmpfs|overlay|squashfs|iso9660"}'
+            " unless node_filesystem_readonly == 1)"
+        ),
+        "op": "lt",
+        "threshold": 10,
+        "for": "15m",
+        "severity": "page",
+        "summary": "A writable filesystem is below 10% free.",
+        "runbook": "Includes each node's /dev/vdb Longhorn disk. Immutable roots are excluded.",
+    },
+    {
+        "uid": "log-ingestion-stopped",
+        "title": "Log ingestion stopped",
+        "expr": "sum(rate(vl_rows_ingested_total[15m]))",
+        "op": "lt",
+        "threshold": 0.001,
+        "for": "30m",
+        "severity": "page",
+        # Directly earned on 2026-09-03: a Vector filter whose VRL fails to
+        # compile drops EVERY event rather than failing loudly, so the fleet
+        # going silent is a real and reachable state that otherwise looks
+        # exactly like a quiet night. CI now compiles the VRL; this is the
+        # runtime half of that same guard.
+        "summary": "No log lines have been ingested for 30 minutes.",
+        "runbook": "Vector drops all events if its VRL fails to compile. Check vector logs.",
+    },
+    {
+        "uid": "store-disk-low",
+        "title": "Metrics or log store disk low",
+        "expr": (
+            "min(vm_free_disk_space_bytes) / 1024 / 1024 / 1024"
+            " or min(vl_free_disk_space_bytes) / 1024 / 1024 / 1024"
+        ),
+        "op": "lt",
+        "threshold": 20,
+        "for": "15m",
+        "severity": "page",
+        # Both stores go READ-ONLY rather than crashing when they run out, which
+        # means the failure presents as missing recent data, not as a dead
+        # service -- and the dashboards keep rendering the last good numbers.
+        "summary": "A store has less than 20 GiB of free disk.",
+        "runbook": "Both stores go read-only rather than crash; data stops silently.",
+    },
+    {
+        "uid": "scrape-config-not-loaded",
+        "title": "VictoriaMetrics rejected its scrape config",
+        "expr": "vm_promscrape_config_last_reload_successful",
+        "op": "lt",
+        "threshold": 1,
+        "for": "10m",
+        "severity": "page",
+        # On 2026-09-03 this host scraped an 18-hour-old config because reload
+        # checking was disabled entirely. It is enabled now, so the remaining
+        # failure is a reload that is attempted and REJECTED -- which leaves the
+        # previous config running and reports success everywhere else.
+        "summary": "The scrape config failed to reload; the previous one is still live.",
+        "runbook": "The running config is stale. Check victoria-metrics logs for the parse error.",
+    },
+]
+
+
+def alert_rules() -> bytes:
+    """Render ALERT_RULES into Grafana's provisioned-alerting schema.
+
+    Grafana evaluates each rule as a small pipeline: query (A), reduce to a
+    single value (B), compare against a threshold (C). C is the condition, so a
+    rule fires when the reduced value crosses the threshold.
+    """
+    rules = []
+    for spec in ALERT_RULES:
+        rules.append(
+            {
+                "uid": spec["uid"],
+                "title": spec["title"],
+                "condition": "C",
+                "for": spec["for"],
+                # NoData means the metric vanished entirely, which for a rule
+                # about liveness is itself the bad news -- but it is also what a
+                # brand-new rule sees before its first evaluation, so it is
+                # reported rather than paged.
+                "noDataState": "NoData",
+                # If the rule itself cannot be evaluated, alert. A broken alert
+                # rule that fails quietly is the thing this whole session has
+                # been about.
+                "execErrState": "Alerting",
+                "labels": {"severity": spec["severity"]},
+                "annotations": {
+                    "summary": spec["summary"],
+                    "runbook": spec["runbook"],
+                },
+                "data": [
+                    {
+                        "refId": "A",
+                        "relativeTimeRange": {"from": 600, "to": 0},
+                        "datasourceUid": "victoriametrics",
+                        "model": {
+                            "refId": "A",
+                            "expr": spec["expr"],
+                            "instant": True,
+                        },
+                    },
+                    {
+                        "refId": "B",
+                        "datasourceUid": "__expr__",
+                        "model": {
+                            "refId": "B",
+                            "type": "reduce",
+                            "expression": "A",
+                            "reducer": "last",
+                        },
+                    },
+                    {
+                        "refId": "C",
+                        "datasourceUid": "__expr__",
+                        "model": {
+                            "refId": "C",
+                            "type": "threshold",
+                            "expression": "B",
+                            "conditions": [
+                                {
+                                    "evaluator": {
+                                        "type": spec["op"],
+                                        "params": [spec["threshold"]],
+                                    }
+                                }
+                            ],
+                        },
+                    },
+                ],
+            }
+        )
+    document = {
+        "apiVersion": 1,
+        "groups": [
+            {
+                "orgId": 1,
+                "name": "fleet",
+                "folder": "Alerts",
+                "interval": "1m",
+                "rules": rules,
+            }
+        ],
+    }
+    header = (
+        "# Generated by deploy-observability.py — do not edit by hand.\n"
+        "# Rules are defined as a compact spec in ALERT_RULES; this is rendered.\n"
+    )
+    return (header + yaml.safe_dump(document, sort_keys=False, width=100)).encode()
+
+
+def contact_points(topic: str) -> bytes:
+    """Render the ntfy contact point and the policy that routes to it.
+
+    THE TOPIC IS A SECRET. An ntfy topic is a capability URL: anyone holding it
+    can publish to it, so it is never committed. It is resolved from the
+    operator's environment at deploy time by deploy_updates.ntfy_topic(), which
+    is the same path /etc/homelab/notify.env already uses for the OnFailure
+    notifier — one secret, one source, two consumers.
+
+    The rendered file therefore contains a credential and is installed
+    root:grafana 0640, not world-readable like the rest of the provisioning
+    tree.
+
+    Reusing ntfy rather than adding email or a new channel is deliberate: it is
+    the channel Brad's phone already has, already rate-limited, and already
+    proven to deliver (15 restarts produced 2 notifications on 2026-09-02).
+    """
+    document = {
+        "apiVersion": 1,
+        "contactPoints": [
+            {
+                "orgId": 1,
+                "name": "ntfy",
+                "receivers": [
+                    {
+                        "uid": "ntfy",
+                        "type": "webhook",
+                        "settings": {
+                            "url": f"https://ntfy.sh/{topic}",
+                            "httpMethod": "POST",
+                        },
+                    }
+                ],
+            }
+        ],
+        "policies": [
+            {
+                "orgId": 1,
+                "receiver": "ntfy",
+                # Group by rule, so five nodes crossing the same threshold is one
+                # notification naming five, not five notifications.
+                "group_by": ["alertname"],
+                "group_wait": "30s",
+                "group_interval": "5m",
+                # The lesson from 2026-09-02, in the other half of the system: a
+                # permanently-failing condition must not page indefinitely. Four
+                # hours is long enough to be ignorable overnight and short enough
+                # that a real fault is not forgotten.
+                "repeat_interval": "4h",
+            }
+        ],
+    }
+    header = (
+        "# Generated by deploy-observability.py — do not edit by hand.\n"
+        "# CONTAINS A CREDENTIAL (the ntfy topic). root:grafana 0640.\n"
+    )
+    return (header + yaml.safe_dump(document, sort_keys=False, width=100)).encode()
+
+
 def scrape_config(cfg) -> bytes:
     """VictoriaMetrics' own scrape config: the hypervisors, directly.
 
@@ -135,10 +416,24 @@ def scrape_config(cfg) -> bytes:
         labels:
           tier: hypervisor
           host: {name}""" for name, address in peer_targets_by_name(cfg))
+    # THE STACK SCRAPES ITSELF.
+    #
+    # Until 2026-09-03 it did not, and the omission was invisible because
+    # everything it monitors kept working: VictoriaMetrics served 892 of its own
+    # metrics, VictoriaLogs 391, Grafana 5,663, and nothing collected any of
+    # them. So there was no way to alert on the questions that matter most about
+    # a monitoring system -- has ingestion stopped, is the disk filling, is the
+    # store rejecting writes -- because the data to answer them was never kept.
+    #
+    # Loopback for the two stores; Grafana binds the docker bridge and nothing
+    # else, so it is scraped there (GRAFANA_BIND). All three are on this host by
+    # definition: this file is only installed where victoria_metrics is.
+    store = cfg.observability.host
     return f"""# Generated by deploy-observability.py — do not edit by hand.
 #
-# Only the hypervisors. Cluster metrics arrive by remote_write from the
-# in-cluster vmagent, because a scraper on the host cannot reach pod IPs.
+# The hypervisors, plus this host's own observability stack. Cluster metrics
+# arrive by remote_write from the in-cluster vmagent, because a scraper on the
+# host cannot reach pod IPs.
 global:
   scrape_interval: 30s
 
@@ -146,6 +441,27 @@ scrape_configs:
   - job_name: hypervisors
     static_configs:
 {blocks}
+
+  # A monitoring system that does not monitor itself fails silently by
+  # construction: the component that would have reported the fault is the one
+  # that is broken.
+  - job_name: observability
+    static_configs:
+      - targets: [127.0.0.1:8428]
+        labels:
+          tier: observability
+          component: victoria-metrics
+          host: {store}
+      - targets: [127.0.0.1:9428]
+        labels:
+          tier: observability
+          component: victoria-logs
+          host: {store}
+      - targets: [{GRAFANA_BIND}:3000]
+        labels:
+          tier: observability
+          component: grafana
+          host: {store}
 """.encode()
 
 
@@ -306,6 +622,21 @@ if __WANTS_STORE__; then
     # whoever reads this journal to skim past a red line, on the one host whose
     # journal is read precisely when something has gone wrong.
     install -d -m 0755 /etc/grafana/provisioning/plugins /etc/grafana/provisioning/alerting
+
+    # The contact point holds the ntfy topic, which is a publish capability, so
+    # it ships 0640 rather than world-readable like the rest of the provisioning
+    # tree. The payload tarball extracts as root, so Grafana -- which runs as
+    # `grafana` -- cannot read it until this chown. Done here, after the useradd
+    # above, because the group has to exist first.
+    #
+    # Without the chown Grafana logs a permission error and provisions NO contact
+    # point, which does not stop it starting: the rules load, evaluate, fire, and
+    # go nowhere. A silent alerting system is the exact failure this wave exists
+    # to remove, so it must not be the default outcome of a mode bit.
+    if [ -f /etc/grafana/provisioning/alerting/contactpoints.yaml ]; then
+        chown root:grafana /etc/grafana/provisioning/alerting/contactpoints.yaml
+        chmod 0640 /etc/grafana/provisioning/alerting/contactpoints.yaml
+    fi
 fi
 
 # ALLOW-LIST, not a LAN range (the standing rule) — and, since 2026-09-02,
@@ -657,6 +988,13 @@ def render_installer(cfg, host_name: str) -> str:
 
 def files_for(cfg, host_name: str) -> list:
     """The (bytes, path, mode) set this host receives."""
+    # Resolved once, here, rather than inside contact_points(): a missing topic
+    # must change WHICH FILES are sent, not produce a file with a hole in it.
+    _alert_topic = deploy_updates.ntfy_topic()
+    if not _alert_topic and cfg.observability.host == host_name:
+        print(f"[{host_name}] WARNING: no NTFY_TOPIC (env or ~/homelab/.env).")
+        print(f"[{host_name}]          alert rules will be provisioned but will")
+        print(f"[{host_name}]          have NOWHERE TO SEND. Alerts will not page.")
     payload = [
         (
             (UNIT_DIR / "node-exporter.service").read_bytes(),
@@ -717,7 +1055,31 @@ def files_for(cfg, host_name: str) -> list:
                     "etc/grafana/provisioning/dashboards/repository.yaml",
                     0o644,
                 ),
+                (
+                    alert_rules(),
+                    "etc/grafana/provisioning/alerting/rules.yaml",
+                    0o644,
+                ),
             ]
+            + (
+                # Only if a topic was resolved. Provisioning a policy that routes
+                # to a receiver which does not exist is worse than provisioning
+                # neither: Grafana would accept the rules and then have nowhere to
+                # send them, which is a silent alerting system -- the precise
+                # failure this whole wave exists to remove.
+                [
+                    (
+                        contact_points(_alert_topic),
+                        "etc/grafana/provisioning/alerting/contactpoints.yaml",
+                        # 0640, not 0644: this file holds the ntfy topic, which is
+                        # a publish capability. The installer chowns it to
+                        # root:grafana once that account exists.
+                        0o640,
+                    )
+                ]
+                if _alert_topic
+                else []
+            )
             + [
                 (
                     board.read_bytes(),
