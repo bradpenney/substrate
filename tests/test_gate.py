@@ -253,3 +253,148 @@ def test_all_vms_covers_every_vm_in_the_fleet():
 def test_bootstrap_vm_is_unique_and_marked():
     vm = gate.bootstrap_vm()
     assert vm.bootstrap is True
+
+
+# --------------------------------------------------------------- ADR-097
+# Pod distribution. Five rebuilds passed every health check while the whole
+# platform sat on one hypervisor, because readiness was asserted and placement
+# never was. These cover the pure functions; the IO wrapper is exercised by the
+# rebuild itself, per the coverage policy.
+
+
+def _pod(node, owner_kind=None, phase="Running"):
+    """Minimal pod document shaped like the API server's, for these tests."""
+    meta = {"name": "p"}
+    if owner_kind:
+        meta["ownerReferences"] = [{"kind": owner_kind}]
+    return {"metadata": meta, "spec": {"nodeName": node}, "status": {"phase": phase}}
+
+
+def test_daemonset_pods_do_not_count_toward_distribution():
+    """DaemonSets run one per node by definition and hide real concentration.
+
+    Counting them turned a measured 39-vs-3 split into a reassuring 66-vs-21,
+    which is the exact arithmetic that made five rebuilds look balanced.
+    """
+    payload = {
+        "items": [_pod("a", owner_kind="DaemonSet") for _ in range(10)]
+        + [_pod("b", owner_kind="DaemonSet") for _ in range(10)]
+        + [_pod("a") for _ in range(5)]
+    }
+    assert gate.schedulable_pods_by_node(payload) == {"a": 5}
+
+
+def test_job_and_non_running_pods_are_excluded():
+    """A Job pod is transient and a Pending pod has no node worth counting."""
+    payload = {
+        "items": [
+            _pod("a", owner_kind="Job"),
+            _pod("a", phase="Succeeded"),
+            _pod("a", phase="Pending"),
+            _pod("a"),
+        ]
+    }
+    assert gate.schedulable_pods_by_node(payload) == {"a": 1}
+
+
+def test_a_ready_node_running_nothing_is_a_failure():
+    """The ADR-097 signature: the node joined after everything was placed."""
+    failures = gate.concentration_failures(
+        {"a": 5, "b": 5}, {"a": "h1", "b": "h1", "c": "h2"}, ["a", "b", "c"]
+    )
+    assert any("c is Ready but runs no scheduled pods" in f for f in failures)
+
+
+def test_one_hypervisor_holding_almost_everything_is_a_failure():
+    """41 of 43 on one host passed every other check in the real incident."""
+    counts = {"a": 20, "b": 21, "c": 2}
+    node_hv = {"a": "server2", "b": "server2", "c": "server1"}
+    failures = gate.concentration_failures(counts, node_hv, ["a", "b", "c"])
+    assert any("server2 holds 41/43" in f for f in failures)
+
+
+def test_an_evenly_spread_fleet_passes():
+    """The check must not fire on the state it is meant to protect."""
+    counts = {"a": 10, "b": 8, "c": 12, "d": 11}
+    node_hv = {"a": "server1", "b": "server1", "c": "server2", "d": "server2"}
+    assert gate.concentration_failures(counts, node_hv, ["a", "b", "c", "d"]) == []
+
+
+def test_a_pod_on_an_unknown_node_is_reported_not_guessed():
+    """Attributing it to a guessed hypervisor would hide the finding."""
+    failures = gate.concentration_failures(
+        {"a": 5, "mystery": 5}, {"a": "server1"}, ["a"]
+    )
+    assert any("unknown node 'mystery'" in f for f in failures)
+
+
+def test_an_empty_cluster_fails_rather_than_dividing_by_zero():
+    """No pods at all is a failure, not a vacuously perfect spread."""
+    failures = gate.concentration_failures({}, {"a": "server1"}, [])
+    assert failures == ["no scheduled pods found at all"]
+
+
+def test_nodes_map_to_hypervisors_from_config_not_name_prefixes():
+    """A renamed VM must not be silently attributed to the wrong host."""
+    mapping = gate.node_to_hypervisor()
+    assert mapping
+    for host, vm in gate.all_vms():
+        assert mapping[vm.name] == host.name
+
+
+def test_a_failure_prone_host_may_not_hold_the_majority():
+    """The state a naive remediation produced: 74% onto the weaker failure domain.
+
+    A symmetric 80% cap passes this. It is still the wrong shape — server2's
+    4.5 GiB cannot absorb what server1 holds when server1 goes down, which is
+    the same reasoning that keeps the etcd majority off it (ADR-046).
+    """
+    counts = {"s1-vm1": 18, "s1-vm2": 13, "s2-vm1": 4, "s2-vm2": 2, "s2-vm3": 5}
+    node_hv = {
+        "s1-vm1": "server1",
+        "s1-vm2": "server1",
+        "s2-vm1": "server2",
+        "s2-vm2": "server2",
+        "s2-vm3": "server2",
+    }
+    nodes = sorted(node_hv)
+    assert gate.concentration_failures(counts, node_hv, nodes) == []
+    failures = gate.concentration_failures(counts, node_hv, nodes, {"server1"})
+    assert any("server1 holds 31/42" in f and "limit 50%" in f for f in failures)
+    assert any("may not come back unattended" in f for f in failures)
+
+
+def test_a_dedicated_host_may_hold_the_majority():
+    """60% on the always-on host is the DESIGNED state, not a finding."""
+    counts = {"a": 4, "b": 6}
+    node_hv = {"a": "server1", "b": "server2"}
+    failures = gate.concentration_failures(counts, node_hv, ["a", "b"], {"server1"})
+    assert failures == []
+
+
+def test_the_original_pile_still_fails_under_the_asymmetric_rule():
+    """93% on the dedicated host must not become acceptable by adding the flag."""
+    counts = {"s1-vm1": 1, "s1-vm2": 2, "s2-vm1": 16, "s2-vm2": 12, "s2-vm3": 11}
+    node_hv = {
+        "s1-vm1": "server1",
+        "s1-vm2": "server1",
+        "s2-vm1": "server2",
+        "s2-vm2": "server2",
+        "s2-vm3": "server2",
+    }
+    failures = gate.concentration_failures(
+        counts, node_hv, sorted(node_hv), {"server1"}
+    )
+    assert any("server2 holds 39/42" in f and "limit 80%" in f for f in failures)
+
+
+def test_the_fleet_declares_exactly_one_failure_prone_host():
+    """Exactly one host is unreliable, and it is not the VRRP-preferred one.
+
+    Asserted against whichever site.yml the suite is pointed at, so running it
+    against the real fleet checks the live config too — which is the point of
+    conftest honouring $SUBSTRATE_SITE_FILE.
+    """
+    prone = gate.failure_prone_hypervisors()
+    assert len(prone) == 1
+    assert prone < {host.name for host in gate.HOSTS}

@@ -19,6 +19,9 @@ hypervisors:
     peer_target: operator@10.99.0.11
     disk_pool: default
     pool_needs_nocow: true    # btrfs
+    # The unreliable half of the fleet, mirroring the real site.yml. Must NOT
+    # be the VRRP-preferred host — siteconfig rejects that combination.
+    failure_prone: true
   hvB:
     ssh_target: operator@10.99.0.12
     disk_pool: vmpool

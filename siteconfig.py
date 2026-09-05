@@ -293,6 +293,44 @@ def _validate(cfg: dict) -> None:
     if dupes:
         raise SystemExit(f"site.yml: duplicate node IPs: {', '.join(sorted(dupes))}")
 
+    _validate_failure_domains(cfg)
+
+
+def _validate_failure_domains(cfg: dict) -> None:
+    """Keep the two statements of "which host is unreliable" in agreement.
+
+    `failure_prone` and `control_plane.priorities` encode the same judgement:
+    server1 is the office workstation, so it neither holds the VRRP VIP by
+    default nor should carry the platform. Two encodings of one fact drift —
+    this project has been caught by that repeatedly — so a config that sets the
+    failure-prone host as the VRRP-preferred one is rejected rather than
+    silently believed.
+    """
+    prone = {
+        name
+        for name, hv in cfg["hypervisors"].items()
+        if (hv or {}).get("failure_prone")
+    }
+    if not prone:
+        return
+    if len(prone) == len(cfg["hypervisors"]):
+        raise SystemExit(
+            "site.yml: every hypervisor is marked failure_prone. There is then "
+            "nowhere safe to place anything, and the flag means nothing."
+        )
+
+    priorities = (cfg.get("control_plane") or {}).get("priorities") or {}
+    if not priorities:
+        return
+    preferred = max(priorities, key=priorities.get)
+    if preferred in prone:
+        raise SystemExit(
+            f"site.yml: '{preferred}' has the highest VRRP priority "
+            f"({priorities[preferred]}) but is marked failure_prone. Those are "
+            "the same judgement stated twice and they disagree — the VIP would "
+            "prefer the machine expected to go away."
+        )
+
 
 # ---------------------------------------------------------------- ssh key
 

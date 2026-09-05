@@ -81,6 +81,15 @@ class HypervisorConfig(_Strict):
     peer_target: str | None = None
     disk_pool: str = "vmpool"
     pool_needs_nocow: bool = False
+    # True for a machine less likely to come back unattended — not because
+    # anyone touches it by hand, but because of what is and is not automated
+    # for it (auto-power-on after AC loss, health gates that cover only part of
+    # what it runs) and what else it carries. It is the same
+    # judgement that already decides VRRP priority and etcd majority (ADR-046),
+    # stated once as data so a check can act on it instead of hardcoding a
+    # hostname. Cross-checked against `control_plane.priorities` in
+    # siteconfig, so the two encodings of one fact cannot drift apart.
+    failure_prone: bool = False
 
 
 class NodeConfig(_Strict):

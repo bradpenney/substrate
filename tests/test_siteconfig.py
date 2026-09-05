@@ -111,3 +111,32 @@ def test_exactly_one_bootstrap_node_is_required():
 def test_the_shipped_fixture_passes_its_own_validation():
     """Guards against the fixture drifting into a shape the real loader rejects."""
     siteconfig._validate(siteconfig.load())
+
+
+def test_failure_prone_host_may_not_be_the_vrrp_preferred_one(tmp_path):
+    """Two encodings of "which host is unreliable" must not disagree.
+
+    `failure_prone` and `control_plane.priorities` state the same judgement.
+    This project has been caught repeatedly by one fact written in two places
+    and drifting, so the contradiction is rejected rather than believed.
+    """
+    cfg = siteconfig.load()
+    # Move the flag rather than adding one: with BOTH hosts marked, the
+    # "every hypervisor" branch fires first and this test would pass for
+    # the wrong reason.
+    cfg["hypervisors"]["hvA"]["failure_prone"] = False
+    cfg["hypervisors"]["hvB"]["failure_prone"] = True
+    with pytest.raises(SystemExit) as exc:
+        siteconfig._validate_failure_domains(cfg)
+    assert "highest VRRP priority" in str(exc.value)
+    assert "hvB" in str(exc.value)
+
+
+def test_marking_every_host_failure_prone_is_rejected(tmp_path):
+    """If nowhere is safe the flag carries no information."""
+    cfg = siteconfig.load()
+    for hv in cfg["hypervisors"].values():
+        hv["failure_prone"] = True
+    with pytest.raises(SystemExit) as exc:
+        siteconfig._validate_failure_domains(cfg)
+    assert "every hypervisor" in str(exc.value)

@@ -75,6 +75,21 @@ DNS_TIMEOUT = 120
 # and ready". k0s puts everything it manages in these.
 SYSTEM_NAMESPACES = ["kube-system"]
 
+# No single hypervisor may hold more than this share of the schedulable pods
+# (ADR-097). With a 2/3 node split an even spread already puts 60% on server2,
+# so the bar is deliberately loose — it exists to catch CONCENTRATION, not to
+# enforce balance. The runs it is meant to fail measured 95% and 93%.
+MAX_HYPERVISOR_POD_SHARE = 0.80
+
+# A host marked `failure_prone` in site.yml gets a stricter bar: it may not
+# hold the MAJORITY of the platform. Same reasoning that keeps the etcd
+# majority and the VRRP VIP off it (ADR-046), applied to workloads. It exists
+# because the looser cap above does not catch the OPPOSITE failure: remediating
+# a pile on the small host by restarting everything moved 74% of the platform
+# onto the host that does not power itself back on after an outage — and the
+# symmetric 80% cap passed that. Spread is the goal; relocation is not.
+MAX_FAILURE_PRONE_POD_SHARE = 0.50
+
 
 # ---------------------------------------------------------------- utilities
 
@@ -290,6 +305,10 @@ def verify() -> bool:
         # Sixth criterion (ADR-055). Two rebuilds shipped clusters that could
         # not issue certificates or take backups while every other check passed.
         "required secrets present": _check_required_secrets(),
+        # Seventh criterion (ADR-097). Five rebuilds passed every check above
+        # while the entire platform sat on one hypervisor: readiness was
+        # asserted, placement never was.
+        "platform spread across fleet": _check_pod_distribution(),
     }
     print("\n=== gate results ===")
     for name, ok in results.items():
@@ -579,6 +598,157 @@ def _unhealthy_pods() -> list[str] | None:
                     f"{desired if desired is not None else '?'} scheduled-and-ready)"
                 )
     return bad
+
+
+def failure_prone_hypervisors() -> set[str]:
+    """Hosts site.yml declares may not come back on their own.
+
+    Read from config rather than hardcoded: which machine is the unreliable one
+    is a property of this fleet, not of the gate.
+    """
+    return {host.name for host in HOSTS if host.failure_prone}
+
+
+def node_to_hypervisor() -> dict[str, str]:
+    """Map each node name to the hypervisor that hosts it, from config.
+
+    Read from the fleet definition rather than parsed out of node names. The
+    `s1-`/`s2-` prefixes happen to encode placement today, but that is a naming
+    convention and not a guarantee — a renamed VM would silently be attributed
+    to the wrong failure domain, which is precisely the mistake this check
+    exists to catch.
+    """
+    return {vm.name: host.name for host, vm in all_vms()}
+
+
+def schedulable_pods_by_node(payload: dict) -> dict[str, int]:
+    """Count the pods the SCHEDULER placed, per node.
+
+    DaemonSet pods are excluded because they run one per node by definition:
+    counting them makes any fleet look evenly balanced and hides the very
+    concentration being measured. Including them turned a real 39-vs-3 split
+    into a reassuring 66-vs-21. Job pods are excluded as transient.
+
+    Only Running pods count. A Pending pod has no node yet, and a Succeeded one
+    is finished and holds nothing.
+    """
+    counts: dict[str, int] = {}
+    for pod in payload.get("items", []):
+        owners = pod.get("metadata", {}).get("ownerReferences") or []
+        if any(o.get("kind") in ("DaemonSet", "Job") for o in owners):
+            continue
+        if pod.get("status", {}).get("phase") != "Running":
+            continue
+        node = pod.get("spec", {}).get("nodeName")
+        if node:
+            counts[node] = counts.get(node, 0) + 1
+    return counts
+
+
+def concentration_failures(
+    counts: dict[str, int],
+    node_hypervisor: dict[str, str],
+    ready_nodes: list[str],
+    failure_prone: set[str] | None = None,
+) -> list[str]:
+    """Reasons the placement is unacceptable. Empty list means it is fine.
+
+    Two distinct failures, because they have different causes:
+
+    1. A Ready node running NOTHING the scheduler chose to put there. That is
+       the ADR-097 signature exactly — the node joined after the platform had
+       already been placed onto a one-node cluster, and Kubernetes never moves
+       a running pod.
+    2. One hypervisor holding too much of everything. The cap is asymmetric: a
+       `failure_prone` host may not hold the MAJORITY, while a dedicated one is
+       allowed up to MAX_HYPERVISOR_POD_SHARE. Treating both alike would accept
+       a platform piled onto the machine most likely to reboot, which is the
+       state a naive remediation produces.
+
+    A fleet can have every node occupied and still be dangerously lopsided, so
+    neither check implies the other.
+    """
+    failure_prone = failure_prone or set()
+    failures = []
+
+    for node in sorted(ready_nodes):
+        if counts.get(node, 0) == 0:
+            failures.append(f"{node} is Ready but runs no scheduled pods")
+
+    total = sum(counts.values())
+    if total == 0:
+        failures.append("no scheduled pods found at all")
+        return failures
+
+    by_hypervisor: dict[str, int] = {}
+    for node, count in counts.items():
+        # A pod on a node the fleet definition does not know about is itself a
+        # finding: attributing it to a guessed hypervisor would hide that.
+        host = node_hypervisor.get(node)
+        if host is None:
+            failures.append(f"pods scheduled on unknown node {node!r}")
+            continue
+        by_hypervisor[host] = by_hypervisor.get(host, 0) + count
+
+    for host, count in sorted(by_hypervisor.items()):
+        share = count / total
+        prone = host in failure_prone
+        limit = MAX_FAILURE_PRONE_POD_SHARE if prone else MAX_HYPERVISOR_POD_SHARE
+        if share > limit:
+            why = " and may not come back unattended" if prone else ""
+            failures.append(
+                f"{host} holds {count}/{total} scheduled pods "
+                f"({share:.0%}, limit {limit:.0%}){why}"
+            )
+    return failures
+
+
+def _check_pod_distribution() -> bool:
+    """Assert the platform is spread across the fleet, not piled on one host.
+
+    Seventh criterion (ADR-097). Five rebuild samples asserted that every pod
+    was Ready and none asserted that any pod was sensibly PLACED, so all five
+    passed while 41 of 43 pods sat on 4.5 GiB and 34.4 GiB stood idle. A
+    cluster in that state is healthy by every other measure here and is one
+    hypervisor away from having no capacity at all.
+    """
+    print("--- pod distribution ---")
+    result = kubectl("get pods -A -o json")
+    if result.returncode != 0:
+        print("  could not list pods")
+        return False
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print("  could not parse the pod list")
+        return False
+
+    counts = schedulable_pods_by_node(payload)
+    node_hypervisor = node_to_hypervisor()
+    ready = healthy_nodes()
+
+    total = sum(counts.values()) or 1
+    prone = failure_prone_hypervisors()
+    for node in sorted(set(counts) | set(ready)):
+        host = node_hypervisor.get(node, "?")
+        count = counts.get(node, 0)
+        flag = " (failure-prone)" if host in prone else ""
+        print(f"  {node:10} {host:8} {count:3} pods  ({count / total:.0%}){flag}")
+
+    failures = concentration_failures(
+        counts, node_hypervisor, ready, failure_prone_hypervisors()
+    )
+    if not failures:
+        print("  platform is spread across the fleet")
+        return True
+    for line in failures:
+        print(f"  {line}")
+    print(
+        "  remediate with ./rebalance.sh (needs a jit-admin grant). This recurs\n"
+        "  on every rebuild until the platform stops reconciling onto a\n"
+        "  one-node cluster — see ADR-097."
+    )
+    return False
 
 
 def _check_dns() -> bool:

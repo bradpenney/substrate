@@ -94,6 +94,10 @@ class Host:
     # copy-on-write filesystem fragment badly, so the pool directory needs
     # `chattr +C` set BEFORE any image is created (it only affects new files).
     pool_needs_nocow: bool = False
+    # See HypervisorConfig.failure_prone. A host that may not come back on its
+    # own must not carry the majority of the platform — the same reasoning
+    # that keeps the etcd majority off it.
+    failure_prone: bool = False
 
 
 def _build_hosts() -> list[Host]:
@@ -110,6 +114,7 @@ def _build_hosts() -> list[Host]:
             peer_target=hv.peer_target or hv.ssh_target,
             disk_pool=hv.disk_pool,
             pool_needs_nocow=hv.pool_needs_nocow,
+            failure_prone=hv.failure_prone,
         )
     for name, node in _CFG.nodes.items():
         hosts[node.hypervisor].vms.append(
