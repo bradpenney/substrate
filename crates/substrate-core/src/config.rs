@@ -43,6 +43,15 @@ pub struct HypervisorConfig {
     pub disk_pool: String,
     #[serde(default)]
     pub pool_needs_nocow: bool,
+    /// True for a host less likely to come back unattended after an outage.
+    ///
+    /// The renderer does not USE this — cloud-config is identical either way,
+    /// and the goldens prove it. It is declared so the strict schema accepts a
+    /// site.yml the Python side already understands: `deny_unknown_fields`
+    /// means every field must be known to BOTH implementations or the fleet
+    /// has two disagreeing definitions of its own configuration.
+    #[serde(default)]
+    pub failure_prone: bool,
 }
 
 fn default_disk_pool() -> String {
