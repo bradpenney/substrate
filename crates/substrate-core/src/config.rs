@@ -181,6 +181,11 @@ pub struct ObservabilityConfig {
     pub hostname: Option<String>,
     #[serde(default = "default_retention_months")]
     pub retention_months: u32,
+    /// GitHub org allowed to log in to Grafana. Unused by the renderer —
+    /// declared so the strict schema accepts the real site.yml, which the
+    /// Python side has understood since the field was added.
+    #[serde(default)]
+    pub github_org: Option<String>,
 }
 
 fn default_retention_months() -> u32 {

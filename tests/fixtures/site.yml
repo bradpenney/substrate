@@ -91,3 +91,7 @@ observability:
   host: hvA
   hostname: observe.example.invalid
   retention_months: 6
+  # Carried so CI actually EXERCISES this field. It was missing from the Rust
+  # schema for some time and no test could see it: the golden tests render this
+  # fixture, and CI has no real site.yml to try instead.
+  github_org: fixture-org
