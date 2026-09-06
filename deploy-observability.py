@@ -248,6 +248,59 @@ ALERT_RULES = [
         "summary": "The scrape config failed to reload; the previous one is still live.",
         "runbook": "The running config is stale. Check victoria-metrics logs for the parse error.",
     },
+    {
+        "uid": "certificate-not-ready",
+        "title": "Certificate not ready",
+        # condition="True" is the series that carries 1 when the Certificate is
+        # Ready; cert-manager also exports False and Unknown series that are 1
+        # in their own state, so filtering on the label is required or the rule
+        # reads three series per certificate and means nothing.
+        "expr": 'certmanager_certificate_ready_status{condition="True"}',
+        "op": "lt",
+        "threshold": 1,
+        # Issuance takes minutes and DNS-01 adds propagation on top. 30m is long
+        # enough that a normal issue never fires this, short enough that a
+        # genuinely stuck one is caught the same hour.
+        "for": "30m",
+        "severity": "page",
+        "summary": "A certificate has been un-Ready for 30 minutes.",
+        "runbook": "Check the Certificate, then its CertificateRequest, Order and Challenge.",
+    },
+    {
+        "uid": "certificate-expiring",
+        "title": "Certificate expiring soon",
+        # ⚠️ THIS IS NOT REDUNDANT WITH certificate-not-ready. They catch
+        # different failures, and the one that actually bit is this one.
+        #
+        # A certificate that has NEVER issued goes un-Ready, which the rule
+        # above catches. A RENEWAL that fails on a certificate which is still
+        # valid does NOT: the Certificate keeps Ready=True because it still
+        # holds a usable cert, and the failure lives on the Order underneath.
+        # Nothing surfaces until it expires.
+        #
+        # That is exactly what was in flight on 2026-09-04. The Cloudflare API
+        # token expired 2026-08-31 and nothing said so for five days; it was
+        # found only because a NEW certificate happened to be needed.
+        # hello-site-tls renews 2026-10-28 and expires 2026-11-27, so the first
+        # symptom would otherwise have been a public certificate expiring.
+        "expr": (
+            "(certmanager_certificate_expiration_timestamp_seconds - time())" " / 86400"
+        ),
+        "op": "lt",
+        # cert-manager renews a 90-day Let's Encrypt certificate at 30 days
+        # remaining. 21 leaves nine days of failed renewals before this fires,
+        # so it cannot go off during a normal renewal window — and still gives
+        # three weeks to fix whatever broke.
+        "threshold": 21,
+        # 60m, not "1h": every other rule states its wait in minutes and the
+        # suite asserts that form. Same duration, one convention.
+        "for": "60m",
+        "severity": "page",
+        "summary": "A certificate expires in under 21 days and has not renewed.",
+        "runbook": "Renewal is failing silently. Verify the DNS-01 credential first: "
+        "curl -H 'Authorization: Bearer $TOKEN' "
+        "https://api.cloudflare.com/client/v4/user/tokens/verify",
+    },
 ]
 
 

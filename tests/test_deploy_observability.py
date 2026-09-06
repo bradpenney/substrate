@@ -1032,3 +1032,40 @@ def test_a_watched_directory_is_hashed_stably(dobs, cfg):
     body = rendered.split("restart_if_config_changed() {", 1)[1].split("\n}", 1)[0]
     assert "-d " in body, "directories are not handled at all"
     assert "find" in body and "| sort" in body, "directory hash is not order-stable"
+
+
+def test_the_two_certificate_rules_catch_different_failures(dobs):
+    """They look redundant. They are not, and the difference is load-bearing.
+
+    `certificate-not-ready` catches a certificate that never issued — the
+    Certificate goes un-Ready and stays there. A RENEWAL that fails on a
+    certificate which is still valid does NOT trip it: the Certificate keeps
+    Ready=True because it still holds a usable cert, and the failure lives on
+    the Order underneath. Only the expiry rule sees that one.
+
+    That is not hypothetical. The Cloudflare API token expired 2026-08-31 and
+    nothing said so for five days; it surfaced only because a NEW certificate
+    happened to be needed. hello-site-tls renews 2026-10-28 and expires
+    2026-11-27 — without the expiry rule the first symptom would have been a
+    public certificate going invalid.
+
+    So: deleting either rule as "duplicate" reopens a real hole.
+    """
+    by_uid = {r["uid"]: r for r in dobs.ALERT_RULES}
+    ready = by_uid["certificate-not-ready"]
+    expiring = by_uid["certificate-expiring"]
+
+    # The readiness rule must filter to the True series. cert-manager also
+    # exports False and Unknown series that each carry 1 in their own state, so
+    # an unfiltered query reads three series per certificate and means nothing.
+    assert 'condition="True"' in ready["expr"]
+
+    # The expiry rule must be time-relative, not a fixed timestamp.
+    assert "certmanager_certificate_expiration_timestamp_seconds" in expiring["expr"]
+    assert "time()" in expiring["expr"]
+
+    # cert-manager renews at 30 days remaining. A threshold at or above that
+    # fires during every NORMAL renewal, and a rule that is always on teaches
+    # everyone to skim the channel (ADR-119).
+    assert expiring["threshold"] < 30, "would fire during normal renewals"
+    assert expiring["op"] == "lt"
