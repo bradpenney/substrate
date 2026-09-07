@@ -84,7 +84,7 @@ def test_grant_refuses_to_stack_on_an_existing_grant(jit, monkeypatch):
     constrains nothing."""
     monkeypatch.setattr(jit, "current", lambda: _crb(expiry="2099-01-01T00:00:00Z"))
     with pytest.raises(SystemExit):
-        jit.cmd_grant("brad", 30)
+        jit.cmd_grant("brad", 30, "test")
 
 
 def test_grant_writes_an_expiry_and_binds_only_platform_admin(jit, monkeypatch):
@@ -101,7 +101,7 @@ def test_grant_writes_an_expiry_and_binds_only_platform_admin(jit, monkeypatch):
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(jit, "sh", fake_sh)
-    jit.cmd_grant("brad", 30)
+    jit.cmd_grant("brad", 30, "test")
 
     obj = captured.get("obj")
     assert obj, "no ClusterRoleBinding was applied"
@@ -122,7 +122,7 @@ def test_grant_expiry_reflects_the_requested_window(jit, monkeypatch):
         )
         or types.SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    jit.cmd_grant("brad", 45)
+    jit.cmd_grant("brad", 45, "test")
     exp = captured["obj"]["metadata"]["annotations"][jit.ANNOTATION]
     end = dt.datetime.fromisoformat(exp.replace("Z", "+00:00"))
     minutes = (end - dt.datetime.now(dt.timezone.utc)).total_seconds() / 60
@@ -196,13 +196,105 @@ def test_sh_exits_with_the_failing_command_when_checked(jit, monkeypatch):
     assert "kubectl get x" in str(e.value) and "denied" in str(e.value)
 
 
-def test_main_grant_passes_the_requested_minutes(jit, monkeypatch):
+def test_main_grant_passes_the_requested_minutes_and_reason(jit, monkeypatch):
+    """The reason must reach cmd_grant, or it is collected and thrown away."""
     seen = {}
     monkeypatch.setattr(
-        sys, "argv", ["jit-admin.py", "grant", "brad", "--minutes", "15"]
+        sys,
+        "argv",
+        ["jit-admin.py", "grant", "brad", "--minutes", "15", "--reason", "rebalance"],
     )
     monkeypatch.setattr(
-        jit, "cmd_grant", lambda user, minutes: seen.update(u=user, m=minutes) or 0
+        jit,
+        "cmd_grant",
+        lambda user, minutes, reason: seen.update(u=user, m=minutes, r=reason) or 0,
     )
     assert jit.main() == 0
-    assert seen == {"u": "brad", "m": 15}
+    assert seen == {"u": "brad", "m": 15, "r": "rebalance"}
+
+
+def test_main_grant_refuses_without_a_reason(jit, monkeypatch):
+    """Optional attribution is empty attribution exactly when it matters."""
+    monkeypatch.setattr(sys, "argv", ["jit-admin.py", "grant", "brad"])
+    with pytest.raises(SystemExit):
+        jit.main()
+
+
+# ------------------------------------------------------------------ ADR-136
+# Attribution. An unattributed grant appeared on this cluster 2026-09-05 and
+# neither the operator nor the tooling could say who issued it. The properties
+# below are the ones that make that question answerable next time.
+
+
+def test_a_grant_records_who_asked_from_where_and_why(jit, monkeypatch):
+    """The expiry alone was all this tool used to write — and it is not enough.
+
+    "When does it end?" was answerable. "Who did this, and why?" was not.
+    """
+    monkeypatch.setenv("SUDO_USER", "brad")
+    monkeypatch.setattr(jit.socket, "gethostname", lambda: "workstation")
+    ann = jit.attribution("brad", "rebalance after rebuild", "T+30", "T+0")
+
+    assert ann["jit.bradpenney.io/invoker"] == "brad"
+    assert ann["jit.bradpenney.io/source-host"] == "workstation"
+    assert ann["jit.bradpenney.io/reason"] == "rebalance after rebuild"
+    assert ann["jit.bradpenney.io/subject"] == "brad"
+    # The expiry must survive the addition — it is what time-boxes the grant.
+    assert ann[jit.ANNOTATION] == "T+30"
+
+
+def test_sudo_user_wins_over_user(jit, monkeypatch):
+    """Under sudo, `USER` is root and says nothing about who is at the keyboard."""
+    monkeypatch.setenv("SUDO_USER", "brad")
+    monkeypatch.setenv("USER", "root")
+    assert jit.invoker() == "brad"
+
+
+def test_invoker_falls_through_to_the_process_owner(jit, monkeypatch):
+    """No login environment at all — a cron or systemd context — still names someone."""
+    for var in ("SUDO_USER", "USER", "LOGNAME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(jit.getpass, "getuser", lambda: "svc")
+    assert jit.invoker() == "svc"
+
+
+def test_an_audit_record_is_exactly_one_line(jit):
+    """The ConfigMap log is newline-separated; an embedded newline splits a record.
+
+    A reason is free text typed by a human, so it is the field most likely to
+    contain one.
+    """
+    line = jit.audit_line("grant", "brad", "multi\nline\nreason", "T+0")
+    assert "\n" not in line
+    assert json.loads(line)["reason"] == "multi\nline\nreason"
+
+
+def test_audit_records_carry_the_action_and_subject(jit, monkeypatch):
+    """A trail of timestamps with no verb cannot distinguish grant from revoke."""
+    monkeypatch.setenv("SUDO_USER", "brad")
+    rec = json.loads(jit.audit_line("revoke", "brad", "", "T+9"))
+    assert rec["action"] == "revoke"
+    assert rec["subject"] == "brad"
+    assert rec["invoker"] == "brad"
+    assert rec["at"] == "T+9"
+
+
+def test_the_log_is_trimmed_to_the_newest_entries(jit):
+    """Unbounded growth eventually exceeds the ~1 MiB ConfigMap limit.
+
+    At that point the audit stops recording — silently, and only once there is
+    a lot of history worth keeping.
+    """
+    existing = "\n".join(f"entry-{i}" for i in range(jit.AUDIT_MAX_ENTRIES + 50))
+    out = jit.trimmed_log(existing, "newest").split("\n")
+
+    assert len(out) == jit.AUDIT_MAX_ENTRIES
+    assert out[-1] == "newest"
+    # Oldest dropped first, newest kept — the wrong end would discard the
+    # entries most likely to be relevant.
+    assert out[0] == f"entry-{jit.AUDIT_MAX_ENTRIES + 50 - jit.AUDIT_MAX_ENTRIES + 1}"
+
+
+def test_trimming_an_empty_log_does_not_produce_a_blank_first_entry(jit):
+    """A leading empty line would parse as a malformed record on read-back."""
+    assert jit.trimmed_log("", "first") == "first"
