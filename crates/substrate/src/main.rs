@@ -43,6 +43,11 @@ struct RenderArgs {
     /// Static address.
     #[arg(long)]
     ip: String,
+    /// Hypervisor carrying this node — its failure domain. REQUIRED: a node
+    /// rendered without one joins with no failure domain, which no scheduling
+    /// constraint can then express.
+    #[arg(long)]
+    hypervisor: String,
     /// Render the bootstrap controller (no join token is used).
     #[arg(long)]
     bootstrap: bool,
@@ -90,6 +95,7 @@ fn render(repo: &std::path::Path, args: RenderArgs) -> Result<()> {
     let vm = substrate_core::render::Vm {
         name: args.name,
         static_ip: args.ip,
+        hypervisor: args.hypervisor,
         bootstrap: args.bootstrap,
         memory_mib: args.memory_mib,
         vcpu: args.vcpu,

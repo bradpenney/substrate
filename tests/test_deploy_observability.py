@@ -186,6 +186,8 @@ def test_rendering_a_cloud_config_still_requires_the_key(tmp_path):
             "x",
             "--ip",
             "192.0.2.1",
+            "--hypervisor",
+            "hvA",
             "--bootstrap",
         ],
         capture_output=True,

@@ -21,6 +21,27 @@ use crate::config::SiteConfig;
 use base64::Engine as _;
 use std::collections::BTreeMap;
 
+/// The label that names a node's hypervisor — the cluster's only statement of
+/// its two failure domains.
+///
+/// `kubernetes.io/hostname` is the sole topology label a stock k0s node
+/// carries, and spreading on it does NOT spread across machines: s2-vm1 and
+/// s2-vm2 are different hostnames on the SAME hypervisor, which is exactly the
+/// domain being guarded.
+///
+/// Kubelet honours `--labels` at node REGISTRATION ONLY, so this reproduces on
+/// a rebuild but never on a reboot; a node that joined before this existed
+/// needs a one-time `kubectl label node`.
+///
+/// A custom domain on purpose: NodeRestriction refuses to let a kubelet
+/// self-assign `*.kubernetes.io/` labels, so `topology.kubernetes.io/zone`
+/// would leave the node silently unlabelled.
+///
+/// Kept as a constant in one place per implementation because the pending
+/// platform rename has to change it in lockstep with substrate_config and with
+/// every already-labelled node.
+pub const HYPERVISOR_LABEL: &str = "invariant-platform.io/hypervisor";
+
 /// One k0s node, as the renderer needs it.
 ///
 /// Distinct from `config::NodeConfig`: that is what `site.yml` declares, this
@@ -30,6 +51,12 @@ use std::collections::BTreeMap;
 pub struct Vm {
     pub name: String,
     pub static_ip: String,
+    /// Which hypervisor carries this VM — the node's FAILURE DOMAIN.
+    ///
+    /// Rendered into a kubelet `--labels` argument so a rebuilt node declares
+    /// which physical machine it sits on without anyone remembering to run
+    /// kubectl. See `HYPERVISOR_LABEL`.
+    pub hypervisor: String,
     pub bootstrap: bool,
     pub memory_mib: Option<u32>,
     pub vcpu: Option<u32>,
@@ -44,6 +71,15 @@ pub struct Vm {
 /// pure function of its inputs — which is the property the goldens rely on.
 pub fn cloud_config(cfg: &SiteConfig, vm: &Vm, join_token: Option<&str>, ssh_key: &str) -> String {
     let mut args: Vec<String> = cfg.k0s.args.clone();
+
+    // --- failure-domain label (ADR-139 follow-up) ---
+    //
+    // Pushed HERE, after the configured args and before the --config and
+    // --token-file pushes below, because the Python and Jinja renderers emit it
+    // in exactly that position and all three are compared against the same
+    // goldens. Moving this line is a silent divergence.
+    args.push(format!("--labels={HYPERVISOR_LABEL}={}", vm.hypervisor));
+
     let storage_gb = vm.storage_disk_gb.unwrap_or(cfg.defaults.storage_disk_gb);
 
     // --- API server hardening (ADR-066) ---

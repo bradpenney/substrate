@@ -47,6 +47,15 @@ k0s:
 {% for arg in k0s_args %}
     - {{ arg }}
 {% endfor %}
+{#
+  Failure-domain label (ADR-139 follow-up). Per-NODE, from the inventory's
+  hostvars, so it cannot live in the fleet-wide k0s_args list above. Must stay
+  in THIS position: provision.py appends it at the same point and
+  check_render.py diffs the two renderers byte-for-byte.
+  See HYPERVISOR_LABEL in hosts.py — kubelet honours --labels at node
+  REGISTRATION ONLY, so this reproduces on a rebuild but not on a reboot.
+#}
+    - --labels=invariant-platform.io/hypervisor={{ hypervisor }}
 {% if control_plane_vip %}
     - --config /etc/k0s/k0s.yaml
 {% endif %}

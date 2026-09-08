@@ -143,6 +143,8 @@ def test_render_cli_rejects_a_bootstrap_node_with_a_join_token():
             "x",
             "--ip",
             "192.0.2.1",
+            "--hypervisor",
+            "hvA",
             "--bootstrap",
             "--join-token",
             "nope",
@@ -197,6 +199,7 @@ def test_cli_exposes_the_documented_options(cli):
     assert {
         "--name",
         "--ip",
+        "--hypervisor",
         "--bootstrap",
         "--memory-mib",
         "--vcpu",
@@ -207,7 +210,12 @@ def test_cli_exposes_the_documented_options(cli):
 
 def test_cli_renders_a_bootstrap_node(cli, capsys):
     """The happy path, in-process."""
-    assert cli.main(["--name", "n1", "--ip", "192.0.2.50", "--bootstrap"]) == 0
+    assert (
+        cli.main(
+            ["--name", "n1", "--ip", "192.0.2.50", "--hypervisor", "hvA", "--bootstrap"]
+        )
+        == 0
+    )
     out = capsys.readouterr().out
     assert out.startswith("#cloud-config\n")
     assert "hostname: n1\n" in out
@@ -219,14 +227,31 @@ def test_cli_output_has_no_trailing_blank_line(cli, capsys):
     Worth its own test: the failure is a single invisible character, and it
     would be attributed to the renderer rather than to the CLI wrapping it.
     """
-    assert cli.main(["--name", "n1", "--ip", "192.0.2.50", "--bootstrap"]) == 0
+    assert (
+        cli.main(
+            ["--name", "n1", "--ip", "192.0.2.50", "--hypervisor", "hvA", "--bootstrap"]
+        )
+        == 0
+    )
     assert not capsys.readouterr().out.endswith("\n\n")
 
 
 def test_cli_passes_the_join_token_through(cli, capsys):
     """A joining node's token must reach the rendered config verbatim."""
     assert (
-        cli.main(["--name", "n2", "--ip", "192.0.2.51", "--join-token", "TOK99"]) == 0
+        cli.main(
+            [
+                "--name",
+                "n2",
+                "--ip",
+                "192.0.2.51",
+                "--hypervisor",
+                "hvB",
+                "--join-token",
+                "TOK99",
+            ]
+        )
+        == 0
     )
     assert "TOK99" in capsys.readouterr().out
 
@@ -234,7 +259,17 @@ def test_cli_passes_the_join_token_through(cli, capsys):
 def test_cli_refuses_a_bootstrap_node_that_also_joins(cli, capsys):
     """In-process twin of the subprocess check, for the exit-code path."""
     code = cli.main(
-        ["--name", "n1", "--ip", "192.0.2.50", "--bootstrap", "--join-token", "t"]
+        [
+            "--name",
+            "n1",
+            "--ip",
+            "192.0.2.50",
+            "--hypervisor",
+            "hvA",
+            "--bootstrap",
+            "--join-token",
+            "t",
+        ]
     )
     assert code == 2
     assert "mutually exclusive" in capsys.readouterr().err

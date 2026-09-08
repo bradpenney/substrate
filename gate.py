@@ -90,6 +90,41 @@ MAX_HYPERVISOR_POD_SHARE = 0.80
 # symmetric 80% cap passed that. Spread is the goal; relocation is not.
 MAX_FAILURE_PRONE_POD_SHARE = 0.50
 
+# Workloads whose replicas MUST land in different failure domains, checked by
+# name rather than in aggregate.
+#
+# WHY AGGREGATE SHARE IS NOT ENOUGH. On 2026-09-07 the placement check passed
+# all evening — 24%/76%, inside the 80% limit — while BOTH BIND primaries sat
+# on s2-vm1 and the LAN had a single-domain resolver. Neither number was wrong.
+# They measure different properties: "the platform is not piled on one host" is
+# not "these two replicas are in different failure domains", and a fleet can
+# satisfy the first while completely failing the second. The gate reported the
+# health of a property nobody was worried about.
+#
+# Deliberately a NAMED LIST and not a heuristic. There is no general rule for
+# which workloads are critical — it is a judgement about what the site cannot
+# lose, so it is written down, per workload, and reviewed when one is added.
+#
+# `min_replicas` is load-bearing: without it a selector typo, or a workload
+# that is scaled to zero, finds no pods and the "are they spread?" question is
+# vacuously satisfied. A check that passes because it found nothing is the
+# failure mode this whole file exists to close.
+CRITICAL_PAIRS = [
+    {
+        "name": "BIND primaries (LAN DNS)",
+        "namespace": "bindy-system",
+        # Matches both `homelab-primary-0` and `homelab-primary-1`, which are
+        # separate single-replica Deployments and so cannot be spread by any
+        # constraint that reasons about one workload's own replicas.
+        "selector": {
+            "bindy.firestoned.io/role": "primary",
+            "app.kubernetes.io/part-of": "bindy",
+        },
+        "min_replicas": 2,
+        "why": "a single-domain resolver takes the LAN offline with one host",
+    },
+]
+
 
 # ---------------------------------------------------------------- utilities
 
@@ -309,6 +344,10 @@ def verify() -> bool:
         # while the entire platform sat on one hypervisor: readiness was
         # asserted, placement never was.
         "platform spread across fleet": _check_pod_distribution(),
+        # Eighth criterion. The seventh measures aggregate share and PASSED on
+        # 2026-09-07 while both LAN DNS replicas sat on one node. Aggregate
+        # spread and per-workload redundancy are different properties.
+        "critical workloads spread": _check_critical_pairs(),
     }
     print("\n=== gate results ===")
     for name, ok in results.items():
@@ -701,6 +740,135 @@ def concentration_failures(
                 f"({share:.0%}, limit {limit:.0%}){why}"
             )
     return failures
+
+
+def pods_matching(payload: dict, namespace: str, selector: dict) -> list[dict]:
+    """Running pods in `namespace` carrying every label in `selector`.
+
+    Every label, not any — a partial match would silently widen the selector to
+    a whole namespace and make any spread question trivially satisfiable.
+
+    Only Running pods. A Pending pod has no node and therefore no failure
+    domain, and counting one as placed would report a spread that does not yet
+    exist.
+    """
+    out = []
+    for pod in payload.get("items", []):
+        meta = pod.get("metadata", {})
+        if meta.get("namespace") != namespace:
+            continue
+        if pod.get("status", {}).get("phase") != "Running":
+            continue
+        labels = meta.get("labels") or {}
+        if all(labels.get(k) == v for k, v in selector.items()):
+            out.append(pod)
+    return out
+
+
+def critical_pair_failures(
+    payload: dict,
+    node_hypervisor: dict[str, str],
+    specs: list[dict] | None = None,
+) -> list[str]:
+    """Reasons a named critical workload is not spread. Empty means it is fine.
+
+    Three distinct findings, because they have different causes and different
+    fixes:
+
+    1. FEWER REPLICAS THAN REQUIRED. Either the workload is degraded, or the
+       selector no longer matches what the operator labels its pods. Both are
+       reported, because from here they look identical and both invalidate the
+       spread question — this is the guard against a check that passes by
+       finding nothing.
+    2. A REPLICA ON AN UNKNOWN NODE. Attributing it to a guessed hypervisor
+       would hide the fact that the fleet definition and the cluster disagree.
+    3. EVERY REPLICA IN ONE FAILURE DOMAIN. The finding this check exists for.
+
+    Reads the node -> hypervisor map from site.yml, NOT from the node label
+    added in the substrate build. Deliberate: the gate must be able to report
+    that the labels are missing or wrong, and a check that trusted them could
+    not. The label is for the SCHEDULER to act on; this is the independent
+    witness that it worked.
+    """
+    specs = CRITICAL_PAIRS if specs is None else specs
+    failures = []
+
+    for spec in specs:
+        name = spec["name"]
+        pods = pods_matching(payload, spec["namespace"], spec["selector"])
+        wanted = spec["min_replicas"]
+
+        if len(pods) < wanted:
+            failures.append(
+                f"{name}: found {len(pods)} Running replica(s), expected at "
+                f"least {wanted} — degraded, or the selector no longer matches"
+            )
+            continue
+
+        domains: dict[str, list[str]] = {}
+        for pod in pods:
+            node = pod.get("spec", {}).get("nodeName")
+            host = node_hypervisor.get(node)
+            if host is None:
+                failures.append(f"{name}: replica on unknown node {node!r}")
+                continue
+            domains.setdefault(host, []).append(pod["metadata"]["name"])
+
+        if len(domains) < 2:
+            where = ", ".join(
+                f"{host} ({len(names)})" for host, names in sorted(domains.items())
+            )
+            failures.append(
+                f"{name}: all {len(pods)} replicas in ONE failure domain — "
+                f"{where}. {spec['why']}"
+            )
+    return failures
+
+
+def _check_critical_pairs() -> bool:
+    """Assert named critical workloads span both hypervisors.
+
+    Eighth criterion. The seventh (pod distribution) measures AGGREGATE share
+    and passed on 2026-09-07 while both BIND primaries ran on s2-vm1: 76% is
+    under the 80% limit, and "not concentrated" is not "redundant". A property
+    that matters has to be stated to be checked.
+    """
+    print("--- critical workload spread ---")
+    result = kubectl("get pods -A -o json")
+    if result.returncode != 0:
+        print("  could not list pods")
+        return False
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print("  could not parse the pod list")
+        return False
+
+    node_hypervisor = node_to_hypervisor()
+    for spec in CRITICAL_PAIRS:
+        pods = pods_matching(payload, spec["namespace"], spec["selector"])
+        placed = sorted(
+            f"{p['metadata']['name']} -> "
+            f"{node_hypervisor.get(p.get('spec', {}).get('nodeName'), '?')}"
+            for p in pods
+        )
+        print(f"  {spec['name']}:")
+        for line in placed or ["    (no Running replicas found)"]:
+            print(f"    {line}")
+
+    failures = critical_pair_failures(payload, node_hypervisor)
+    if not failures:
+        print("  every critical workload spans both failure domains")
+        return True
+    for line in failures:
+        print(f"  {line}")
+    print(
+        "  a MutatingAdmissionPolicy imposes this at Pod admission "
+        "(substrate_config,\n  infrastructure-config/bindy-primary-spread.yaml). "
+        "It acts at Pod CREATE\n  only, so an already-running pair stays where "
+        "it is until something\n  recreates it — see ADR-139."
+    )
+    return False
 
 
 def _check_pod_distribution() -> bool:

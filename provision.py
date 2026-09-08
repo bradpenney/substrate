@@ -41,6 +41,7 @@ from hosts import (
     DNS_SERVERS,
     KAIROS_ISO_URL,
     KAIROS_ISO_SHA256,
+    HYPERVISOR_LABEL,
     K0S_ARGS,
     CONTROL_PLANE_VIP,
     EXTERNAL_SECRETS,
@@ -304,6 +305,19 @@ def render_cloud_config(vm: VM, join_token: str | None = None) -> str:
     # "look nice" next to the surrounding code would silently break the
     # cloud-config, the exact bug hit earlier with an HCL heredoc.
     args = list(K0S_ARGS)
+
+    # --- failure-domain label (ADR-139 follow-up) ---
+    #
+    # Appended HERE, immediately after the configured args and before the
+    # --config/--token-file appends below, because the Jinja template emits it
+    # in exactly that position and check_render.py compares the two renderers
+    # byte-for-byte. Moving this line is a silent divergence.
+    #
+    # Not folded into site.yml's `k0s.args`: that list is fleet-wide, and this
+    # value differs per node. See HYPERVISOR_LABEL in hosts.py for why the
+    # cluster needs it at all and why it only takes effect at registration.
+    args.append(f"--labels={HYPERVISOR_LABEL}={vm.hypervisor}")
+
     storage_gb = (
         vm.storage_disk_gb if vm.storage_disk_gb is not None else VM_STORAGE_DISK_GB
     )

@@ -58,6 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--name", required=True, help="node hostname")
     parser.add_argument("--ip", required=True, help="static address")
+    # REQUIRED, like --name and --ip. A node rendered without a failure domain
+    # joins the cluster carrying no statement of which machine it sits on, and
+    # no scheduling constraint can then express "not both of these on one host".
+    # Defaulting it would make that the quiet outcome of forgetting a flag.
+    parser.add_argument(
+        "--hypervisor",
+        required=True,
+        help="hypervisor carrying this node — its failure domain",
+    )
     parser.add_argument(
         "--bootstrap",
         action="store_true",
@@ -93,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     vm = hosts.VM(
         name=args.name,
         static_ip=args.ip,
+        hypervisor=args.hypervisor,
         bootstrap=args.bootstrap,
         memory_mib=args.memory_mib,
         vcpu=args.vcpu,

@@ -45,6 +45,14 @@ class VM:
 
     name: str
     static_ip: str
+    # Which hypervisor carries this VM. Denormalised from site.yml's node list
+    # onto the VM itself because render_cloud_config() receives a VM and nothing
+    # else, and the node's FAILURE DOMAIN has to reach the cloud-config — see
+    # HYPERVISOR_LABEL below. Defaulting to "" rather than requiring it keeps
+    # hand-built VM() fixtures (check_render.py) constructible, but an empty
+    # value renders a label with no value, which k0s rejects at install: the
+    # node fails loudly instead of joining with no failure domain.
+    hypervisor: str = ""
     # Exactly one VM in the whole fleet must be the bootstrap controller.
     # It comes up first and alone; every other node joins it using a token
     # generated from it. This only affects the INITIAL build — once the
@@ -121,6 +129,7 @@ def _build_hosts() -> list[Host]:
             VM(
                 name=name,
                 static_ip=node.ip,
+                hypervisor=node.hypervisor,
                 bootstrap=node.bootstrap,
                 memory_mib=node.memory_mib,
                 vcpu=node.vcpu,
@@ -179,6 +188,34 @@ KAIROS_ISO_URL = _CFG.kairos.iso_url
 KAIROS_ISO_SHA256 = _CFG.kairos.iso_sha256
 
 K0S_ARGS = list(_CFG.k0s.args)
+
+# --- the hypervisor failure-domain label (ADR-139 follow-up) ---
+#
+# The fleet has TWO failure domains and, until this existed, no label saying so.
+# `kubernetes.io/hostname` is the only topology label a stock k0s node carries,
+# and spreading on it does NOT mean spreading across hypervisors: s2-vm1 and
+# s2-vm2 are different hostnames on the SAME machine, which is exactly the
+# domain being guarded. Nothing schedulable could express "put these two pods
+# on different physical hosts", so every spread so far has been manual and
+# every one has been undone by the next reboot.
+#
+# Applied as a kubelet `--labels` argument, so a REBUILT node carries it
+# without anyone remembering to run kubectl. Two consequences worth knowing:
+#
+#   1. kubelet applies --labels at node REGISTRATION ONLY. Restarting kubelet,
+#      or adding this to a node that already joined, does nothing. Nodes that
+#      predate this change need a one-time `kubectl label node`, which needs an
+#      admin kubeconfig. A rebuild picks it up automatically; a reboot does not.
+#   2. NodeRestriction lets a kubelet self-assign labels outside the
+#      kubernetes.io/ and k8s.io/ namespaces, which is why this is a custom
+#      domain and NOT, say, `topology.kubernetes.io/zone` — the kubelet would
+#      be refused that one and the node would join unlabelled.
+#
+# ⚠️ RENAME BLAST RADIUS: this string is also written into substrate_config
+# (the bindy spread policy) and, once labelled, into every live node's metadata.
+# It is a constant in exactly one place per implementation so that the pending
+# platform rename is a one-line change here plus a re-label — not a search.
+HYPERVISOR_LABEL = "invariant-platform.io/hypervisor"
 # Empty string when no load balancer is configured, so provision.py can
 # simply test truthiness rather than branching on presence.
 CONTROL_PLANE_VIP = _CFG.control_plane.vip or ""

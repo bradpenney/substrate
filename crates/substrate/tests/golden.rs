@@ -197,7 +197,11 @@ fn a_bootstrap_node_may_not_also_carry_a_join_token() {
     // render a config that silently contradicts itself, and the node would come
     // up looking fine.
     let output = Command::new(env!("CARGO_BIN_EXE_substrate"))
-        .args(["render", "--name", "x", "--ip", "192.0.2.1", "--bootstrap"])
+        // --hypervisor is required, so it must be present here or clap rejects
+        // the invocation before the mutual-exclusion check under test is
+        // reached — and this test would pass on the wrong error.
+        .args(["render", "--name", "x", "--ip", "192.0.2.1"])
+        .args(["--hypervisor", "hvA", "--bootstrap"])
         .args(["--join-token", "nope", "--repo"])
         .arg(repo_root())
         .env(

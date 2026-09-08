@@ -168,6 +168,7 @@ def _emit_jinja(archetype: dict) -> int:
     vm = hosts.VM(
         name=parsed["name"],
         static_ip=parsed["ip"],
+        hypervisor=parsed["hypervisor"],
         bootstrap=parsed.get("bootstrap", False),
         memory_mib=int(parsed["memory_mib"]) if "memory_mib" in parsed else None,
         vcpu=int(parsed["vcpu"]) if "vcpu" in parsed else None,
@@ -178,6 +179,10 @@ def _emit_jinja(archetype: dict) -> int:
     hostvars = {}
     if vm.storage_disk_gb is not None:
         hostvars["storage_disk_gb"] = vm.storage_disk_gb
+    # Per-node, and unconditional: the playbook gets it from the inventory's
+    # hostvars, and omitting it here would render an empty label on the Jinja
+    # side only — a divergence this corroboration exists to catch.
+    hostvars["hypervisor"] = vm.hypervisor
     sys.stdout.write(
         check_render.render_jinja(
             vm.name, vm.static_ip, parsed.get("join_token"), hostvars

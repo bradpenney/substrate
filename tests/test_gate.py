@@ -398,3 +398,171 @@ def test_the_fleet_declares_exactly_one_failure_prone_host():
     prone = gate.failure_prone_hypervisors()
     assert len(prone) == 1
     assert prone < {host.name for host in gate.HOSTS}
+
+
+# --------------------------------------------------------------------------
+# critical-pair spread (eighth criterion)
+#
+# The seventh criterion measures AGGREGATE share and passed on 2026-09-07 at
+# 24%/76% while both BIND primaries ran on s2-vm1 — a single-domain LAN
+# resolver, reported as healthy. These assert the property that miss revealed.
+# --------------------------------------------------------------------------
+
+BIND_SPEC = [
+    {
+        "name": "BIND primaries",
+        "namespace": "bindy-system",
+        "selector": {"bindy.firestoned.io/role": "primary"},
+        "min_replicas": 2,
+        "why": "one host takes the LAN offline",
+    }
+]
+
+
+def _bind_pod(name, node, namespace="bindy-system", labels=None, phase="Running"):
+    """One pod as `kubectl get pods -A -o json` reports it."""
+    return {
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "labels": {"bindy.firestoned.io/role": "primary", **(labels or {})},
+        },
+        "spec": {"nodeName": node},
+        "status": {"phase": phase},
+    }
+
+
+def _payload(*pods):
+    return {"items": list(pods)}
+
+
+NODE_HV = {
+    "s1-vm1": "server1",
+    "s1-vm2": "server1",
+    "s2-vm1": "server2",
+    "s2-vm2": "server2",
+}
+
+
+def test_both_replicas_on_one_hypervisor_is_a_failure():
+    """The exact 2026-09-07 state: both primaries on s2-vm1, gate said PASS."""
+    payload = _payload(
+        _bind_pod("homelab-primary-0-x", "s2-vm1"),
+        _bind_pod("homelab-primary-1-y", "s2-vm1"),
+    )
+    failures = gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC)
+    assert any("ONE failure domain" in f for f in failures)
+    assert any("server2 (2)" in f for f in failures)
+
+
+def test_replicas_on_two_nodes_of_the_SAME_hypervisor_still_fail():
+    """Different hostnames are not different failure domains.
+
+    This is the whole reason `kubernetes.io/hostname` is the wrong topology
+    key: s2-vm1 and s2-vm2 are separate nodes on one physical machine, and a
+    spread that only looks at node names calls this redundant.
+    """
+    payload = _payload(
+        _bind_pod("homelab-primary-0-x", "s2-vm1"),
+        _bind_pod("homelab-primary-1-y", "s2-vm2"),
+    )
+    failures = gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC)
+    assert any("ONE failure domain" in f for f in failures)
+
+
+def test_replicas_spanning_both_hypervisors_pass():
+    """The check must not fire on the state it exists to protect."""
+    payload = _payload(
+        _bind_pod("homelab-primary-0-x", "s1-vm1"),
+        _bind_pod("homelab-primary-1-y", "s2-vm1"),
+    )
+    assert gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC) == []
+
+
+def test_a_selector_that_matches_nothing_fails_rather_than_passing():
+    """A check that passes because it found nothing has stopped checking.
+
+    Renaming a label upstream would otherwise make this criterion vacuously
+    true forever, which is the failure mode the whole gate exists to close.
+    """
+    payload = _payload(_bind_pod("something-else", "s1-vm1", labels={}))
+    payload["items"][0]["metadata"]["labels"] = {"app": "unrelated"}
+    failures = gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC)
+    assert any("expected at least 2" in f for f in failures)
+
+
+def test_a_scaled_down_workload_fails_rather_than_passing():
+    """One replica is trivially 'spread'. It is also not redundant."""
+    payload = _payload(_bind_pod("homelab-primary-0-x", "s1-vm1"))
+    failures = gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC)
+    assert any("found 1 Running replica" in f for f in failures)
+
+
+def test_a_pending_replica_does_not_count_as_placed():
+    """A Pending pod has no node, so it is in no failure domain yet."""
+    payload = _payload(
+        _bind_pod("homelab-primary-0-x", "s2-vm1"),
+        _bind_pod("homelab-primary-1-y", None, phase="Pending"),
+    )
+    failures = gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC)
+    assert any("found 1 Running replica" in f for f in failures)
+
+
+def test_a_replica_on_an_unknown_node_is_reported_not_guessed():
+    """The fleet definition and the cluster disagreeing is itself the finding."""
+    payload = _payload(
+        _bind_pod("homelab-primary-0-x", "s1-vm1"),
+        _bind_pod("homelab-primary-1-y", "mystery"),
+    )
+    failures = gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC)
+    assert any("unknown node 'mystery'" in f for f in failures)
+
+
+def test_the_selector_requires_every_label_not_any():
+    """A partial match would widen the selector to most of a namespace."""
+    spec = [
+        {
+            **BIND_SPEC[0],
+            "selector": {
+                "bindy.firestoned.io/role": "primary",
+                "app.kubernetes.io/part-of": "bindy",
+            },
+        }
+    ]
+    payload = _payload(
+        _bind_pod("primary-0", "s1-vm1", labels={"app.kubernetes.io/part-of": "bindy"}),
+        # role matches, part-of does not — must NOT be counted.
+        _bind_pod("impostor", "s2-vm1", labels={"app.kubernetes.io/part-of": "other"}),
+    )
+    failures = gate.critical_pair_failures(payload, NODE_HV, spec)
+    assert any("found 1 Running replica" in f for f in failures)
+
+
+def test_pods_in_another_namespace_are_not_counted():
+    """Namespace is part of the identity, not a hint."""
+    payload = _payload(
+        _bind_pod("primary-0", "s1-vm1"),
+        _bind_pod("primary-1", "s2-vm1", namespace="somewhere-else"),
+    )
+    failures = gate.critical_pair_failures(payload, NODE_HV, BIND_SPEC)
+    assert any("found 1 Running replica" in f for f in failures)
+
+
+def test_the_shipped_bind_spec_matches_the_operators_real_labels():
+    """Guards the selector against the labels bindy actually applies.
+
+    Taken from a live `kubectl get pod -o jsonpath='{.metadata.labels}'` on
+    2026-09-08. If bindy renames one of these, this fails loudly here instead
+    of turning the criterion into a permanent silent pass.
+    """
+    live = {
+        "app": "bind9",
+        "app.kubernetes.io/component": "dns-server",
+        "app.kubernetes.io/instance": "homelab-primary-0",
+        "app.kubernetes.io/managed-by": "Bind9Cluster",
+        "app.kubernetes.io/name": "bind9",
+        "app.kubernetes.io/part-of": "bindy",
+        "bindy.firestoned.io/role": "primary",
+    }
+    spec = next(s for s in gate.CRITICAL_PAIRS if "BIND" in s["name"])
+    assert all(live.get(k) == v for k, v in spec["selector"].items())

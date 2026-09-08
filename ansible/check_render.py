@@ -75,6 +75,12 @@ def compare(label: str, vm: py.VM, join_token: str | None) -> bool:
     hostvars = {}
     if vm.storage_disk_gb is not None:
         hostvars["storage_disk_gb"] = vm.storage_disk_gb
+    # Per-node, and NOT optional. Left out, the Jinja side renders an empty
+    # label while the Python side renders whatever the fixture carries — or,
+    # worse, both render empty and the comparison passes by matching two
+    # absences, which is the failure this whole file exists to prevent. So
+    # every fixture below sets a real hypervisor.
+    hostvars["hypervisor"] = vm.hypervisor
     actual = render_jinja(vm.name, vm.static_ip, join_token, hostvars)
     if expected == actual:
         # len() on a str counts CHARACTERS. The cloud-config carries 16
@@ -98,12 +104,23 @@ def main() -> int:
     ok = True
     ok &= compare(
         "bootstrap node (no token)",
-        py.VM(name="test-boot", static_ip="192.0.2.10", bootstrap=True),
+        py.VM(
+            name="test-boot",
+            static_ip="192.0.2.10",
+            hypervisor="test-hv1",
+            bootstrap=True,
+        ),
         None,
     )
     ok &= compare(
         "joining node (with token)",
-        py.VM(name="test-join", static_ip="192.0.2.11", memory_mib=10240, vcpu=4),
+        py.VM(
+            name="test-join",
+            static_ip="192.0.2.11",
+            hypervisor="test-hv2",
+            memory_mib=10240,
+            vcpu=4,
+        ),
         "TESTTOKEN123abc",
     )
     # Exercise the OPTIONAL branches too. A guard that only covers the default
@@ -112,7 +129,12 @@ def main() -> int:
     # would otherwise render empty on BOTH sides and "match".
     ok &= compare(
         "node WITH a Longhorn disk (ADR-050)",
-        py.VM(name="test-store", static_ip="192.0.2.12", storage_disk_gb=200),
+        py.VM(
+            name="test-store",
+            static_ip="192.0.2.12",
+            hypervisor="test-hv2",
+            storage_disk_gb=200,
+        ),
         "TESTTOKEN123abc",
     )
     if not ok:
