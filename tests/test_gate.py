@@ -566,3 +566,99 @@ def test_the_shipped_bind_spec_matches_the_operators_real_labels():
     }
     spec = next(s for s in gate.CRITICAL_PAIRS if "BIND" in s["name"])
     assert all(live.get(k) == v for k, v in spec["selector"].items())
+
+
+# --------------------------------------------------------------------------
+# hypervisor topology labels (ninth criterion, ADR-144)
+#
+# The label is what every spread constraint in the platform reasons about, and
+# nothing else verifies it exists or agrees with site.yml.
+# --------------------------------------------------------------------------
+
+LABEL = gate.HYPERVISOR_LABEL
+
+
+def _node(name, hypervisor=None):
+    """One node as `kubectl get nodes -o json` reports it."""
+    labels = {"kubernetes.io/hostname": name}
+    if hypervisor is not None:
+        labels[LABEL] = hypervisor
+    return {"metadata": {"name": name, "labels": labels}}
+
+
+def _nodes(*items):
+    return {"items": list(items)}
+
+
+def test_every_node_labelled_to_match_site_yml_passes():
+    """The state the check exists to protect."""
+    payload = _nodes(
+        _node("s1-vm1", "server1"),
+        _node("s1-vm2", "server1"),
+        _node("s2-vm1", "server2"),
+    )
+    assert gate.node_label_failures(payload, NODE_HV) == []
+
+
+def test_an_unlabelled_node_is_a_failure():
+    """A node with no failure domain is skipped by every spread constraint."""
+    payload = _nodes(_node("s1-vm1", "server1"), _node("s2-vm1"))
+    failures = gate.node_label_failures(payload, NODE_HV)
+    assert any("s2-vm1 carries no" in f for f in failures)
+
+
+def test_partial_labelling_is_caught_here_not_by_the_spread():
+    """The silent one.
+
+    With NO node labelled, a DoNotSchedule constraint leaves the pod Pending —
+    loud. With only SOME labelled, unlabelled nodes are excluded from spreading
+    and both replicas can sit in one domain while the constraint reports
+    perfect satisfaction, because skew across a single domain is always zero.
+    """
+    payload = _nodes(
+        _node("s1-vm1"),
+        _node("s1-vm2"),
+        _node("s2-vm1", "server2"),
+        _node("s2-vm2", "server2"),
+    )
+    failures = gate.node_label_failures(payload, NODE_HV)
+    assert any("s1-vm1 carries no" in f for f in failures)
+    assert any("one failure domain (server2)" in f for f in failures)
+
+
+def test_a_label_that_disagrees_with_site_yml_is_a_failure():
+    """Drift, not absence. A node moved between hypervisors and nobody relabelled."""
+    payload = _nodes(_node("s1-vm1", "server2"), _node("s2-vm1", "server2"))
+    failures = gate.node_label_failures(payload, NODE_HV)
+    assert any("but site.yml says 'server1'" in f for f in failures)
+
+
+def test_one_domain_fails_even_when_every_label_agrees():
+    """A spread over a single domain is satisfied vacuously, not correctly."""
+    payload = _nodes(_node("s2-vm1", "server2"), _node("s2-vm2", "server2"))
+    failures = gate.node_label_failures(payload, NODE_HV)
+    assert any("one failure domain" in f for f in failures)
+
+
+def test_a_node_the_fleet_definition_does_not_know_is_reported():
+    """site.yml and the cluster disagreeing is itself the finding."""
+    payload = _nodes(_node("s1-vm1", "server1"), _node("mystery", "server1"))
+    failures = gate.node_label_failures(payload, NODE_HV)
+    assert any("'mystery' is in the cluster but not in site.yml" in f for f in failures)
+
+
+def test_the_asserted_label_is_the_one_the_build_actually_renders(repo_root):
+    """The gate restates the label rather than importing it — on purpose.
+
+    A gate that read the same constant the renderer writes would agree with
+    itself and could never report that the two had diverged. That independence
+    is only worth having if the restated value is right, so this pins it to the
+    string the cloud-config template actually emits, in both the Python and
+    Rust renderers.
+    """
+    j2 = (
+        repo_root / "ansible/roles/k0s_node/templates/cloud-config.yaml.j2"
+    ).read_text()
+    rs = (repo_root / "crates/substrate-core/src/render.rs").read_text()
+    assert f"--labels={gate.HYPERVISOR_LABEL}=" in j2
+    assert f'"{gate.HYPERVISOR_LABEL}"' in rs

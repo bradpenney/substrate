@@ -109,6 +109,13 @@ MAX_FAILURE_PRONE_POD_SHARE = 0.50
 # that is scaled to zero, finds no pods and the "are they spread?" question is
 # vacuously satisfied. A check that passes because it found nothing is the
 # failure mode this whole file exists to close.
+# The node label naming a node's hypervisor, rendered into every node's
+# cloud-config by the substrate build (ADR-144). Restated here rather than
+# imported from `hosts` because this is the value the gate ASSERTS against; a
+# gate that read the same constant the renderer writes would agree with itself
+# and could never report that the two had diverged.
+HYPERVISOR_LABEL = "invariant-platform.io/hypervisor"
+
 CRITICAL_PAIRS = [
     {
         "name": "BIND primaries (LAN DNS)",
@@ -348,6 +355,10 @@ def verify() -> bool:
         # 2026-09-07 while both LAN DNS replicas sat on one node. Aggregate
         # spread and per-workload redundancy are different properties.
         "critical workloads spread": _check_critical_pairs(),
+        # Ninth criterion (ADR-144). The label above is what every spread
+        # constraint reasons about, and PARTIAL labelling satisfies a spread
+        # vacuously rather than failing — nothing else verifies it.
+        "hypervisor labels match site.yml": _check_node_labels(),
     }
     print("\n=== gate results ===")
     for name, ok in results.items():
@@ -740,6 +751,112 @@ def concentration_failures(
                 f"({share:.0%}, limit {limit:.0%}){why}"
             )
     return failures
+
+
+def node_label_failures(
+    payload: dict,
+    node_hypervisor: dict[str, str],
+    label_key: str = HYPERVISOR_LABEL,
+) -> list[str]:
+    """Reasons the cluster's topology labels disagree with the fleet definition.
+
+    ADR-144 renders `invariant-platform.io/hypervisor` into every node's
+    cloud-config, so a REBUILT node declares its own failure domain. Two things
+    that arrangement does not give you, and this check supplies:
+
+    1. **Kubelet applies `--node-labels` only when it CREATES the Node object.**
+       A restart, a reboot, or a k0s upgrade re-registers against the existing
+       object and re-applies nothing. So a node that predates the build change
+       carries the label only because a human ran `kubectl label`, and the
+       declaration asserts itself on that node no earlier than its next rebuild.
+       Declared and applied are different states; this is what compares them.
+
+    2. **PARTIAL labelling degrades SILENTLY, and total absence does not.** With
+       no node labelled, a DoNotSchedule spread constraint leaves the pod
+       Pending — loud, and caught by the critical-pair criterion. With only
+       *some* nodes labelled, nodes lacking the key are excluded from spreading
+       altogether: both replicas can sit in one domain while the constraint
+       reports perfect satisfaction, because skew across a single domain is
+       always zero. The control evaluates successfully and measures nothing.
+
+    Fewer than two represented domains is reported even when every node agrees
+    with site.yml, because a spread constraint cannot be satisfied by one
+    domain — it would be satisfied *vacuously*, which is the same defect as a
+    selector that matches nothing.
+    """
+    failures = []
+    seen: dict[str, str] = {}
+
+    for node in payload.get("items", []):
+        name = node.get("metadata", {}).get("name")
+        labels = node.get("metadata", {}).get("labels") or {}
+        expected = node_hypervisor.get(name)
+        actual = labels.get(label_key)
+
+        if expected is None:
+            failures.append(f"node {name!r} is in the cluster but not in site.yml")
+            continue
+        if actual is None:
+            failures.append(
+                f"{name} carries no {label_key} label — site.yml says "
+                f"{expected!r}. Nothing schedulable can place it in a failure "
+                f"domain, and a spread constraint will skip it silently"
+            )
+            continue
+        if actual != expected:
+            failures.append(
+                f"{name} is labelled {label_key}={actual!r} but site.yml says "
+                f"{expected!r} — the cluster and the fleet definition disagree"
+            )
+            continue
+        seen[name] = actual
+
+    if seen and len(set(seen.values())) < 2:
+        only = sorted(set(seen.values()))
+        failures.append(
+            f"every correctly labelled node is in one failure domain ({only[0]}) "
+            f"— a spread constraint over one domain is satisfied vacuously"
+        )
+    return failures
+
+
+def _check_node_labels() -> bool:
+    """Assert the cluster's topology labels match the fleet definition.
+
+    Ninth criterion (ADR-144). The label is what every spread constraint in the
+    platform reasons about; nothing else verifies it exists.
+    """
+    print("--- hypervisor topology labels ---")
+    result = kubectl("get nodes -o json")
+    if result.returncode != 0:
+        print("  could not list nodes")
+        return False
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print("  could not parse the node list")
+        return False
+
+    node_hypervisor = node_to_hypervisor()
+    for node in sorted(payload.get("items", []), key=lambda n: n["metadata"]["name"]):
+        name = node["metadata"]["name"]
+        actual = (node["metadata"].get("labels") or {}).get(HYPERVISOR_LABEL, "-")
+        print(f"  {name:10} {HYPERVISOR_LABEL}={actual}")
+
+    failures = node_label_failures(payload, node_hypervisor)
+    if not failures:
+        print("  every node declares a failure domain matching site.yml")
+        return True
+    for line in failures:
+        print(f"  {line}")
+    print(
+        "  the label is rendered into the cloud-config by the substrate build\n"
+        "  (ADR-144), but kubelet applies --node-labels only when it CREATES\n"
+        "  the Node object — a node that merely rebooted needs:\n"
+        "    kubectl label node <node> "
+        f"{HYPERVISOR_LABEL}=<hypervisor>"
+    )
+    return False
 
 
 def pods_matching(payload: dict, namespace: str, selector: dict) -> list[dict]:
