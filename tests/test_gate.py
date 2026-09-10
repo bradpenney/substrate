@@ -662,3 +662,196 @@ def test_the_asserted_label_is_the_one_the_build_actually_renders(repo_root):
     rs = (repo_root / "crates/substrate-core/src/render.rs").read_text()
     assert f"--labels={gate.HYPERVISOR_LABEL}=" in j2
     assert f'"{gate.HYPERVISOR_LABEL}"' in rs
+
+
+# --- fleet survivability (ADR-170) -----------------------------------------
+#
+# The spread check above measures pod-COUNT share as a proxy for "could the
+# fleet lose a hypervisor". These test the property itself, in MiB. They are
+# pure-function tests because the arithmetic is the part that was wrong: the
+# proxy said 91% and pointed at a descheduler while the real answer was that
+# no arrangement of pods fit on the survivor at all.
+
+NODE_HV = {"s1-vm1": "server1", "s1-vm2": "server1", "s2-vm1": "server2"}
+
+
+def _wl(node, mib, name="p", kind="ReplicaSet", pin=None, namespace="ns"):
+    """A workload pod requesting `mib`, optionally pinned to specific nodes."""
+    pod = {
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "ownerReferences": [{"kind": kind}],
+        },
+        "spec": {
+            "nodeName": node,
+            "containers": [{"resources": {"requests": {"memory": f"{mib}Mi"}}}],
+        },
+        "status": {"phase": "Running"},
+    }
+    if pin:
+        pod["spec"]["affinity"] = {
+            "nodeAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": {
+                    "nodeSelectorTerms": [
+                        {
+                            "matchExpressions": [
+                                {
+                                    "key": "kubernetes.io/hostname",
+                                    "operator": "In",
+                                    "values": pin,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+    return pod
+
+
+def test_a_fleet_that_does_not_fit_on_the_survivor_fails():
+    """The measured 2026-09-10 state: 610 MiB short, at a passing pod share."""
+    pods = {"items": [_wl("s1-vm1", 3000), _wl("s2-vm1", 900)]}
+    alloc = {"s1-vm1": 2000, "s1-vm2": 2000, "s2-vm1": 3300}
+    failures = gate.survivability_failures(pods, alloc, NODE_HV)
+    assert any("losing server1" in f and "short by 600 MiB" in f for f in failures)
+
+
+def test_a_fleet_that_fits_either_way_passes():
+    """The check must not fire on the state it exists to protect."""
+    pods = {"items": [_wl("s1-vm1", 500), _wl("s2-vm1", 500)]}
+    alloc = {"s1-vm1": 4000, "s1-vm2": 4000, "s2-vm1": 4000}
+    assert gate.survivability_failures(pods, alloc, NODE_HV) == []
+
+
+def test_a_pod_pinned_to_one_hypervisor_is_reported_even_when_capacity_fits():
+    """Capacity is not the only way to fail — a pin means Pending forever.
+
+    The survivor having room is irrelevant to a pod whose required nodeAffinity
+    names only nodes that no longer exist. It does not run degraded elsewhere.
+    """
+    pods = {"items": [_wl("s1-vm1", 100, name="vmagent", pin=["s1-vm1", "s1-vm2"])]}
+    alloc = {"s1-vm1": 4000, "s1-vm2": 4000, "s2-vm1": 4000}
+    failures = gate.survivability_failures(pods, alloc, NODE_HV)
+    assert any("strands 1 pod(s)" in f and "ns/vmagent" in f for f in failures)
+    assert not any("short by" in f for f in failures)
+
+
+def test_a_pod_pinned_across_both_hypervisors_is_not_stranded():
+    """A pin naming nodes on BOTH hosts survives either loss — not a finding."""
+    pods = {"items": [_wl("s1-vm1", 100, pin=["s1-vm1", "s2-vm1"])]}
+    alloc = {"s1-vm1": 4000, "s1-vm2": 4000, "s2-vm1": 4000}
+    assert gate.survivability_failures(pods, alloc, NODE_HV) == []
+
+
+def test_daemonsets_are_excluded_from_workload_but_consume_the_survivor():
+    """Both halves matter, and they pull in opposite directions.
+
+    A DaemonSet never reschedules, so counting it as workload overstates the
+    need. But its memory on the SURVIVOR is genuinely spoken for, so ignoring
+    it entirely overstates the room. Only subtracting both ways is correct.
+    """
+    pods = {
+        "items": [
+            _wl("s1-vm1", 1000),
+            _wl("s2-vm1", 900, kind="DaemonSet"),
+        ]
+    }
+    alloc = {"s1-vm1": 2000, "s1-vm2": 2000, "s2-vm1": 1500}
+    failures = gate.survivability_failures(pods, alloc, NODE_HV)
+    # workload is 1000 (the DaemonSet is not it); server2 offers 1500-900=600
+    assert any("600 MiB for 1000 MiB" in f for f in failures)
+
+
+def test_job_pods_are_transient_and_not_counted():
+    """A backup Job holding 2 GiB for four minutes is not a capacity fact."""
+    pods = {"items": [_wl("s1-vm1", 5000, kind="Job")]}
+    alloc = {"s1-vm1": 100, "s1-vm2": 100, "s2-vm1": 100}
+    assert gate.survivability_failures(pods, alloc, NODE_HV) == []
+
+
+def test_a_single_hypervisor_fleet_reports_nothing():
+    """There is no surviving hypervisor to compute against.
+
+    Returning a failure here would make every single-host lab permanently red
+    for a condition it cannot fix, which is how a check gets ignored.
+    """
+    pods = {"items": [_wl("s1-vm1", 9999)]}
+    assert (
+        gate.survivability_failures(pods, {"s1-vm1": 10}, {"s1-vm1": "server1"}) == []
+    )
+
+
+def test_stranded_list_says_when_it_truncated():
+    """Reporting '6 pod(s)' and naming four reads as a bug in the check."""
+    pin = ["s1-vm1"]
+    pods = {"items": [_wl("s1-vm1", 10 + i, name=f"p{i}", pin=pin) for i in range(6)]}
+    alloc = {"s1-vm1": 9000, "s1-vm2": 9000, "s2-vm1": 9000}
+    failures = gate.survivability_failures(pods, alloc, NODE_HV)
+    line = next(f for f in failures if "strands" in f)
+    assert "strands 6 pod(s)" in line and "+2 more" in line
+
+
+@pytest.mark.parametrize(
+    "quantity,expected",
+    [
+        ("256Mi", 256),
+        ("1Gi", 1024),
+        ("512000Ki", 500),
+        ("2G", 1907),
+        ("1048576", 1),
+        ("", 0),
+        ("garbage", 0),
+        (None, 0),
+    ],
+)
+def test_memory_quantities_parse_to_mib(quantity, expected):
+    """K8s accepts binary and decimal suffixes and they are not the same."""
+    assert gate.parse_quantity_mib(quantity) == expected
+
+
+def test_a_container_with_no_request_counts_as_zero_like_the_scheduler():
+    """Inventing a default would make the arithmetic disagree with kube."""
+    pod = {"spec": {"containers": [{"resources": {}}, {}]}}
+    assert gate.pod_memory_request_mib(pod) == 0
+
+
+def test_multi_container_requests_are_summed():
+    """A sidecar's request is reserved too; the pod needs the total to land."""
+    pod = {
+        "spec": {
+            "containers": [
+                {"resources": {"requests": {"memory": "256Mi"}}},
+                {"resources": {"requests": {"memory": "64Mi"}}},
+            ]
+        }
+    }
+    assert gate.pod_memory_request_mib(pod) == 320
+
+
+def test_preferred_affinity_does_not_pin():
+    """`preferred` is a hint the scheduler drops under exactly this pressure."""
+    pod = {
+        "spec": {
+            "affinity": {
+                "nodeAffinity": {
+                    "preferredDuringSchedulingIgnoredDuringExecution": [
+                        {
+                            "weight": 100,
+                            "preference": {
+                                "matchExpressions": [
+                                    {
+                                        "key": "kubernetes.io/hostname",
+                                        "operator": "In",
+                                        "values": ["s1-vm1"],
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    assert gate.pinned_hypervisors(pod, NODE_HV) == set()

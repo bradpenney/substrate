@@ -360,11 +360,68 @@ def verify() -> bool:
         # constraint reasons about, and PARTIAL labelling satisfies a spread
         # vacuously rather than failing — nothing else verifies it.
         "hypervisor labels match site.yml": _check_node_labels(),
+        # Tenth criterion (ADR-170). The seventh measures pod-count SHARE as a
+        # proxy for "could the fleet lose a hypervisor". This measures the thing
+        # itself, in MiB. The proxy failed at 91% and recommended a descheduler
+        # while the real shortfall was 610 MiB that no amount of moving fixes.
+        "fleet survives losing a hypervisor": _check_fleet_survivability(),
     }
     print("\n=== gate results ===")
     for name, ok in results.items():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
     return all(results.values())
+
+
+def _check_fleet_survivability() -> bool:
+    """Could the survivors actually hold the workload if a hypervisor is lost?
+
+    Tenth criterion (ADR-170). The seventh measures pod-COUNT share as a proxy
+    for this, and on 2026-09-10 the proxy pointed at the wrong remedy: it failed
+    at 91% on server1 and recommended a descheduler, while the fleet was 610 MiB
+    short of fitting on server2 under ANY arrangement. Share and survivability
+    are different properties, and only one of them is what anybody actually
+    cares about.
+    """
+    print("--- fleet survivability ---")
+    pods_result = kubectl("get pods -A -o json")
+    nodes_result = kubectl("get nodes -o json")
+    if pods_result.returncode != 0 or nodes_result.returncode != 0:
+        print("  could not list pods or nodes")
+        return False
+    try:
+        pods = json.loads(pods_result.stdout)
+        nodes = json.loads(nodes_result.stdout)
+    except json.JSONDecodeError:
+        print("  could not parse the pod or node list")
+        return False
+
+    allocatable = {
+        n["metadata"]["name"]: parse_quantity_mib(
+            (n.get("status", {}).get("allocatable") or {}).get("memory", "")
+        )
+        for n in nodes.get("items", [])
+    }
+    node_hypervisor = node_to_hypervisor()
+
+    workload, room, _ = survivability_budget(pods, allocatable, node_hypervisor)
+    print(f"  reschedulable workload {workload:6} MiB (DaemonSets excluded)")
+    for host in sorted(room):
+        margin = room[host] - workload
+        verdict = f"ok, {margin} MiB spare" if margin >= 0 else f"SHORT {-margin} MiB"
+        print(f"  lose {host:8} survivors offer {room[host]:6} MiB — {verdict}")
+
+    failures = survivability_failures(pods, allocatable, node_hypervisor)
+    if not failures:
+        print("  the fleet survives losing either hypervisor")
+        return True
+    for line in failures:
+        print(f"  {line}")
+    print(
+        "  ⚠️ rebalance.sh CANNOT fix this — it moves pods, and this is a memory\n"
+        "  shortfall. See ADR-170: the options are more RAM on the smaller host,\n"
+        "  fewer workloads, or accepting the exposure deliberately."
+    )
+    return False
 
 
 def _check_apiserver_tunnel() -> bool:
@@ -694,6 +751,189 @@ def schedulable_pods_by_node(payload: dict) -> dict[str, int]:
         if node:
             counts[node] = counts.get(node, 0) + 1
     return counts
+
+
+def parse_quantity_mib(value: str) -> int:
+    """A Kubernetes memory quantity as whole MiB. Unparseable reads as 0.
+
+    Zero is the honest answer for a container with no request: the scheduler
+    also treats it as zero when deciding what fits. Guessing a default here
+    would make the survivability arithmetic disagree with the scheduler it is
+    trying to predict.
+    """
+    v = (value or "").strip()
+    if not v:
+        return 0
+    units = {
+        "Ki": 1 / 1024,
+        "Mi": 1,
+        "Gi": 1024,
+        "Ti": 1024 * 1024,
+        "K": 1000 / 1048576,
+        "M": 1000000 / 1048576,
+        "G": 1000000000 / 1048576,
+    }
+    for suffix, factor in units.items():
+        if v.endswith(suffix):
+            try:
+                return int(float(v[: -len(suffix)]) * factor)
+            except ValueError:
+                return 0
+    try:  # bare bytes
+        return int(int(v) / 1048576)
+    except ValueError:
+        return 0
+
+
+def pod_memory_request_mib(pod: dict) -> int:
+    """Total memory REQUEST of a pod, in MiB.
+
+    Requests, not limits and not usage: requests are what the scheduler
+    reserves, so they are what determines whether a pod fits on a surviving
+    node. A pod using 50 MiB while requesting 256 still needs 256 to be placed.
+    """
+    total = 0
+    for container in pod.get("spec", {}).get("containers", []):
+        requests = (container.get("resources") or {}).get("requests") or {}
+        total += parse_quantity_mib(requests.get("memory", ""))
+    return total
+
+
+def pinned_hypervisors(pod: dict, node_hypervisor: dict[str, str]) -> set[str]:
+    """Hypervisors a pod's REQUIRED nodeAffinity confines it to.
+
+    Empty means it can go anywhere. A pod naming only nodes on one hypervisor
+    cannot be rescheduled if that hypervisor is lost — it does not run degraded
+    or move slowly, it goes Pending indefinitely, because the affinity names
+    nodes that no longer exist. That is a categorically worse outcome than
+    "would be tight", and the reason this is measured separately from capacity.
+
+    Only REQUIRED affinity is considered. `preferred` is a hint the scheduler
+    may ignore under pressure, which is exactly the situation being modelled.
+    """
+    affinity = (pod.get("spec", {}).get("affinity") or {}).get("nodeAffinity") or {}
+    required = affinity.get("requiredDuringSchedulingIgnoredDuringExecution") or {}
+    hosts: set[str] = set()
+    for term in required.get("nodeSelectorTerms", []):
+        for expression in term.get("matchExpressions", []):
+            if expression.get("key") != "kubernetes.io/hostname":
+                continue
+            if expression.get("operator") != "In":
+                continue
+            for node in expression.get("values", []):
+                host = node_hypervisor.get(node)
+                if host:
+                    hosts.add(host)
+    return hosts
+
+
+def survivability_budget(
+    pods: dict,
+    allocatable_mib: dict[str, int],
+    node_hypervisor: dict[str, str],
+) -> tuple[int, dict[str, int], dict[str, list[tuple[str, int]]]]:
+    """The arithmetic behind survivability: (workload, per-host room, pins).
+
+    Extracted so the passing path can print the same numbers the failing path
+    computes. A green line with no figures behind it is indistinguishable from
+    a check that measured nothing, which is a failure mode this codebase has
+    hit repeatedly — see the buglog. One implementation, both directions.
+
+    `per-host room` is what the fleet has if THAT host is the one lost, already
+    net of the DaemonSet memory the survivors are committed to.
+    """
+    hypervisors = sorted(set(node_hypervisor.values()))
+    ds_by_host: dict[str, int] = {h: 0 for h in hypervisors}
+    workload = 0
+    pinned_by_host: dict[str, list[tuple[str, int]]] = {h: [] for h in hypervisors}
+
+    for pod in pods.get("items", []):
+        spec = pod.get("spec", {})
+        node = spec.get("nodeName")
+        host = node_hypervisor.get(node or "")
+        if not host or pod.get("status", {}).get("phase") not in ("Running", "Pending"):
+            continue
+        owners = pod.get("metadata", {}).get("ownerReferences") or [{}]
+        kind = owners[0].get("kind", "")
+        mib = pod_memory_request_mib(pod)
+        if kind == "DaemonSet":
+            ds_by_host[host] = ds_by_host.get(host, 0) + mib
+            continue
+        if kind == "Job":
+            continue  # transient; it will not need rescheduling
+        workload += mib
+        confined = pinned_hypervisors(pod, node_hypervisor)
+        if len(confined) == 1:
+            only = next(iter(confined))
+            name = f"{pod['metadata'].get('namespace')}/{pod['metadata'].get('name')}"
+            pinned_by_host.setdefault(only, []).append((name, mib))
+
+    alloc_by_host: dict[str, int] = {h: 0 for h in hypervisors}
+    for node, mib in allocatable_mib.items():
+        host = node_hypervisor.get(node)
+        if host:
+            alloc_by_host[host] = alloc_by_host.get(host, 0) + mib
+
+    room = {
+        lost: sum(
+            alloc_by_host.get(h, 0) - ds_by_host.get(h, 0)
+            for h in hypervisors
+            if h != lost
+        )
+        for lost in hypervisors
+    }
+    return workload, room, pinned_by_host
+
+
+def survivability_failures(
+    pods: dict,
+    allocatable_mib: dict[str, int],
+    node_hypervisor: dict[str, str],
+) -> list[str]:
+    """Reasons the fleet would not survive losing a hypervisor. Empty is fine.
+
+    THE PROPERTY THE SPREAD CHECK ONLY APPROXIMATES.
+    `_check_pod_distribution` measures pod-COUNT share, and its docstring gives
+    the reason: a fleet "one hypervisor away from having no capacity at all".
+    Share is a proxy for that. This computes it.
+
+    The distinction is not academic. On 2026-09-10 the share check failed at 91%
+    on server1 and the recommended remedy was a descheduler — but the fleet was
+    610 MiB short of fitting on server2 no matter how the pods were arranged,
+    and moving them would merely have put server2 at 91% of ITS capacity
+    (ADR-170). A descheduler moves pods; it does not create memory.
+
+    DaemonSets are excluded from the workload because they do not reschedule —
+    they run one per node by definition — but their requests ARE subtracted from
+    each survivor's allocatable, because that memory is genuinely spoken for.
+    """
+    failures: list[str] = []
+    hypervisors = sorted(set(node_hypervisor.values()))
+    if len(hypervisors) < 2:
+        return failures  # nothing to survive the loss of
+    workload, room, pinned_by_host = survivability_budget(
+        pods, allocatable_mib, node_hypervisor
+    )
+
+    for lost in hypervisors:
+        available = room.get(lost, 0)
+        if workload > available:
+            failures.append(
+                f"losing {lost} leaves {available} MiB for {workload} MiB of "
+                f"workload — short by {workload - available} MiB"
+            )
+        stranded = pinned_by_host.get(lost, [])
+        if stranded:
+            by_size = sorted(stranded, key=lambda x: -x[1])
+            listed = ", ".join(n for n, _ in by_size[:4])
+            if len(by_size) > 4:
+                listed += f", +{len(by_size) - 4} more"
+            total = sum(m for _, m in stranded)
+            failures.append(
+                f"losing {lost} strands {len(stranded)} pod(s) ({total} MiB) "
+                f"pinned to it by nodeAffinity — they go Pending, not elsewhere: {listed}"
+            )
+    return failures
 
 
 def concentration_failures(
@@ -1030,9 +1270,13 @@ def _check_pod_distribution() -> bool:
     for line in failures:
         print(f"  {line}")
     print(
-        "  remediate with ./rebalance.sh (needs a jit-admin grant). This recurs\n"
-        "  on every rebuild until the platform stops reconciling onto a\n"
-        "  one-node cluster — see ADR-097."
+        "  ./rebalance.sh (needs a jit-admin grant) fixes the ADR-097 fault: a\n"
+        "  rebuild reconciling the whole platform onto the bootstrap node, where\n"
+        "  the pods CAN move and simply have not. It recurs on every rebuild.\n"
+        "  ⚠️ It does NOT fix a capacity shortfall. If 'fleet survives losing a\n"
+        "  hypervisor' is also failing, read that first — moving pods cannot\n"
+        "  create memory on the survivor, and rebalancing into a host that\n"
+        "  cannot hold the workload just relocates the concentration (ADR-170)."
     )
     return False
 
