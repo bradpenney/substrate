@@ -263,7 +263,7 @@ def test_the_drift_check_reports_a_modified_file(dobs, cfg, monkeypatch):
         return types.SimpleNamespace(returncode=0, stdout="v0.0.0-wrong")
 
     monkeypatch.setattr(deploy_updates, "run", fake_run)
-    problems = dobs.check(host, cfg)
+    problems, _unverified = dobs.check(host, cfg)
 
     assert any("differs from the repository" in p for p in problems)
     assert any("repository pins" in p for p in problems), (
@@ -282,9 +282,43 @@ def test_the_drift_check_reports_a_missing_file(dobs, cfg, monkeypatch):
     monkeypatch.setattr(
         deploy_updates,
         "run",
-        lambda *a, **k: types.SimpleNamespace(returncode=1, stdout=""),
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="__ABSENT__"),
     )
-    assert any("is MISSING" in p for p in dobs.check(host, cfg))
+    problems, _unverified = dobs.check(host, cfg)
+    assert any("is MISSING" in p for p in problems)
+
+
+def test_an_unreadable_file_is_NOT_reported_as_missing(dobs, cfg, monkeypatch):
+    """The bug this test exists to prevent, found on server1 2026-09-10.
+
+    `sha256sum` exits non-zero for BOTH "no such file" and "permission denied",
+    and the check reported either as MISSING. contactpoints.yaml is mode 640
+    root:root ON PURPOSE — it carries the ntfy topic — so a check running as a
+    non-root user reported a file that had been correctly installed since
+    2026-09-03 as absent.
+
+    The distinction is not cosmetic. "I checked and it is wrong" and "I could
+    not check" are different claims, and a tool that collapses them asserts more
+    than it measured.
+    """
+    import types
+
+    import deploy_updates
+
+    host = types.SimpleNamespace(name=cfg.observability.host, ssh_target=None)
+    monkeypatch.setattr(
+        deploy_updates,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="__UNREADABLE__"),
+    )
+    problems, unverified = dobs.check(host, cfg)
+    assert not any(
+        "is MISSING" in p for p in problems
+    ), "an unreadable file must not be reported as absent"
+    assert any("could not be read" in u for u in unverified)
+    assert any(
+        "re-run as root" in u for u in unverified
+    ), "the report must say how to actually verify it"
 
 
 def test_remote_write_port_is_opened_on_the_store_host(dobs, cfg):
@@ -1071,3 +1105,62 @@ def test_the_two_certificate_rules_catch_different_failures(dobs):
     # everyone to skim the channel (ADR-119).
     assert expiring["threshold"] < 30, "would fire during normal renewals"
     assert expiring["op"] == "lt"
+
+
+def test_the_pvc_rule_measures_a_ratio_not_an_absolute(dobs):
+    """A byte threshold cannot be shared by volumes of different sizes.
+
+    The fleet's PVCs range from 1 GiB to 2 GiB today and will not stay that
+    way. "80% full" means the same thing on all of them; "over 1.5 GiB used"
+    means nothing on a 1 GiB volume and never fires on a 200 GiB one.
+
+    Also asserts the aggregation: without `max by (namespace,
+    persistentvolumeclaim)` a volume mounted on two nodes would produce two
+    series and two identical alerts.
+    """
+    rule = {r["uid"]: r for r in dobs.ALERT_RULES}["pvc-nearly-full"]
+    assert "kubelet_volume_stats_used_bytes" in rule["expr"]
+    assert "kubelet_volume_stats_capacity_bytes" in rule["expr"]
+    assert "max by (namespace,persistentvolumeclaim)" in rule["expr"]
+    assert rule["op"] == "gt"
+    # A ratio rule whose threshold exceeds 100 can never fire.
+    assert 0 < rule["threshold"] < 100
+
+
+def test_the_pvc_threshold_leaves_usable_lead_time(dobs):
+    """The point of this alert is warning, not precision.
+
+    Sized against the measured case that earned it (ADR-152): wanderer-db-data
+    is 2 GiB and grows ~190 MiB per recorded ride. At 80% the alert arrives
+    with ~1.5 rides of headroom left, which is not enough time to think. At 75%
+    it arrives with ~3.4.
+
+    If someone raises this back to 80 to reduce noise, this test should make
+    them argue for it — nothing in the fleet is anywhere near either number, so
+    the "noise" being avoided is hypothetical and the lead time is not.
+    """
+    rule = {r["uid"]: r for r in dobs.ALERT_RULES}["pvc-nearly-full"]
+    capacity_mib = 2048
+    per_ride_mib = 190
+    headroom_rides = (capacity_mib * (1 - rule["threshold"] / 100)) / per_ride_mib
+    assert headroom_rides >= 2.5, (
+        f"threshold {rule['threshold']}% leaves only {headroom_rides:.1f} rides "
+        "of warning on a 2 GiB volume"
+    )
+
+
+def test_the_pvc_rule_documents_that_it_cannot_see_unmounted_volumes(dobs):
+    """This rule has a real blind spot and the file must say so.
+
+    kubelet only reports stats for volumes attached to a pod on that node, so a
+    PVC used solely by a short-lived CronJob is invisible between runs.
+    Measured 2026-09-10: four PVCs existed, three had series — garmin-sync-state
+    was absent purely because nothing had it mounted.
+
+    A reader who assumes this watches every PVC will be wrong, and the whole
+    reason this rule exists is that a metric nobody read let a volume fill
+    unnoticed. Asserting on the runbook keeps the caveat attached to the alert
+    rather than living only in a commit message.
+    """
+    rule = {r["uid"]: r for r in dobs.ALERT_RULES}["pvc-nearly-full"]
+    assert "MOUNTED" in rule["runbook"] or "mounted" in rule["runbook"]

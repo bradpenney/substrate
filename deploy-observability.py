@@ -234,6 +234,45 @@ ALERT_RULES = [
         "runbook": "Both stores go read-only rather than crash; data stops silently.",
     },
     {
+        "uid": "pvc-nearly-full",
+        "title": "PersistentVolume nearly full",
+        "expr": (
+            "max by (namespace,persistentvolumeclaim) ("
+            "100 * kubelet_volume_stats_used_bytes"
+            " / kubelet_volume_stats_capacity_bytes)"
+        ),
+        "op": "gt",
+        "threshold": 75,
+        "for": "15m",
+        "severity": "page",
+        # Directly earned on 2026-09-09 (ADR-152). `wanderer-db-data` was at 36%
+        # of 1945 MiB and growing ~190 MiB per recorded ride -- about six rides
+        # of headroom -- and it was found BY HAND while sizing a migration. The
+        # metric was already being collected and nothing read it.
+        #
+        # A full PVC under SQLite is not a slow degradation: writes fail, and the
+        # app that fails is whichever one someone just shared with people.
+        #
+        # 75, not 80. At 2 GiB and 190 MiB/ride, 80% leaves ~1.5 rides of warning
+        # and 75% leaves ~3.4 -- and the useful property of this alert is lead
+        # time, not precision. Nothing else in the fleet is near either number.
+        #
+        # ⚠️ THIS SEES ONLY VOLUMES THAT ARE CURRENTLY MOUNTED, and that is a
+        # real blind spot rather than a quirk. kubelet reports stats for volumes
+        # attached to a pod on that node, so a PVC used only by a short-lived
+        # CronJob is invisible between runs. Verified 2026-09-10: four PVCs
+        # existed and three had series -- `garmin-sync-state` was missing purely
+        # because nothing had it mounted at that moment. That claim is checkable:
+        #   kubectl get pvc -A
+        #   {query} count(kubelet_volume_stats_capacity_bytes)
+        # If those two numbers disagree, this rule is not watching everything.
+        "summary": "A PersistentVolume has been over 75% full for 15 minutes.",
+        "runbook": (
+            "Longhorn supports online expansion, but size it from the observed "
+            "growth curve, not a round number. Only MOUNTED volumes appear here."
+        ),
+    },
+    {
         "uid": "scrape-config-not-loaded",
         "title": "VictoriaMetrics rejected its scrape config",
         "expr": "vm_promscrape_config_last_reload_successful",
@@ -1186,7 +1225,7 @@ def files_for(cfg, host_name: str) -> list:
     return payload
 
 
-def check(host, cfg) -> list[str]:
+def check(host, cfg) -> tuple[list[str], list[str]]:
     """Report drift between the repository and what is installed on a host.
 
     WHY THIS EXISTS
@@ -1202,13 +1241,48 @@ def check(host, cfg) -> list[str]:
     is irreplaceable (ADR-100).
     """
     problems = []
+    # Files the check could not READ — reported separately from drift,
+    # because "I could not check this" is not "this is wrong".
+    unverified = []
     for data, path, _mode in files_for(cfg, host.name):
         want = hashlib.sha256(data).hexdigest()
-        result = deploy_updates.run(host, ["sha256sum", f"/{path}"], check=False)
-        if result.returncode != 0:
+        # ⚠️ CLASSIFY THE FAILURE. `sha256sum` exits non-zero for BOTH "no such
+        # file" and "permission denied", and reporting either as MISSING is a
+        # false positive with real consequences: contactpoints.yaml is mode 640
+        # root:root ON PURPOSE (it carries the ntfy topic), so this check ran as
+        # a non-root user, could not read it, and reported a file that had been
+        # correctly installed since 2026-09-03 as absent.
+        #
+        # The distinction that matters is not missing-vs-present. It is
+        # "I checked and it is wrong" versus "I could not check" — a checker
+        # that collapses those two states is asserting more than it measured,
+        # which is the exact defect this whole register keeps recording.
+        result = deploy_updates.run(
+            host,
+            [
+                "sh",
+                "-c",
+                'if [ ! -e "$1" ]; then echo __ABSENT__; '
+                'elif [ ! -r "$1" ]; then echo __UNREADABLE__; '
+                'else sha256sum "$1"; fi',
+                "_",
+                f"/{path}",
+            ],
+            check=False,
+        )
+        out = result.stdout.strip()
+        if result.returncode != 0 or out == "__ABSENT__":
             problems.append(f"{host.name}: /{path} is MISSING")
             continue
-        got = result.stdout.split()[0]
+        if out == "__UNREADABLE__":
+            # NOT counted as drift. It is an unchecked file, and saying so is
+            # the honest report — re-run as root to actually verify it.
+            unverified.append(
+                f"{host.name}: /{path} could not be read (permission denied) "
+                "— re-run as root to verify it"
+            )
+            continue
+        got = out.split()[0]
         if got != want:
             problems.append(f"{host.name}: /{path} differs from the repository")
 
@@ -1223,7 +1297,7 @@ def check(host, cfg) -> list[str]:
         got = result.stdout.strip() if result.returncode == 0 else "(absent)"
         if got != want:
             problems.append(f"{host.name}: {name} is {got}, repository pins {want}")
-    return problems
+    return problems, unverified
 
 
 def grafana_ini(cfg) -> bytes:
@@ -1384,8 +1458,20 @@ def main() -> int:
 
     if args.check:
         problems = []
+        unverified = []
         for host in hosts.HOSTS:
-            problems += check(host, cfg)
+            host_problems, host_unverified = check(host, cfg)
+            problems += host_problems
+            unverified += host_unverified
+        # Printed even when there is no drift. A file that could not be checked
+        # is the one place this tool has nothing to say, and staying silent
+        # about it would let "every host matches the repository" mean less than
+        # it appears to.
+        if unverified:
+            print("UNVERIFIED — these files were not checked:")
+            for line in unverified:
+                print(f"  [    ] {line}")
+            print()
         if problems:
             print("DRIFT — the hosts do not match this repository:")
             for line in problems:
