@@ -1262,3 +1262,57 @@ def test_panels_that_have_a_known_blind_spot_say_so():
     assert any(
         "MOUNTED" in p.get("description", "") for p in pvc
     ), "the mounted-only caveat must stay on the panel description"
+
+
+def test_the_cronjob_rule_uses_exported_namespace_not_namespace(dobs):
+    """kube-state-metrics runs in kube-system, and the scrape config sets
+    `namespace` from the TARGET POD — so ksm's own namespace label is renamed
+    to `exported_namespace` on collision.
+
+    Grouping by `namespace` labels every alert "kube-system" and sends the
+    reader to the wrong place during an incident. The rule looks correct either
+    way, which is what makes this worth a test rather than a comment.
+    """
+    rule = {r["uid"]: r for r in dobs.ALERT_RULES}["cronjob-not-succeeding"]
+    assert "exported_namespace" in rule["expr"]
+    assert (
+        "by (namespace" not in rule["expr"]
+    ), "grouping by `namespace` reports kube-state-metrics' own namespace"
+
+
+def test_the_cronjob_rule_excludes_SUSPENDED_jobs(dobs):
+    """Seven drills carry `suspend: true` with the schedule `0 0 31 2 *` —
+    February 31st, a date that never occurs — because they are run by hand.
+
+    Without the exclusion this rule fires on all seven immediately and
+    permanently. An alert that is always on teaches everyone to ignore the
+    channel (ADR-119), which would cost more than the rule is worth.
+    """
+    rule = {r["uid"]: r for r in dobs.ALERT_RULES}["cronjob-not-succeeding"]
+    assert "kube_cronjob_spec_suspend" in rule["expr"]
+    assert "== 0" in rule["expr"], "must select only NON-suspended cronjobs"
+
+
+def test_the_cronjob_threshold_survives_one_missed_daily_run(dobs):
+    """The fleet's backups run daily. The threshold must be long enough that a
+    job which ran normally is never reported, and short enough that missing a
+    single run is.
+
+    24h exactly would fire on ordinary jitter between runs; 48h lets a daily
+    backup miss two nights in silence.
+    """
+    rule = {r["uid"]: r for r in dobs.ALERT_RULES}["cronjob-not-succeeding"]
+    hours = rule["threshold"] / 3600
+    assert 24 < hours <= 36, f"threshold is {hours}h; expected just over a day"
+
+
+def test_the_cronjob_rule_documents_that_one_threshold_cannot_fit_all_cadences(dobs):
+    """The active CronJobs run every 2 minutes, every 30 minutes, and daily.
+
+    A reader who assumes this catches a 30-minute job promptly will be wrong by
+    most of a day. The limitation belongs where the alert is read, not only in
+    a commit message — the whole reason this rule exists is that an unstated
+    gap went unnoticed for as long as anyone cared to look.
+    """
+    rule = {r["uid"]: r for r in dobs.ALERT_RULES}["cronjob-not-succeeding"]
+    assert "Suspended" in rule["runbook"] or "suspended" in rule["runbook"]

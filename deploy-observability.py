@@ -234,6 +234,57 @@ ALERT_RULES = [
         "runbook": "Both stores go read-only rather than crash; data stops silently.",
     },
     {
+        "uid": "cronjob-not-succeeding",
+        "title": "CronJob has not succeeded",
+        # ⚠️ `exported_namespace`, NOT `namespace`.
+        # kube-state-metrics runs in kube-system, and the scrape config sets
+        # `namespace` from the TARGET POD — so kube-state-metrics' own
+        # `namespace` label is renamed to `exported_namespace` on collision.
+        # Grouping by `namespace` labels every alert "kube-system" and points
+        # the reader at the wrong place during an incident. Verified against
+        # live series 2026-09-10 before this was written.
+        #
+        # SUSPENDED CronJobs are excluded, and that is not an optimisation.
+        # Seven drills in pv-backup and etcd-backup carry `suspend: true` with
+        # the schedule `0 0 31 2 *` — February 31st, a date that never occurs —
+        # because they are triggered by hand. Without the exclusion this rule
+        # fires on all seven immediately and permanently, which is precisely
+        # the always-on alert ADR-119 says teaches everyone to ignore the
+        # channel.
+        "expr": (
+            "(time() - max by (exported_namespace,cronjob) "
+            "(kube_cronjob_status_last_successful_time))"
+            " and on(exported_namespace,cronjob) "
+            "(max by (exported_namespace,cronjob) (kube_cronjob_spec_suspend) == 0)"
+        ),
+        "op": "gt",
+        # 25 hours: one missed run of a daily job, plus an hour of slack.
+        "threshold": 90000,
+        "for": "30m",
+        "severity": "page",
+        # Directly earned on 2026-09-09. `wanderer-backup` had NEVER succeeded
+        # since it was deployed, and `donetick-backup` was DEADLOCKED for 42
+        # hours under `concurrencyPolicy: Forbid`, where a hung job blocks every
+        # successor permanently. Both were found by hand, one step before the
+        # working compose backup that covered for them was deleted. Nothing in
+        # the fleet could report a CronJob's last success until
+        # kube-state-metrics was deployed (ADR-155, ADR-160).
+        #
+        # ⚠️ LIMITATION, stated because a reader will otherwise assume more:
+        # one threshold cannot fit every cadence. The fleet's active CronJobs
+        # run every 2 minutes, every 30 minutes, and daily. 25h catches a daily
+        # job missing a single run; a 30-minute job that breaks at 09:00 is not
+        # reported until the following morning. That is late, and it is still
+        # infinitely better than never — which is what preceded it. Per-cadence
+        # thresholds need the schedule parsed, which PromQL cannot do.
+        "summary": "A CronJob has not succeeded in over 25 hours.",
+        "runbook": (
+            "Check `kubectl -n <ns> get job` first: a job stuck Init:0/1 on an "
+            "RWO volume looks identical to one that never ran. Suspended "
+            "CronJobs are excluded by design."
+        ),
+    },
+    {
         "uid": "pvc-nearly-full",
         "title": "PersistentVolume nearly full",
         "expr": (
