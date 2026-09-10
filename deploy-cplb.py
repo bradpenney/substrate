@@ -222,12 +222,23 @@ def main() -> int:
     Dry run by default. This reconfigures the control-plane load balancer, and
     the failure mode of getting it wrong is losing the API server."""
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        # ⚠️ EXPLICIT, not `__doc__`. The `"exec" "$(...)"` shebang trick at the
+        # top of this file is a run of ADJACENT STRING LITERALS, which Python
+        # concatenates into the module docstring — so `__doc__` is a shell
+        # fragment, and `--help` advertised
+        #     exec$(cd $(dirname $0); pwd)/.venv/bin/python3-u$0$@
+        # on four of this repo's operational tools until 2026-09-10.
+        description="Deploy the control-plane load balancer to each hypervisor.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument(
         "--apply", action="store_true", help="actually install (default: dry run)"
     )
     args = ap.parse_args()
+
+    # Escalation happens REMOTELY here (`ssh ... sudo ...`), never
+    # locally. Run under local sudo this SSHes as root, which has no key.
+    siteconfig.refuse_if_root("./deploy-cplb.py")
 
     print("=== control-plane load balancer ===\n")
     print(f"  VIP        : {VIP}  on {BRIDGE}")

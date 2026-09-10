@@ -61,6 +61,7 @@ import time
 from pathlib import Path
 
 import provision
+import siteconfig
 import hosts as hosts_module
 from hosts import HOSTS, ISO_POOL_PATH
 
@@ -1776,7 +1777,14 @@ def main() -> int:
     unattended, so a mistyped subcommand must do nothing rather than something
     plausible."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        # ⚠️ EXPLICIT, not `__doc__`. The `"exec" "$(...)"` shebang trick at the
+        # top of this file is a run of ADJACENT STRING LITERALS, which Python
+        # concatenates into the module docstring — so `__doc__` is a shell
+        # fragment, and `--help` advertised
+        #     exec$(cd $(dirname $0); pwd)/.venv/bin/python3-u$0$@
+        # on four of this repo's operational tools until 2026-09-10.
+        description="Verify, rebuild and compare the k0s fleet.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1821,6 +1829,10 @@ def main() -> int:
     p_roll.add_argument("--node", help="roll only this node (default: the whole fleet)")
 
     args = parser.parse_args()
+
+    # Escalation happens REMOTELY here (`ssh ... sudo ...`), never
+    # locally. Run under local sudo this SSHes as root, which has no key.
+    siteconfig.refuse_if_root("./gate.py <command>")
 
     if args.command == "verify":
         return 0 if verify() else 1

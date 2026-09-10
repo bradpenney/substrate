@@ -24,6 +24,7 @@ Run from server1, which acts as controller for the whole fleet:
 `python3 provision.py`
 """
 
+import argparse
 import json
 import shlex
 import subprocess
@@ -32,6 +33,7 @@ import time
 from pathlib import Path
 
 import hosts
+import siteconfig
 from hosts import (
     FLUX as _CFG_FLUX,
     PRIMARY_NIC,
@@ -1594,8 +1596,62 @@ def main() -> None:
     refresh_client_access(bootstrap_vm, [v.static_ip for h in HOSTS for v in h.vms])
 
 
+def plan() -> None:
+    """Print what a provision WOULD build, and touch nothing.
+
+    Every destructive action in this file is downstream of the same two facts:
+    which VM is the bootstrap, and what the fleet looks like. Printing those is
+    a faithful preview rather than a summary of one — there is no branch below
+    that could still surprise a reader who has seen this output.
+    """
+    # The host is unused here but find_bootstrap() is called for its VALIDATION:
+    # it raises if the fleet declares zero or several bootstrap nodes, and a
+    # dry run that stayed silent about that would preview a plan that cannot
+    # actually be executed.
+    _bootstrap_host, bootstrap_vm = find_bootstrap()
+    total = sum(len(h.vms) for h in HOSTS)
+    print(f"=== DRY RUN — would provision {total} VM(s) ===")
+    for host in HOSTS:
+        print(f"  {host.name} ({host.ssh_target or 'local'})")
+        for vm in host.vms:
+            role = "BOOTSTRAP" if vm.name == bootstrap_vm.name else "joiner"
+            state = "EXISTS, would reconcile" if vm_exists(host, vm) else "would CREATE"
+            disk = f", {vm.storage_disk_gb}G longhorn" if vm.storage_disk_gb else ""
+            print(
+                f"    {vm.name:<8} {role:<9} {vm.static_ip:<15} "
+                f"{vm.memory_mib}MiB / {vm.vcpu} vCPU{disk}  [{state}]"
+            )
+    print("\nDRY RUN — nothing was created, started, joined, or written.")
+
+
 if __name__ == "__main__":
+    # ⚠️ WHY THIS PARSES ARGUMENTS AT ALL.
+    # It did not until 2026-09-10: every argument, INCLUDING `--help`, was
+    # silently ignored while the fleet was provisioned. This script creates
+    # VMs, mints join tokens and rewrites the operator's kubeconfig, so
+    # `--help` being indistinguishable from running it was the worst instance
+    # of that defect in this repository.
+    #
+    # argparse also REJECTS unknown arguments, which is the half that matters
+    # most: a mistyped flag now fails instead of building a cluster.
+    #
+    # description= is EXPLICIT rather than `__doc__`, because the
+    # `"exec" "$(...)"` shebang line above is a run of adjacent string literals
+    # that Python concatenates into the module docstring.
+    _parser = argparse.ArgumentParser(
+        description="Idempotent k0s VM fleet provisioner."
+    )
+    _parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the fleet plan and create nothing",
+    )
+    _args = _parser.parse_args()
+    siteconfig.refuse_if_root("./provision.py")
     try:
+        if _args.dry_run:
+            plan()
+            sys.exit(0)
         main()
     except RuntimeError as e:
         print(f"ERROR: {e}", file=sys.stderr)

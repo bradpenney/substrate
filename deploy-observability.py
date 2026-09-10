@@ -1422,7 +1422,16 @@ def deploy(host, cfg, dry_run: bool) -> None:
 
 def main() -> int:
     """Deploy to every hypervisor."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        # ⚠️ EXPLICIT, not `__doc__`. The `"exec" "$(...)"` shebang trick at the
+        # top of this file is a run of ADJACENT STRING LITERALS, which Python
+        # concatenates into the module docstring — so `__doc__` is a shell
+        # fragment, and `--help` advertised
+        #     exec$(cd $(dirname $0); pwd)/.venv/bin/python3-u$0$@
+        # on four of this repo's operational tools until 2026-09-10.
+        description="Deploy the host-tier observability stack "
+        "(VictoriaMetrics, VictoriaLogs, Grafana).",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",

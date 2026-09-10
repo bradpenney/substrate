@@ -20,6 +20,7 @@ cluster-admin is a monitor that will be run as root forever.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -774,4 +775,17 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # ⚠️ NO --dry-run HERE, AND THAT IS THE POINT.
+    # Every check in this file is a read; the tool IS a dry run. Offering the
+    # flag would imply there is a mode that writes, and the whole design is
+    # that there is not (ADR-071 — a monitor that needs cluster-admin is a
+    # monitor that will be run as root forever).
+    #
+    # argparse exists so `--help` prints usage and exits WITHOUT running the
+    # checks, and so an unknown argument is rejected rather than ignored.
+    # Until 2026-09-10 three scripts here parsed nothing at all, and on the two
+    # that WRITE, `--help` was indistinguishable from running them.
+    argparse.ArgumentParser(
+        description="Assert the cluster's security invariants still hold."
+    ).parse_args()
     sys.exit(main())

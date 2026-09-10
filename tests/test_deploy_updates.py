@@ -285,9 +285,36 @@ def test_apply_uses_a_tty_for_a_remote_sudo(remote_host, monkeypatch):
 def test_main_deploys_to_every_host(monkeypatch):
     deployed = []
     monkeypatch.setattr(du, "fetch_kubeconfig", lambda: "FAKE")
-    monkeypatch.setattr(du, "deploy", lambda host, kc: deployed.append(host.name))
-    du.main()
+    monkeypatch.setattr(
+        du, "deploy", lambda host, kc, dry_run=False: deployed.append(host.name)
+    )
+    du.main([])
     assert len(deployed) == len(hosts.HOSTS), deployed
+
+
+def test_the_dry_run_flag_reaches_every_host(monkeypatch):
+    """--dry-run must be threaded through, not merely accepted.
+
+    A flag that parses and is then ignored is worse than no flag: the operator
+    believes they previewed, and the deployment happened. Both hosts are
+    checked because a flag that reaches only the first is the same failure
+    halfway.
+    """
+    seen = []
+    monkeypatch.setattr(du, "fetch_kubeconfig", lambda: "FAKE")
+    monkeypatch.setattr(
+        du, "deploy", lambda host, kc, dry_run=False: seen.append((host.name, dry_run))
+    )
+
+    du.main(["--dry-run"])
+    assert seen and all(dry for _, dry in seen), seen
+    assert len(seen) == len(
+        hosts.HOSTS
+    ), "every host must be previewed, not just the first"
+
+    seen.clear()
+    du.main([])
+    assert seen and not any(dry for _, dry in seen), seen
 
 
 # ------------------------------------------------------------ kubeconfig fetch

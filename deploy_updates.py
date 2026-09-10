@@ -36,6 +36,8 @@ Do NOT run it under `sudo`: as root it would SSH as root, which has no key.
 
 from __future__ import annotations
 
+import argparse
+
 import io
 import shlex
 import subprocess
@@ -44,6 +46,7 @@ import tarfile
 import time
 from pathlib import Path
 
+import siteconfig
 from hosts import HOSTS, Host, ADMIN_USER
 
 REPO = Path(__file__).resolve().parent
@@ -266,7 +269,7 @@ def ntfy_topic() -> str | None:
     return None
 
 
-def deploy(host: Host, kubeconfig: str) -> None:
+def deploy(host: Host, kubeconfig: str, dry_run: bool = False) -> None:
     """Install the nightly-update machinery on one hypervisor.
 
     Builds the complete file plan first, then hands it to apply() so every
@@ -338,18 +341,64 @@ def deploy(host: Host, kubeconfig: str) -> None:
         print(f"[{host.name}] WARNING: no NTFY_TOPIC found (env or ~/homelab/.env).")
         print(f"[{host.name}]          hypervisor-update failures will NOT notify.")
 
+    if dry_run:
+        # The file PLAN is the whole of what this does — apply() only unpacks
+        # it under one sudo. Printing the plan is therefore a faithful preview
+        # rather than a summary of one.
+        print(f"[{host.name}] DRY RUN — would install {len(files)} file(s):")
+        for _data, remote, mode in files:
+            print(
+                f"[{host.name}]   /{remote}  ({oct(mode)[2:]:>4}, {len(_data)} bytes)"
+            )
+        print(f"[{host.name}] DRY RUN — would then run the installer under one sudo")
+        return
+
     apply(host, files)
     print(f"[{host.name}] deployed")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """Deploy to every hypervisor, fetching the kubeconfig once.
 
     Fetched once rather than per host so both machines get byte-identical
-    credentials — two fetches could straddle a cluster change."""
+    credentials — two fetches could straddle a cluster change.
+
+    ⚠️ WHY THIS PARSES ARGUMENTS AT ALL.
+    It did not until 2026-09-10, and every argument — INCLUDING `--help` — was
+    silently ignored and the deployment ran. `--help` is the universally safe
+    "tell me what you do without doing it", and on this script, which writes to
+    both hypervisors and enables timers, it was indistinguishable from running
+    the thing. It stopped only because sudo happened to prompt.
+
+    argparse also REJECTS unknown arguments, which is the half that matters
+    most: a typo in a flag now fails instead of deploying.
+    """
+    # Explicit, NOT `__doc__.splitlines()[0]`. The `"exec" "$(...)"` shebang
+    # trick at the top of these files is a run of ADJACENT STRING LITERALS,
+    # which Python concatenates into the module docstring — so `__doc__` is a
+    # shell fragment and `--help` advertised
+    #   exec$(cd $(dirname $0); pwd)/.venv/bin/python3-u$0$@
+    # on four of this repo's operational tools until 2026-09-10.
+    parser = argparse.ArgumentParser(
+        description="Deploy the nightly hypervisor update machinery to every hypervisor."
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the file plan for each hypervisor and change nothing",
+    )
+    # argv is a PARAMETER so main() can be called from a test without argparse
+    # reading pytest's own command line — which is exactly what broke
+    # test_main_deploys_to_every_host the moment this parser was added.
+    args = parser.parse_args(argv)
+
+    # Checked BEFORE the kubeconfig fetch, so the refusal arrives instantly
+    # instead of after an SSH round trip that fails on publickey.
+    siteconfig.refuse_if_root("python3 deploy_updates.py")
+
     kubeconfig = fetch_kubeconfig()
     for host in HOSTS:
-        deploy(host, kubeconfig)
+        deploy(host, kubeconfig, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

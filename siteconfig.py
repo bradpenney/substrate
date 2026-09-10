@@ -373,3 +373,34 @@ def resolve_ssh_public_key() -> str:
     ):
         raise SystemExit(f"{path} does not look like an SSH public key: {key[:40]!r}")
     return key
+
+
+def refuse_if_root(tool: str) -> None:
+    """Refuse to run privileged, with the REASON rather than the symptom.
+
+    Every tool here that touches another machine stages as the ordinary user
+    over SSH and escalates exactly once, for an installer (ADR-078). Run whole
+    under `sudo` they resolve $HOME to /root, find no admin SSH key and no
+    ssh-agent, and fail with:
+
+        brad@192.168.2.200: Permission denied (publickey).
+
+    That names the symptom and not the cause, and it arrives only after the
+    first connection attempt. This refuses immediately and says which mistake
+    was made — earned on 2026-09-10, when `sudo deploy_updates.py --dry-run`
+    produced exactly that publickey error and the script knew perfectly well
+    why, in a docstring nobody reads at the moment of failure.
+
+    Args:
+        tool: how to invoke it correctly, shown in the message.
+    """
+    if os.geteuid() != 0:
+        return
+    raise SystemExit(
+        "Do not run this under sudo.\n"
+        "  It stages as YOU over SSH and escalates once, for the installer\n"
+        "  alone (ADR-078). As root it SSHes as root, which has no key here,\n"
+        "  and fails with 'Permission denied (publickey)'.\n"
+        f"  Run:  {tool}\n"
+        "  It will prompt for sudo itself, at most once per host."
+    )
