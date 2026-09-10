@@ -14,6 +14,9 @@ path = "src/main.rs"
 substrate-core = { path = "../substrate-core" }
 clap.workspace = true
 anyhow.workspace = true
+# posture-check parses kubectl's JSON. The workspace already pins it for
+# substrate-core, so this adds no new dependency to the tree.
+serde_json.workspace = true
 
 [dev-dependencies]
 serde.workspace = true

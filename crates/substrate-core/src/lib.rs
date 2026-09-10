@@ -6,6 +6,8 @@
 //! `virsh` calls or a boot wait.
 
 pub mod config;
+pub mod jit;
+pub mod posture;
 pub mod render;
 pub mod versions;
 

@@ -1164,3 +1164,101 @@ def test_the_pvc_rule_documents_that_it_cannot_see_unmounted_volumes(dobs):
     """
     rule = {r["uid"]: r for r in dobs.ALERT_RULES}["pvc-nearly-full"]
     assert "MOUNTED" in rule["runbook"] or "mounted" in rule["runbook"]
+
+
+DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "observability-host/dashboards"
+
+
+def _dashboards():
+    import json
+
+    return {p.stem: json.loads(p.read_text()) for p in DASHBOARD_DIR.glob("*.json")}
+
+
+def test_every_dashboard_is_valid_json_with_a_stable_uid():
+    """A dashboard is provisioned BY UID.
+
+    Change the uid and Grafana creates a second copy rather than updating the
+    first, leaving two dashboards with the same title and no indication which
+    one anybody has bookmarked.
+    """
+    boards = _dashboards()
+    assert boards, "no dashboards found — the provisioning payload would be empty"
+    uids = [b["uid"] for b in boards.values()]
+    assert len(uids) == len(set(uids)), f"duplicate dashboard uids: {uids}"
+    for name, b in boards.items():
+        assert b.get("title"), f"{name} has no title"
+        assert b.get("panels"), f"{name} has no panels"
+
+
+def test_dashboards_only_reference_datasources_that_exist():
+    """A panel pointing at a datasource uid that was never provisioned renders
+    an error box, not a graph — and it renders it for every viewer, forever,
+    while the dashboard still 'exists'.
+
+    The two uids here are the ones deploy-observability.py provisions.
+    """
+    provisioned = {"victoriametrics", "victorialogs"}
+    seen = set()
+
+    def walk(o):
+        if isinstance(o, dict):
+            ds = o.get("datasource")
+            if isinstance(ds, dict) and ds.get("uid"):
+                seen.add(ds["uid"])
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+
+    for name, b in _dashboards().items():
+        walk(b)
+    unknown = seen - provisioned
+    assert not unknown, f"dashboards reference undeclared datasources: {unknown}"
+
+
+def test_the_cronjob_staleness_panel_exists_and_is_time_based():
+    """The panel the whole k8s-state dashboard was built for.
+
+    Two backup CronJobs were found broken by hand on 2026-09-09 — one had never
+    succeeded, one was deadlocked 42 hours — because no metric in the fleet
+    could report a CronJob's last success. If this panel is ever deleted or
+    quietly rewritten to show something cheaper (a count of jobs, say), that
+    blind spot reopens and nothing else covers it.
+    """
+    board = _dashboards()["k8s-state"]
+    exprs = [
+        tgt.get("expr", "") for p in board["panels"] for tgt in p.get("targets", [])
+    ]
+    staleness = [e for e in exprs if "kube_cronjob_status_last_successful_time" in e]
+    assert staleness, "the CronJob staleness panel is gone"
+    assert any("time()" in e for e in staleness), (
+        "the panel must measure AGE (time() - last_success), not the raw "
+        "timestamp — a unix epoch rendered as a number tells nobody anything"
+    )
+
+
+def test_panels_that_have_a_known_blind_spot_say_so():
+    """The PVC panel cannot see unmounted volumes, and that must stay written
+    down where a reader will meet it.
+
+    kubelet reports a volume only while a pod on that node has it mounted, so a
+    PVC used by a short-lived CronJob is absent between runs — four PVCs
+    existed on 2026-09-10 and three had series. A reader who assumes this
+    watches every volume will be wrong, and the reason this panel exists at all
+    is that an unread metric let a volume approach full unnoticed.
+    """
+    board = _dashboards()["k8s-state"]
+    pvc = [
+        p
+        for p in board["panels"]
+        if any(
+            "kubelet_volume_stats_used_bytes" in t.get("expr", "")
+            for t in p.get("targets", [])
+        )
+    ]
+    assert pvc, "the PVC usage panel is gone"
+    assert any(
+        "MOUNTED" in p.get("description", "") for p in pvc
+    ), "the mounted-only caveat must stay on the panel description"

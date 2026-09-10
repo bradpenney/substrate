@@ -1,0 +1,1 @@
+{"action": "grant", "at": "2026-09-10T12:30:00Z", "host": "golden-host", "invoker": "brad", "reason": "he said \"fix it\" C:\\temp", "subject": "brad"}

@@ -1,0 +1,544 @@
+{
+  "uid": "app-health",
+  "title": "Application Health",
+  "tags": [
+    "applications",
+    "red",
+    "generated"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoriametrics"
+        },
+        "query": {
+          "query": "label_values(kube_namespace_created, namespace)",
+          "refId": "ns"
+        },
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "sort": 1,
+        "description": "Sourced from kube-state-metrics, so it lists namespaces that EXIST rather than only those that happen to be emitting a metric right now."
+      },
+      {
+        "name": "router",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoriametrics"
+        },
+        "query": {
+          "query": "label_values(traefik_router_requests_total, router)",
+          "refId": "rt"
+        },
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {},
+        "sort": 1,
+        "description": "Traefik router names. These only appear once a route has served a request."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Traffic \u2014 measured at the proxy, not in the app",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by router",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (router) (rate(traefik_router_requests_total{router=~\"$router\"}[5m]))",
+          "legendFormat": "{{router}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "min": 0,
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "From Traefik, not from the applications. PocketBase serves /metrics as 404; Wanderer's web tier and donetick both return their SPA index.html for it \u2014 a 200 that is not metrics. All three are upstream code. The proxy sees every request to them anyway, so this is the only place RED metrics can come from."
+    },
+    {
+      "type": "timeseries",
+      "title": "Error rate by router (5xx)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (router) (rate(traefik_router_requests_total{router=~\"$router\",code=~\"5..\"}[5m]))",
+          "legendFormat": "{{router}} 5xx",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (router) (rate(traefik_router_requests_total{router=~\"$router\",code=~\"4..\"}[5m]))",
+          "legendFormat": "{{router}} 4xx",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "min": 0,
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "4xx is plotted alongside deliberately. A spike in 404s after a deploy is a broken asset path, not a client problem, and separating them at read time is how that gets missed."
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency by router \u2014 p50 / p95 / p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "histogram_quantile(0.50, sum by (router,le) (rate(traefik_router_request_duration_seconds_bucket{router=~\"$router\"}[5m])))",
+          "legendFormat": "{{router}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "histogram_quantile(0.95, sum by (router,le) (rate(traefik_router_request_duration_seconds_bucket{router=~\"$router\"}[5m])))",
+          "legendFormat": "{{router}} p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "histogram_quantile(0.99, sum by (router,le) (rate(traefik_router_request_duration_seconds_bucket{router=~\"$router\"}[5m])))",
+          "legendFormat": "{{router}} p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "min": 0,
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Quantiles over a HISTOGRAM, not an average. A mean latency of 200ms is equally consistent with every request taking 200ms and with 95% taking 20ms while 5% take 4s \u2014 and only the second is a problem worth waking up for."
+    },
+    {
+      "type": "row",
+      "title": "Resources \u2014 per container, from cadvisor",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory working set vs limit",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=~\"$namespace\",container!=\"\",container!=\"POD\"})",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "min by (pod) (container_spec_memory_limit_bytes{namespace=~\"$namespace\",container!=\"\",container!=\"POD\"} > 0)",
+          "legendFormat": "{{pod}} limit",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "min": 0,
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Working set, not RSS \u2014 it is what the OOM killer actually decides on. The limit series is plotted beside it because a memory graph without its ceiling cannot tell you whether a number is fine or one step from a kill."
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU usage",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\",container!=\"\",container!=\"POD\"}[5m]))",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "min": 0,
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "1.0 = one full core."
+    },
+    {
+      "type": "row",
+      "title": "State \u2014 from kube-state-metrics, which nothing else reports",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Replicas: desired vs available",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (deployment) (kube_deployment_spec_replicas{namespace=~\"$namespace\"})",
+          "legendFormat": "{{deployment}} desired",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (deployment) (kube_deployment_status_replicas_available{namespace=~\"$namespace\"})",
+          "legendFormat": "{{deployment}} available",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "A Deployment reporting Ready in kubectl can still be one replica short of what it asked for. Neither cadvisor nor the kubelet can say so."
+    },
+    {
+      "type": "timeseries",
+      "title": "Container restarts (rate)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "sum by (pod,container) (increase(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[1h]))",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "last",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Restarts per hour. A pod that crash-loops and recovers looks perfectly healthy in a point-in-time check \u2014 this is the panel that catches it."
+    },
+    {
+      "type": "row",
+      "title": "Logs \u2014 same time range, so a spike above has its lines below",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "logs",
+      "title": "Errors and warnings",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "victorialogs"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "victoriametrics-logs-datasource",
+            "uid": "victorialogs"
+          },
+          "expr": "{kubernetes.pod_namespace=~\"$namespace\"} error OR ERROR OR warn OR WARN OR fatal OR panic",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "description": "Filtered to error-shaped lines on purpose. The full stream for a busy namespace buries the one line that matters. Widen the query in the panel when hunting something specific."
+    }
+  ],
+  "description": "RED metrics for applications this platform does not own. Rate/Errors/Duration come from Traefik because PocketBase, Wanderer's web tier and donetick expose no metrics of their own; resources come from cadvisor; object state from kube-state-metrics; logs from VictoriaLogs. Built 2026-09-10."
+}
