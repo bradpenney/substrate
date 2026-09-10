@@ -16,6 +16,21 @@ After=nextcloud-backup.service
 
 [Service]
 Type=oneshot
+# 75 (EX_TEMPFAIL) means "the gates refused; try again tomorrow", NOT a fault.
+#
+# WITHOUT THIS the whole change is inert: the script would exit 75, systemd
+# would still call that a failure, the unit would still go degraded and
+# OnFailure= above would still fire. The two halves are one change.
+#
+# Before 2026-09-10 every refusal exited 1, so a safety gate WORKING was
+# indistinguishable from dnf breaking. On 2026-09-10 server1 correctly declined
+# to reboot while server2 was mid-reboot, and that produced: a failed unit, an
+# ntfy page, a posture-check reporting a BROKEN security invariant, and
+# posture-check marking itself failed as a result (ADR-165).
+#
+# Faults still exit 1 and still page: dnf failing, the peer being unreachable,
+# a stale local lock, or the cluster being unreachable to verify at all.
+SuccessExitStatus=75
 # PEER_HOST and KUBECONFIG_PATH come from here; written per-host by
 # deploy-updates.sh since each hypervisor's peer is the other one.
 EnvironmentFile=/etc/homelab/update.env

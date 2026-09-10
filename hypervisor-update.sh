@@ -55,6 +55,40 @@ kubectl_q() {
     KUBECONFIG="$KUBECONFIG_PATH" kubectl --request-timeout=15s "$@" 2>/dev/null
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TWO KINDS OF NOT-REBOOTING, AND THEY MUST NOT LOOK THE SAME.
+#
+# This script has two outcomes where it correctly does NOT reboot:
+#
+#   "no reboot required"          -> exit 0   already reported as success
+#   "reboot needed, not safe now" -> exit 1   reported as FAILURE, until 2026-09-10
+#
+# Both are the script doing its job. Only one was reported as such, and the
+# consequences were not cosmetic: a deferral marked the unit failed, fired
+# OnFailure -> ntfy, and made posture-check report a BROKEN security invariant —
+# which then marked posture-check itself failed, so its own failure became one of
+# its findings on the next run.
+#
+# The safety gates are SUPPOSED to fire regularly. Two hypervisors on nightly
+# timers collide as a matter of course, and one event trips three gates at once:
+# while the peer reboots, its lock is present, its VMs are not running, and its
+# cluster nodes are not Ready.
+#
+# The real cost was lost signal. "hypervisor-update failed" meant either "your
+# peer was rebooting" or "dnf broke and this host has been unpatched for a week",
+# and nothing distinguished them. ADR-119 records what happens next: an alert
+# that fires on normal operation is one people learn to ignore.
+#
+# 75 is EX_TEMPFAIL from sysexits.h — "transient, retry later" — and the unit
+# carries SuccessExitStatus=75 so a deferral is a clean exit. Nothing about WHEN
+# this reboots has changed; the gates fire on exactly the same conditions and
+# refuse exactly as often. Only the reporting changed.
+#
+# ⚠️ If you add a gate, decide which of the two it is. A new `exit 1` on a
+# condition that is merely normal-but-not-now reopens this.
+DEFERRED=75
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ---------------------------------------------------------------- updates ---
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -87,8 +121,9 @@ if ! ssh_peer true; then
 fi
 
 if ssh_peer "test -e $LOCK_FILE"; then
-    log "ABORT: peer $PEER_HOST is mid-reboot (lock present) — refusing to reboot simultaneously"
-    exit 1
+    log "DEFER: peer $PEER_HOST is mid-reboot (lock present) — refusing to reboot simultaneously"
+    # The gate working. The peer reboots nightly; this is the expected collision.
+    exit "$DEFERRED"
 fi
 
 # Peer's VMs must all be running. If the peer hosts no VMs yet (server1 today)
@@ -100,8 +135,9 @@ peer_not_running=$(ssh_peer "virsh -c qemu:///system list --all --name" \
           [[ "$state" != "running" ]] && echo "$vm"
       done)
 if [[ -n "$peer_not_running" ]]; then
-    log "ABORT: peer has VMs not running: $peer_not_running"
-    exit 1
+    log "DEFER: peer has VMs not running: $peer_not_running"
+    # Usually the same event as the line above, seen from a different angle.
+    exit "$DEFERRED"
 fi
 
 # Cluster must be fully healthy: at least one node, and none NotReady.
@@ -112,9 +148,12 @@ if [[ -z "$nodes" ]]; then
 fi
 not_ready=$(echo "$nodes" | awk '$2!="Ready"')
 if [[ -n "$not_ready" ]]; then
-    log "ABORT: cluster has non-Ready nodes:"
+    log "DEFER: cluster has non-Ready nodes:"
     log "$not_ready"
-    exit 1
+    # A node that is briefly NotReady is ordinary — a peer reboot, a kubelet
+    # restart, a drain in flight. Rebooting into it is what must not happen;
+    # being told about it every time is not.
+    exit "$DEFERRED"
 fi
 log "gates passed: peer healthy, all $(echo "$nodes" | wc -l) cluster nodes Ready"
 
@@ -154,8 +193,9 @@ if systemctl is-active --quiet "$BACKUP_UNIT"; then
             waited=$(( waited + 30 ))
         done
         if systemctl is-active --quiet "$BACKUP_UNIT"; then
-            log "ABORT: $BACKUP_UNIT still running after ${waited}s — refusing to reboot"
-            exit 1
+            log "DEFER: $BACKUP_UNIT still running after ${waited}s — refusing to reboot"
+            # The interlock holding. A long backup is normal, not a fault.
+            exit "$DEFERRED"
         fi
         log "$BACKUP_UNIT finished after ${waited}s — continuing"
     fi
