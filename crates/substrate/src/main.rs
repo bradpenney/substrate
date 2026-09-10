@@ -39,6 +39,8 @@ enum Command {
     /// agree. Until all thirteen are ported, posture-check.py remains the
     /// one that runs on the timer.
     PostureCheck,
+    /// Provision the k0s VM fleet. Idempotent. WRITES — see --apply.
+    Provision(ProvisionArgs),
     /// Render one node's cloud-config to stdout. Read-only.
     Render(RenderArgs),
 }
@@ -78,6 +80,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Render(args) => render(&cli.repo, args),
         Command::PostureCheck => posture_check(&cli.repo),
+        Command::Provision(args) => provision(&cli.repo, args),
     }
 }
 
@@ -232,6 +235,34 @@ fn render(repo: &std::path::Path, args: RenderArgs) -> Result<()> {
         std::process::exit(2);
     }
 
+    // $SUBSTRATE_JOIN_TOKEN is the way a CALLER should pass a REAL token.
+    //
+    // A join token grants cluster membership. Passed as `--join-token`, it
+    // lands in /proc/<pid>/cmdline, which is world-readable — so every local
+    // user on the provisioning host can read it for as long as the process
+    // lives, and it reaches the shell history and any process listing. The
+    // flag is kept because the goldens and the archetypes use a dummy token
+    // and argv is clearer there, but automation must not use it.
+    //
+    // Read here, not in the renderer: same reason as the SSH key below — the
+    // renderer stays a pure function of its inputs, which is what the goldens
+    // depend on.
+    //
+    // The flag wins if both are set, so an explicit argument is never silently
+    // overridden by a stale exported variable.
+    let join_token = args.join_token.clone().or_else(|| {
+        std::env::var("SUBSTRATE_JOIN_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty())
+    });
+    if args.bootstrap && join_token.is_some() {
+        eprintln!(
+            "error: --bootstrap was given but $SUBSTRATE_JOIN_TOKEN is set. \
+             The bootstrap node joins nothing; unset it or drop --bootstrap."
+        );
+        std::process::exit(2);
+    }
+
     // Read from the environment here rather than inside the renderer: the key
     // lands in the output, so a renderer that reaches for ambient state is not
     // a pure function of its inputs — which is what the goldens rely on.
@@ -253,7 +284,7 @@ fn render(repo: &std::path::Path, args: RenderArgs) -> Result<()> {
         storage_disk_gb: args.storage_disk_gb,
     };
 
-    let out = substrate_core::render::cloud_config(&cfg, &vm, args.join_token.as_deref(), &ssh_key);
+    let out = substrate_core::render::cloud_config(&cfg, &vm, join_token.as_deref(), &ssh_key);
     // Write the bytes as they are. `println!` would add a newline the renderer
     // already emitted and put every golden one byte out.
     std::io::stdout().write_all(out.as_bytes())?;
@@ -570,4 +601,64 @@ fn port_reachable_from(prober: &str, host: &str, port: u16) -> Option<bool> {
         // firewall as verified on the strength of a broken probe.
         _ => None,
     }
+}
+
+#[derive(clap::Args, Debug)]
+struct ProvisionArgs {
+    /// Actually build. Without it, print the plan and touch nothing.
+    ///
+    /// Safe by DEFAULT, the same shape as deploy-cplb.py: this creates VMs,
+    /// mints join tokens and rewrites the operator's kubeconfig, so the
+    /// dangerous thing is the one you have to ask for. `provision.py` chose the
+    /// opposite default (`--dry-run` opts OUT of building) — kept there for
+    /// compatibility with muscle memory and scripts, corrected here because
+    /// this is a new entry point with no callers to break.
+    #[arg(long)]
+    apply: bool,
+}
+
+/// Refuse to run privileged, with the REASON rather than the symptom.
+///
+/// Ported from `siteconfig.refuse_if_root`. Every tool here stages as the
+/// ordinary user over SSH and escalates exactly once, for an installer
+/// (ADR-078). Run whole under `sudo` it resolves $HOME to /root, finds no admin
+/// SSH key and no ssh-agent, and fails with `Permission denied (publickey)` —
+/// which names the symptom, not the cause, and only after the first connection
+/// attempt.
+fn refuse_if_root(tool: &str) {
+    // SAFETY: geteuid is always safe; it reads a process property and cannot
+    // fail. Avoiding a `nix`/`libc` dependency keeps the static-musl build the
+    // installer depends on unchanged.
+    let euid = unsafe { libc_geteuid() };
+    if euid != 0 {
+        return;
+    }
+    eprintln!(
+        "Do not run this under sudo.\n  \
+         It stages as YOU over SSH and escalates once, for the installer\n  \
+         alone (ADR-078). As root it SSHes as root, which has no key here,\n  \
+         and fails with 'Permission denied (publickey)'.\n  \
+         Run:  {tool}\n  \
+         It will prompt for sudo itself, at most once per host."
+    );
+    std::process::exit(2);
+}
+
+unsafe extern "C" {
+    #[link_name = "geteuid"]
+    fn libc_geteuid() -> u32;
+}
+
+fn provision(repo: &std::path::Path, args: ProvisionArgs) -> Result<()> {
+    refuse_if_root("substrate provision --apply");
+    let cfg = substrate_core::load(repo)?;
+    if !args.apply {
+        return substrate_core::provision::plan(&cfg);
+    }
+    // Same refusal as `render`: a provisioner that guesses the admin key builds
+    // a fleet nobody can log into, discovered after it exists.
+    let ssh_key = ssh_public_key().context(
+        "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
+    )?;
+    substrate_core::provision::provision_fleet(&cfg, &ssh_key)
 }
