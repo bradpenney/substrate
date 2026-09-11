@@ -41,6 +41,20 @@ enum Command {
     PostureCheck,
     /// Provision the k0s VM fleet. Idempotent. WRITES — see --apply.
     Provision(ProvisionArgs),
+    /// DESTROY the whole fleet: VMs, disks, seed ISOs, host keys. See --yes.
+    Wipe(WipeArgs),
+    /// DESTROY the fleet and provision it again from nothing. See --yes.
+    Rebuild(WipeArgs),
+    /// Assert the 10 rebuild-gate criteria against the live cluster. Read-only.
+    Verify,
+    /// Print the cluster's comparable end state (JSON). Read-only.
+    Fingerprint(FingerprintArgs),
+    /// Compare two saved fingerprints — the actual rebuild proof. Read-only.
+    Compare(CompareArgs),
+    /// DESTRUCTIVE (one node at a time): rebuild nodes onto the pinned image.
+    Roll(RollArgs),
+    /// Architecture: check conformance and render diagrams. Read-only.
+    Architecture(ArchArgs),
     /// Render one node's cloud-config to stdout. Read-only.
     Render(RenderArgs),
 }
@@ -81,6 +95,13 @@ fn main() -> Result<()> {
         Command::Render(args) => render(&cli.repo, args),
         Command::PostureCheck => posture_check(&cli.repo),
         Command::Provision(args) => provision(&cli.repo, args),
+        Command::Wipe(args) => wipe(&cli.repo, args),
+        Command::Rebuild(args) => rebuild(&cli.repo, args),
+        Command::Verify => verify(&cli.repo),
+        Command::Fingerprint(args) => fingerprint(&cli.repo, args),
+        Command::Compare(args) => compare(&cli.repo, args),
+        Command::Roll(args) => roll(&cli.repo, args),
+        Command::Architecture(args) => architecture(args),
     }
 }
 
@@ -661,4 +682,234 @@ fn provision(repo: &std::path::Path, args: ProvisionArgs) -> Result<()> {
         "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
     )?;
     substrate_core::provision::provision_fleet(&cfg, &ssh_key)
+}
+
+#[derive(clap::Args, Debug)]
+struct WipeArgs {
+    /// Actually destroy. Without it, print exactly what would go — every VM,
+    /// every disk volume by path, every seed ISO — and touch nothing.
+    ///
+    /// Same shape as `provision --apply`: the dangerous thing is the one you
+    /// have to ask for. Named `--yes` rather than `--apply` because "apply a
+    /// wipe" reads as a euphemism, and this is the one command in the binary
+    /// whose whole job is to destroy.
+    #[arg(long)]
+    yes: bool,
+}
+
+fn wipe(repo: &std::path::Path, args: WipeArgs) -> Result<()> {
+    refuse_if_root("substrate wipe --yes");
+    let cfg = substrate_core::load(repo)?;
+    substrate_core::wipe::wipe(&cfg, !args.yes);
+    Ok(())
+}
+
+/// Wipe, then provision — the whole rebuild in one binary.
+///
+/// This is the command the rebuild gate exercises. The two halves are kept as
+/// separate modules (the build path never destroys, the destroy path never
+/// builds) and composed only here, so that neither can be reached through the
+/// other by accident. Verification of the result is a separate, read-only
+/// step (`gate.py verify` until that is ported).
+fn rebuild(repo: &std::path::Path, args: WipeArgs) -> Result<()> {
+    refuse_if_root("substrate rebuild --yes");
+    let cfg = substrate_core::load(repo)?;
+    if !args.yes {
+        substrate_core::wipe::wipe(&cfg, true);
+        println!();
+        substrate_core::provision::plan(&cfg)?;
+        // `plan` reads LIVE state, so on an existing fleet it says
+        // "would reconcile". After the wipe above there is nothing to
+        // reconcile; say so rather than let the preview contradict itself.
+        println!("(after the wipe, every VM above is CREATED — none is reconciled)");
+        return Ok(());
+    }
+    // Resolve the key BEFORE destroying anything: a rebuild that wipes the
+    // fleet and then discovers it has no admin key to build with has turned a
+    // configuration error into an outage.
+    let ssh_key = ssh_public_key().context(
+        "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
+    )?;
+    substrate_core::wipe::wipe(&cfg, false);
+    println!(
+        "
+=== rebuilding ==="
+    );
+    substrate_core::provision::provision_fleet(&cfg, &ssh_key)
+}
+
+#[derive(clap::Args, Debug)]
+struct FingerprintArgs {
+    /// Also write it to .fingerprints/<METHOD>.json for `compare`.
+    #[arg(long, value_name = "METHOD")]
+    save: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+struct CompareArgs {
+    /// Name of a saved fingerprint (e.g. python, ansible, rust).
+    a: String,
+    b: String,
+}
+
+#[derive(clap::Args, Debug)]
+struct RollArgs {
+    /// Actually replace nodes. Without it, list what would be rolled.
+    #[arg(long)]
+    yes: bool,
+    /// Roll only this node (default: the whole fleet, one at a time).
+    #[arg(long)]
+    node: Option<String>,
+}
+
+/// Where fingerprints live: beside site.yml, as `gate.py` kept them, so the
+/// python/ansible ones already saved there remain comparable.
+fn fingerprint_dir(repo: &std::path::Path) -> PathBuf {
+    repo.join(".fingerprints")
+}
+
+fn exit_with(ok: bool) -> Result<()> {
+    if ok { Ok(()) } else { std::process::exit(1) }
+}
+
+/// The verifying half of the rebuild gate. Read-only: it reaches the cluster
+/// through the bootstrap node's `k0s kubectl` and never creates or destroys
+/// anything but its own DNS probe pod. Exit 0 means every criterion held.
+fn verify(repo: &std::path::Path) -> Result<()> {
+    let cfg = substrate_core::load(repo)?;
+    let gate = substrate_core::gate::Gate::new(&cfg)?;
+    exit_with(gate.verify())
+}
+
+fn fingerprint(repo: &std::path::Path, args: FingerprintArgs) -> Result<()> {
+    let cfg = substrate_core::load(repo)?;
+    let gate = substrate_core::gate::Gate::new(&cfg)?;
+    if let Some(method) = args.save {
+        gate.save_fingerprint(&fingerprint_dir(repo), &method)?;
+    }
+    print!(
+        "{}",
+        substrate_core::gate::fingerprint_json(&gate.fingerprint()?)
+    );
+    Ok(())
+}
+
+fn compare(repo: &std::path::Path, args: CompareArgs) -> Result<()> {
+    exit_with(substrate_core::gate::compare_saved(
+        &fingerprint_dir(repo),
+        &args.a,
+        &args.b,
+    ))
+}
+
+fn roll(repo: &std::path::Path, args: RollArgs) -> Result<()> {
+    refuse_if_root("substrate roll --yes");
+    let cfg = substrate_core::load(repo)?;
+    let gate = substrate_core::gate::Gate::new(&cfg)?;
+    if !args.yes {
+        let fleet = substrate_core::provision::Fleet::from_config(&cfg);
+        let targets: Vec<_> = fleet
+            .all_vms()
+            .filter(|(_, v)| args.node.as_deref().is_none_or(|t| t == v.name))
+            .collect();
+        if targets.is_empty() {
+            anyhow::bail!("no such node: {}", args.node.unwrap_or_default());
+        }
+        println!(
+            "DRY RUN — would roll {} node(s) onto image {}..., one at a time:",
+            targets.len(),
+            &cfg.kairos.iso_sha256[..12]
+        );
+        for (h, v) in targets {
+            println!("  {} on {}", v.name, h.name);
+        }
+        println!(
+            "
+DRY RUN — nothing was replaced. Add --yes to roll."
+        );
+        return Ok(());
+    }
+    let ssh_key = ssh_public_key().context(
+        "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
+    )?;
+    exit_with(gate.roll(args.node.as_deref(), &ssh_key))
+}
+
+#[derive(clap::Args, Debug)]
+struct ArchArgs {
+    /// Path to the CALM architecture document.
+    #[arg(
+        long,
+        default_value = "../substrate_config/architecture/homelab.arch.json"
+    )]
+    model: std::path::PathBuf,
+    /// Root of the GitOps configuration repository to check against.
+    #[arg(long, default_value = "../substrate_config")]
+    config: std::path::PathBuf,
+    /// Write D2 view sources to this directory.
+    #[arg(long)]
+    render: Option<std::path::PathBuf>,
+}
+
+/// Architecture Driven Design: the model is checked, and the diagrams come from
+/// the model. Read-only in every mode.
+fn architecture(args: ArchArgs) -> Result<()> {
+    use substrate_core::architecture as arch;
+    let model = arch::Architecture::load(&args.model)?;
+    println!(
+        "  model: {} nodes, {} relationships, {} flows",
+        model.nodes.len(),
+        model.relationships.len(),
+        model.flows.len()
+    );
+
+    if let Some(dir) = &args.render {
+        std::fs::create_dir_all(dir)?;
+        for view in arch::VIEWS {
+            let path = dir.join(format!("{}.d2", view.id));
+            std::fs::write(&path, model.render_d2(view))?;
+            println!("  rendered {}", path.display());
+        }
+    }
+
+    let surface = arch::deployed_surface(&args.config)?;
+    let c = arch::check_conformance(&model, &surface);
+    println!(
+        "  configuration declares {} deployable component(s)",
+        surface.components.len()
+    );
+    if !c.planned.is_empty() {
+        println!(
+            "  planned (described, not yet deployed — allowed): {}",
+            c.planned.join(", ")
+        );
+    }
+    for v in &c.privacy_violations {
+        println!("  PRIVACY: {v}");
+    }
+    for u in &c.undescribed {
+        println!("  UNDESCRIBED: '{u}' is deployed but this architecture does not describe it");
+    }
+    if !c.privacy_violations.is_empty() {
+        eprintln!(
+            "\nPUBLISHABILITY VIOLATION\n  \
+             This model is rendered onto a public website. Addresses, internal\n  \
+             hostnames and credentials must never reach it — a published\n  \
+             architecture that maps a private network is worth more to an\n  \
+             attacker than it is to a reader.\n  \
+             Describe the SHAPE of the topology, never its coordinates."
+        );
+    }
+    if !c.undescribed.is_empty() {
+        eprintln!(
+            "\nARCHITECTURE DRIVEN DESIGN VIOLATION\n  \
+             Architecture may lead reality. Reality may never lead architecture.\n  \
+             Add the component to homelab.arch.json FIRST, then deploy it."
+        );
+    }
+    if !c.ok() {
+        std::process::exit(1);
+    }
+    println!("  configuration conforms to the architecture");
+    Ok(())
 }

@@ -1,0 +1,6742 @@
+{
+ "cases": [
+  {
+   "args": [
+    ""
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "  "
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "0"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "128Mi"
+   ],
+   "expected": 128,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1Gi"
+   ],
+   "expected": 1024,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1.5Gi"
+   ],
+   "expected": 1536,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "512Ki"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1023Ki"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1Ti"
+   ],
+   "expected": 1048576,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1K"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1M"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1G"
+   ],
+   "expected": 953,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "100M"
+   ],
+   "expected": 95,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1000000"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1073741824"
+   ],
+   "expected": 1024,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1073741825"
+   ],
+   "expected": 1024,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "-5Mi"
+   ],
+   "expected": -5,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "5"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "Mi"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "abcMi"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "5Ei"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1e3Mi"
+   ],
+   "expected": 1000,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "2.5Mi"
+   ],
+   "expected": 2,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "0.4Mi"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    " 64Mi "
+   ],
+   "expected": 64,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "64mi"
+   ],
+   "expected": 0,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    "1.9999Gi"
+   ],
+   "expected": 2047,
+   "fn": "parse_quantity_mib"
+  },
+  {
+   "args": [
+    {
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "64Mi"
+         }
+        }
+       },
+       {
+        "resources": {
+         "requests": {
+          "memory": "1Gi"
+         }
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "expected": 1088,
+   "fn": "pod_memory_request_mib"
+  },
+  {
+   "args": [
+    {
+     "spec": {
+      "containers": [
+       {}
+      ]
+     }
+    }
+   ],
+   "expected": 0,
+   "fn": "pod_memory_request_mib"
+  },
+  {
+   "args": [
+    {
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "64Mi"
+         }
+        }
+       },
+       {},
+       {
+        "resources": {
+         "requests": {
+          "memory": "abc"
+         }
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "expected": 64,
+   "fn": "pod_memory_request_mib"
+  },
+  {
+   "args": [
+    {
+     "spec": {}
+    }
+   ],
+   "expected": 0,
+   "fn": "pod_memory_request_mib"
+  },
+  {
+   "args": [
+    {}
+   ],
+   "expected": 0,
+   "fn": "pod_memory_request_mib"
+  },
+  {
+   "args": [
+    0.0
+   ],
+   "expected": "0%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.5
+   ],
+   "expected": "50%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.005
+   ],
+   "expected": "0%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.125
+   ],
+   "expected": "12%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.8
+   ],
+   "expected": "80%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.805
+   ],
+   "expected": "80%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.91
+   ],
+   "expected": "91%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    1.0
+   ],
+   "expected": "100%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.6666666666666666
+   ],
+   "expected": "67%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.995
+   ],
+   "expected": "100%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.245
+   ],
+   "expected": "24%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    0.255
+   ],
+   "expected": "26%",
+   "fn": "pct0"
+  },
+  {
+   "args": [
+    "s1-vm1"
+   ],
+   "expected": "'s1-vm1'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    ""
+   ],
+   "expected": "''",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "it's"
+   ],
+   "expected": "\"it's\"",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "say \"hi\""
+   ],
+   "expected": "'say \"hi\"'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "both ' and \""
+   ],
+   "expected": "'both \\' and \"'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "tab\there"
+   ],
+   "expected": "'tab\\there'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "new\nline"
+   ],
+   "expected": "'new\\nline'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "back\\slash"
+   ],
+   "expected": "'back\\\\slash'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "ünïcode"
+   ],
+   "expected": "'ünïcode'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    "\u0001ctl"
+   ],
+   "expected": "'\\x01ctl'",
+   "fn": "py_repr_str"
+  },
+  {
+   "args": [
+    null
+   ],
+   "expected": "None",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    true
+   ],
+   "expected": "True",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    false
+   ],
+   "expected": "False",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    0
+   ],
+   "expected": "0",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    -3
+   ],
+   "expected": "-3",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    5
+   ],
+   "expected": "5",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    "x"
+   ],
+   "expected": "'x'",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    [
+     "a",
+     1,
+     null
+    ]
+   ],
+   "expected": "['a', 1, None]",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    {
+     "k": "v",
+     "n": [
+      1,
+      2
+     ]
+    }
+   ],
+   "expected": "{'k': 'v', 'n': [1, 2]}",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    []
+   ],
+   "expected": "[]",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    {}
+   ],
+   "expected": "{}",
+   "fn": "py_repr"
+  },
+  {
+   "args": [
+    "kube-system",
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "a",
+        "namespace": "kube-system"
+       },
+       "status": {
+        "containerStatuses": [
+         {
+          "ready": true
+         }
+        ],
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "b",
+        "namespace": "kube-system"
+       },
+       "status": {
+        "containerStatuses": [
+         {
+          "ready": true
+         }
+        ],
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "d"
+       },
+       "status": {
+        "desiredNumberScheduled": 5,
+        "numberReady": 5
+       }
+      }
+     ]
+    }
+   ],
+   "expected": [],
+   "fn": "unhealthy_in_namespace"
+  },
+  {
+   "args": [
+    "kube-system",
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "a",
+        "namespace": "kube-system"
+       },
+       "status": {
+        "containerStatuses": [
+         {
+          "ready": false
+         }
+        ],
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "items": []
+    }
+   ],
+   "expected": [
+    "kube-system/a (Running, 0/1 ready)"
+   ],
+   "fn": "unhealthy_in_namespace"
+  },
+  {
+   "args": [
+    "kube-system",
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "a",
+        "namespace": "kube-system"
+       },
+       "status": {
+        "containerStatuses": [],
+        "phase": "Pending"
+       }
+      }
+     ]
+    },
+    {
+     "items": []
+    }
+   ],
+   "expected": [
+    "kube-system/a (Pending, 0/0 ready)"
+   ],
+   "fn": "unhealthy_in_namespace"
+  },
+  {
+   "args": [
+    "kube-system",
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "job",
+        "namespace": "kube-system"
+       },
+       "status": {
+        "containerStatuses": [
+         {
+          "ready": true
+         }
+        ],
+        "phase": "Succeeded"
+       }
+      }
+     ]
+    },
+    {
+     "items": []
+    }
+   ],
+   "expected": [],
+   "fn": "unhealthy_in_namespace"
+  },
+  {
+   "args": [
+    "kube-system",
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "a",
+        "namespace": "kube-system"
+       },
+       "status": {
+        "containerStatuses": [
+         {
+          "ready": true
+         }
+        ],
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "d"
+       },
+       "status": {
+        "desiredNumberScheduled": 5,
+        "numberReady": 4
+       }
+      },
+      {
+       "metadata": {
+        "name": "e"
+       },
+       "status": {}
+      },
+      {
+       "metadata": {
+        "name": "f"
+       },
+       "status": {
+        "desiredNumberScheduled": 0,
+        "numberReady": 0
+       }
+      },
+      {
+       "metadata": {
+        "name": "g"
+       },
+       "status": {
+        "desiredNumberScheduled": 3
+       }
+      }
+     ]
+    }
+   ],
+   "expected": [
+    "kube-system/daemonset/d (4/5 scheduled-and-ready)",
+    "kube-system/daemonset/e (?/? scheduled-and-ready)",
+    "kube-system/daemonset/f (0/0 scheduled-and-ready)",
+    "kube-system/daemonset/g (?/3 scheduled-and-ready)"
+   ],
+   "fn": "unhealthy_in_namespace"
+  },
+  {
+   "args": [
+    "kube-system",
+    {
+     "items": [
+      {
+       "metadata": {},
+       "status": {}
+      }
+     ]
+    },
+    {
+     "items": [
+      {
+       "metadata": {},
+       "status": {}
+      }
+     ]
+    }
+   ],
+   "expected": [
+    "kube-system/<unnamed> (None, 0/0 ready)",
+    "kube-system/daemonset/<unnamed> (?/? scheduled-and-ready)"
+   ],
+   "fn": "unhealthy_in_namespace"
+  },
+  {
+   "args": [
+    "kube-system",
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "m",
+        "namespace": "kube-system"
+       },
+       "status": {
+        "containerStatuses": [
+         {
+          "ready": true
+         },
+         {
+          "ready": true
+         },
+         {
+          "ready": true
+         }
+        ],
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "n"
+       },
+       "status": {
+        "containerStatuses": [
+         {
+          "ready": true
+         },
+         {
+          "ready": false
+         }
+        ],
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "items": []
+    }
+   ],
+   "expected": [
+    "kube-system/n (Running, 1/2 ready)"
+   ],
+   "fn": "unhealthy_in_namespace"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "b"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    }
+   ],
+   "expected": [
+    [
+     "a",
+     5
+    ]
+   ],
+   "fn": "schedulable_pods_by_node"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "ownerReferences": [
+         {
+          "kind": "Job"
+         }
+        ]
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Succeeded"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Pending"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "a"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    }
+   ],
+   "expected": [
+    [
+     "a",
+     1
+    ]
+   ],
+   "fn": "schedulable_pods_by_node"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "zeta"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "alpha"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": "zeta"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": null
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p"
+       },
+       "spec": {
+        "nodeName": ""
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    }
+   ],
+   "expected": [
+    [
+     "zeta",
+     2
+    ],
+    [
+     "alpha",
+     1
+    ]
+   ],
+   "fn": "schedulable_pods_by_node"
+  },
+  {
+   "args": [
+    {
+     "items": []
+    }
+   ],
+   "expected": [],
+   "fn": "schedulable_pods_by_node"
+  },
+  {
+   "args": [
+    [
+     [
+      "s1-vm1",
+      5
+     ],
+     [
+      "s2-vm1",
+      5
+     ]
+    ],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [
+     "s1-vm1",
+     "s2-vm1"
+    ],
+    []
+   ],
+   "expected": [],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    [
+     [
+      "s1-vm1",
+      5
+     ]
+    ],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [
+     "s1-vm1",
+     "s2-vm1"
+    ],
+    []
+   ],
+   "expected": [
+    "s2-vm1 is Ready but runs no scheduled pods",
+    "server1 holds 5/5 scheduled pods (100%, limit 80%)"
+   ],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    [
+     [
+      "s2-vm1",
+      19
+     ],
+     [
+      "s1-vm1",
+      1
+     ]
+    ],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [
+     "s1-vm1",
+     "s2-vm1"
+    ],
+    []
+   ],
+   "expected": [
+    "server2 holds 19/20 scheduled pods (95%, limit 80%)"
+   ],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    [
+     [
+      "s1-vm1",
+      6
+     ],
+     [
+      "s2-vm1",
+      4
+     ]
+    ],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [
+     "s1-vm1",
+     "s2-vm1"
+    ],
+    [
+     "server1"
+    ]
+   ],
+   "expected": [
+    "server1 holds 6/10 scheduled pods (60%, limit 50%) and may not come back unattended"
+   ],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    [
+     [
+      "s1-vm1",
+      4
+     ],
+     [
+      "s2-vm1",
+      6
+     ]
+    ],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [
+     "s1-vm1",
+     "s2-vm1"
+    ],
+    [
+     "server1"
+    ]
+   ],
+   "expected": [],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    [
+     [
+      "ghost",
+      3
+     ],
+     [
+      "s1-vm1",
+      1
+     ],
+     [
+      "other'q",
+      1
+     ]
+    ],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [],
+    []
+   ],
+   "expected": [
+    "pods scheduled on unknown node 'ghost'",
+    "pods scheduled on unknown node \"other'q\""
+   ],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    [],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [
+     "s1-vm1"
+    ],
+    []
+   ],
+   "expected": [
+    "s1-vm1 is Ready but runs no scheduled pods",
+    "no scheduled pods found at all"
+   ],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    [
+     [
+      "s1-vm1",
+      41
+     ],
+     [
+      "s2-vm1",
+      1
+     ],
+     [
+      "s2-vm2",
+      1
+     ]
+    ],
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    [
+     "s2-vm3",
+     "s1-vm1",
+     "s2-vm1",
+     "s2-vm2"
+    ],
+    [
+     "server1"
+    ]
+   ],
+   "expected": [
+    "s2-vm3 is Ready but runs no scheduled pods",
+    "server1 holds 41/43 scheduled pods (95%, limit 50%) and may not come back unattended"
+   ],
+   "fn": "concentration_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1",
+         "kubernetes.io/hostname": "s1-vm1"
+        },
+        "name": "s1-vm1"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1",
+         "kubernetes.io/hostname": "s1-vm2"
+        },
+        "name": "s1-vm2"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server2",
+         "kubernetes.io/hostname": "s2-vm1"
+        },
+        "name": "s2-vm1"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1",
+         "kubernetes.io/hostname": "s1-vm1"
+        },
+        "name": "s1-vm1"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "kubernetes.io/hostname": "s2-vm1"
+        },
+        "name": "s2-vm1"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [
+    "s2-vm1 carries no invariant-platform.io/hypervisor label — site.yml says 'server2'. Nothing schedulable can place it in a failure domain, and a spread constraint will skip it silently",
+    "every correctly labelled node is in one failure domain (server1) — a spread constraint over one domain is satisfied vacuously"
+   ],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1",
+         "kubernetes.io/hostname": "s1-vm1"
+        },
+        "name": "s1-vm1"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1",
+         "kubernetes.io/hostname": "s1-vm2"
+        },
+        "name": "s1-vm2"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "kubernetes.io/hostname": "s2-vm1"
+        },
+        "name": "s2-vm1"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [
+    "s2-vm1 carries no invariant-platform.io/hypervisor label — site.yml says 'server2'. Nothing schedulable can place it in a failure domain, and a spread constraint will skip it silently",
+    "every correctly labelled node is in one failure domain (server1) — a spread constraint over one domain is satisfied vacuously"
+   ],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server2",
+         "kubernetes.io/hostname": "s1-vm1"
+        },
+        "name": "s1-vm1"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server2",
+         "kubernetes.io/hostname": "s2-vm1"
+        },
+        "name": "s2-vm1"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [
+    "s1-vm1 is labelled invariant-platform.io/hypervisor='server2' but site.yml says 'server1' — the cluster and the fleet definition disagree",
+    "every correctly labelled node is in one failure domain (server2) — a spread constraint over one domain is satisfied vacuously"
+   ],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1",
+         "kubernetes.io/hostname": "s1-vm1"
+        },
+        "name": "s1-vm1"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1",
+         "kubernetes.io/hostname": "s1-vm2"
+        },
+        "name": "s1-vm2"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [
+    "every correctly labelled node is in one failure domain (server1) — a spread constraint over one domain is satisfied vacuously"
+   ],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server9",
+         "kubernetes.io/hostname": "s9-vm1"
+        },
+        "name": "s9-vm1"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [
+    "node 's9-vm1' is in the cluster but not in site.yml"
+   ],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "invariant-platform.io/hypervisor": "server1"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [
+    "node None is in the cluster but not in site.yml"
+   ],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "s1-vm1"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [
+    "s1-vm1 carries no invariant-platform.io/hypervisor label — site.yml says 'server1'. Nothing schedulable can place it in a failure domain, and a spread constraint will skip it silently"
+   ],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": []
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    },
+    "invariant-platform.io/hypervisor"
+   ],
+   "expected": [],
+   "fn": "node_label_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): all 2 replicas in ONE failure domain — server2 (2). a single-domain resolver takes the LAN offline with one host"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p0",
+    "p1"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm2"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): all 2 replicas in ONE failure domain — server2 (2). a single-domain resolver takes the LAN offline with one host"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm2"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p0",
+    "p1"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p0",
+    "p1"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": []
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): found 0 Running replica(s), expected at least 2 — degraded, or the selector no longer matches"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": []
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): found 1 Running replica(s), expected at least 2 — degraded, or the selector no longer matches"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p0"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Pending"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): found 1 Running replica(s), expected at least 2 — degraded, or the selector no longer matches"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Pending"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p0"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "ghost"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): replica on unknown node 'ghost'",
+    "BIND primaries (LAN DNS): all 2 replicas in ONE failure domain — server1 (1). a single-domain resolver takes the LAN offline with one host"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "ghost"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p0",
+    "p1"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): found 0 Running replica(s), expected at least 2 — degraded, or the selector no longer matches"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "other"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): found 1 Running replica(s), expected at least 2 — degraded, or the selector no longer matches"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "other"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p1"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": null
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p2",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2",
+     "s2-vm2": "server2",
+     "s2-vm3": "server2"
+    }
+   ],
+   "expected": [
+    "BIND primaries (LAN DNS): replica on unknown node None"
+   ],
+   "fn": "critical_pair_failures"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p0",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p1",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": null
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "labels": {
+         "app.kubernetes.io/part-of": "bindy",
+         "bindy.firestoned.io/role": "primary"
+        },
+        "name": "p2",
+        "namespace": "bindy-system"
+       },
+       "spec": {
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    "bindy-system",
+    [
+     [
+      "bindy.firestoned.io/role",
+      "primary"
+     ],
+     [
+      "app.kubernetes.io/part-of",
+      "bindy"
+     ]
+    ]
+   ],
+   "expected": [
+    "p0",
+    "p1",
+    "p2"
+   ],
+   "fn": "pods_matching_names"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2000Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2000Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm2"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 4000
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2000Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2000Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm2"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "losing server1 leaves 3000 MiB for 4000 MiB of workload — short by 1000 MiB"
+   ],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "2000Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "2000Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm2"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "500Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "500Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 1000
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "500Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "500Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "500Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "500Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s2-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "pinned",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1",
+                "s1-vm2"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [
+      [
+       "ns/pinned",
+       100
+      ]
+     ],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 200
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "pinned",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1",
+                "s1-vm2"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "losing server1 strands 1 pod(s) (100 MiB) pinned to it by nodeAffinity — they go Pending, not elsewhere: ns/pinned"
+   ],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "pinned",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1",
+              "s1-vm2"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s2-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "wide",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1",
+                "s2-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 100
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "wide",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1",
+                "s2-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "wide",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1",
+              "s2-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1",
+    "server2"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2900Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "200Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 100,
+     "server2": 7900
+    },
+    "workload": 200
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "DaemonSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2900Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "200Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "losing server1 leaves 100 MiB for 200 MiB of workload — short by 100 MiB"
+   ],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "DaemonSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "DaemonSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "2900Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s2-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "200Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "Job"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "9999Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 0
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "Job"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "9999Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "Job"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "9999Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000
+    },
+    {
+     "s1-vm1": "server1"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": []
+    },
+    "room": {
+     "server1": 0
+    },
+    "workload": 100
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000
+    },
+    {
+     "s1-vm1": "server1"
+    }
+   ],
+   "expected": [],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p0",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "5Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p1",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "50Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p2",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "500Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p3",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "5000Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p4",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "1Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p5",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "1Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [
+      [
+       "ns/p0",
+       5
+      ],
+      [
+       "ns/p1",
+       50
+      ],
+      [
+       "ns/p2",
+       500
+      ],
+      [
+       "ns/p3",
+       5000
+      ],
+      [
+       "ns/p4",
+       1
+      ],
+      [
+       "ns/p5",
+       2
+      ]
+     ],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 5559
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p0",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "5Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p1",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "50Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p2",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "500Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p3",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "5000Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p4",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "1Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p5",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s1-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "2Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "1Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s2-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "losing server1 leaves 3000 MiB for 5559 MiB of workload — short by 2559 MiB",
+    "losing server1 strands 6 pod(s) (5558 MiB) pinned to it by nodeAffinity — they go Pending, not elsewhere: ns/p3, ns/p2, ns/p1, ns/p0, +2 more"
+   ],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p0",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "5Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p1",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "50Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p2",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "500Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p3",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "5000Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p4",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "1Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p5",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "2Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server1"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "1Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s2-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Pending"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Succeeded"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "ghost"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": null
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 100
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Pending"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Succeeded"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "ghost"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "100Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": null
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Pending"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Succeeded"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "ghost"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": null
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "0Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "1Gi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 1024
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "0Mi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      },
+      {
+       "metadata": {
+        "name": "p",
+        "namespace": "ns",
+        "ownerReferences": [
+         {
+          "kind": "ReplicaSet"
+         }
+        ]
+       },
+       "spec": {
+        "containers": [
+         {
+          "resources": {
+           "requests": {
+            "memory": "1Gi"
+           }
+          }
+         }
+        ],
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "0Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "1Gi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "ownerReferences": []
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": []
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 0
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {
+        "ownerReferences": []
+       },
+       "spec": {
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "ownerReferences": []
+     },
+     "spec": {
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {},
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s2-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": {
+    "pinned_by_host": {
+     "server1": [],
+     "server2": [
+      [
+       "None/None",
+       0
+      ]
+     ]
+    },
+    "room": {
+     "server1": 3000,
+     "server2": 8000
+    },
+    "workload": 0
+   },
+   "fn": "survivability_budget"
+  },
+  {
+   "args": [
+    {
+     "items": [
+      {
+       "metadata": {},
+       "spec": {
+        "affinity": {
+         "nodeAffinity": {
+          "requiredDuringSchedulingIgnoredDuringExecution": {
+           "nodeSelectorTerms": [
+            {
+             "matchExpressions": [
+              {
+               "key": "kubernetes.io/hostname",
+               "operator": "In",
+               "values": [
+                "s2-vm1"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         }
+        },
+        "nodeName": "s1-vm1"
+       },
+       "status": {
+        "phase": "Running"
+       }
+      }
+     ]
+    },
+    {
+     "s1-vm1": 4000,
+     "s1-vm2": 4000,
+     "s2-vm1": 3000
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "losing server2 strands 1 pod(s) (0 MiB) pinned to it by nodeAffinity — they go Pending, not elsewhere: None/None"
+   ],
+   "fn": "survivability_failures"
+  },
+  {
+   "args": [
+    {
+     "metadata": {},
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s2-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [
+    "server2"
+   ],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "preferredDuringSchedulingIgnoredDuringExecution": [
+         {
+          "preference": {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "In",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          },
+          "weight": 1
+         }
+        ]
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "metadata": {
+      "name": "p",
+      "namespace": "ns",
+      "ownerReferences": [
+       {
+        "kind": "ReplicaSet"
+       }
+      ]
+     },
+     "spec": {
+      "affinity": {
+       "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+         "nodeSelectorTerms": [
+          {
+           "matchExpressions": [
+            {
+             "key": "kubernetes.io/hostname",
+             "operator": "NotIn",
+             "values": [
+              "s1-vm1"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      },
+      "containers": [
+       {
+        "resources": {
+         "requests": {
+          "memory": "100Mi"
+         }
+        }
+       }
+      ],
+      "nodeName": "s1-vm1"
+     },
+     "status": {
+      "phase": "Running"
+     }
+    },
+    {
+     "s1-vm1": "server1",
+     "s1-vm2": "server1",
+     "s2-vm1": "server2"
+    }
+   ],
+   "expected": [],
+   "fn": "pinned_hypervisors"
+  },
+  {
+   "args": [
+    {
+     "a": 1
+    },
+    {
+     "a": 1
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== end states IDENTICAL between python and rust ===\n",
+    "same": true
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "a": 1
+    },
+    {
+     "a": 2
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  a: python=1 vs rust=2\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "a": 1,
+     "b": 2
+    },
+    {
+     "a": 1
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  b: present after python, absent after rust\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "nodes": {
+      "x": {
+       "ready": true,
+       "v": "1"
+      }
+     }
+    },
+    {
+     "nodes": {
+      "x": {
+       "ready": false,
+       "v": "1"
+      },
+      "y": {}
+     }
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  nodes.x.ready: python=True vs rust=False\n  nodes.y: absent after python, present after rust\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "k": [
+      1,
+      2
+     ]
+    },
+    {
+     "k": [
+      1,
+      3
+     ]
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  k: python=[1, 2] vs rust=[1, 3]\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "k": null
+    },
+    {
+     "k": "s1-vm1"
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  k: python=None vs rust='s1-vm1'\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "k": {
+      "deep": {
+       "er": "it's"
+      }
+     }
+    },
+    {
+     "k": {
+      "deep": {
+       "er": "say \"hi\""
+      }
+     }
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  k.deep.er: python=\"it's\" vs rust='say \"hi\"'\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "k": {
+      "n": 1
+     }
+    },
+    {
+     "k": 1
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  k: python={'n': 1} vs rust=1\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    {
+     "placement": {
+      "s1-vm1": "server1"
+     }
+    },
+    {
+     "placement": {
+      "s1-vm1": "server2"
+     }
+    },
+    "python",
+    "rust"
+   ],
+   "expected": {
+    "output": "\n=== END STATES DIFFER between python and rust ===\n  placement.s1-vm1: python='server1' vs rust='server2'\n",
+    "same": false
+   },
+   "fn": "fingerprint_differences"
+  },
+  {
+   "args": [
+    "level=info msg=\"...\"\n{\"members\":{\"s1-vm1\":\"https://a:2380\",\"s2-vm1\":\"https://b:2380\"}}\n"
+   ],
+   "expected": [
+    "s1-vm1",
+    "s2-vm1"
+   ],
+   "fn": "etcd_members_from"
+  },
+  {
+   "args": [
+    "{\"members\":{}}"
+   ],
+   "expected": [],
+   "fn": "etcd_members_from"
+  },
+  {
+   "args": [
+    ""
+   ],
+   "expected": [],
+   "fn": "etcd_members_from"
+  },
+  {
+   "args": [
+    "garbage"
+   ],
+   "expected": [],
+   "fn": "etcd_members_from"
+  },
+  {
+   "args": [
+    "{\"nope\":1}"
+   ],
+   "expected": [],
+   "fn": "etcd_members_from"
+  },
+  {
+   "args": [
+    "{\"members\":{\"only\":\"x\"}}\n\n"
+   ],
+   "expected": [
+    "only"
+   ],
+   "fn": "etcd_members_from"
+  },
+  {
+   "args": [
+    "https://github.com/kairos-io/kairos/releases/download/v4.2.0/kairos-hadron-v0.5.1-standard-amd64-generic-v4.2.0-k0sv1.36.3%2Bk0s.2.iso"
+   ],
+   "expected": "1.36.3",
+   "fn": "expected_k0s_version"
+  },
+  {
+   "args": [
+    "https://x/kairos-k0sv1.36.3+k0s.2.iso"
+   ],
+   "expected": "1.36.3",
+   "fn": "expected_k0s_version"
+  },
+  {
+   "args": [
+    "https://x/kairos-k0sv1.2.iso"
+   ],
+   "expected": null,
+   "fn": "expected_k0s_version"
+  },
+  {
+   "args": [
+    "https://x/nothing.iso"
+   ],
+   "expected": null,
+   "fn": "expected_k0s_version"
+  },
+  {
+   "args": [
+    "https://x/k0sv+k0s.iso"
+   ],
+   "expected": null,
+   "fn": "expected_k0s_version"
+  },
+  {
+   "args": [
+    "https://x/k0svabc-k0sv1.0+k0s.iso"
+   ],
+   "expected": "1.0",
+   "fn": "expected_k0s_version"
+  },
+  {
+   "args": [
+    ""
+   ],
+   "expected": null,
+   "fn": "expected_k0s_version"
+  }
+ ],
+ "generated_by": "tests/golden/gen_gate_goldens.py"
+}

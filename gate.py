@@ -1418,6 +1418,12 @@ def _force_delete_pod(pod: str) -> None:
 BOOTSTRAP_METHODS = {
     "python": ([sys.executable, "-u", "provision.py"], None),
     "ansible": ([".venv/bin/ansible-playbook", "site.yml"], "ansible"),
+    # The Rust binary is deliberately NOT here. `rebuild` wipes with THIS
+    # file's Python before it runs the method, and a Rust build behind a
+    # Python wipe is the hybrid ADR-176 forbids. The Rust rebuild is
+    # `substrate rebuild --yes` — wipe and build in one binary — followed by
+    # the read-only half of this gate: `verify`, then `fingerprint --save rust`
+    # and `compare python rust`. When the verifier is ported, this file goes.
 }
 
 
@@ -1626,7 +1632,8 @@ def compare_saved(a: str, b: str) -> bool:
     if missing:
         print(f"missing fingerprint(s): {', '.join(missing)}", file=sys.stderr)
         print(
-            "run: ./gate.py rebuild --yes --method <method>   (saves one each time)",
+            "run: ./gate.py rebuild --yes --method <method>   (saves one each time)\n"
+            "or, after a rebuild done elsewhere: ./gate.py fingerprint --save <name>",
             file=sys.stderr,
         )
         return False
@@ -2056,11 +2063,19 @@ def main() -> int:
     p_cmp = sub.add_parser(
         "compare", help="compare two saved fingerprints (non-destructive)"
     )
-    p_cmp.add_argument("a", choices=sorted(BOOTSTRAP_METHODS))
-    p_cmp.add_argument("b", choices=sorted(BOOTSTRAP_METHODS))
+    # Free strings, not BOOTSTRAP_METHODS: a fingerprint can be saved under any
+    # name via `fingerprint --save`, and `compare_saved` reports a missing file.
+    p_cmp.add_argument("a", metavar="METHOD")
+    p_cmp.add_argument("b", metavar="METHOD")
 
-    sub.add_parser(
+    p_fp = sub.add_parser(
         "fingerprint", help="print the cluster's comparable end state (non-destructive)"
+    )
+    p_fp.add_argument(
+        "--save",
+        metavar="METHOD",
+        help="also write it to .fingerprints/METHOD.json for `compare` — how a "
+        "rebuild done OUTSIDE this file (substrate rebuild) gets a fingerprint",
     )
 
     p_roll = sub.add_parser(
@@ -2082,6 +2097,8 @@ def main() -> int:
         return 0 if verify() else 1
 
     if args.command == "fingerprint":
+        if args.save:
+            save_fingerprint(args.save)
         print(json.dumps(cluster_fingerprint(), indent=2, sort_keys=True))
         return 0
 

@@ -73,17 +73,27 @@ virtualenv.
 
 ## The gate
 
-`gate.py verify` asserts six things, chosen because each one has been silently
-false at some point on a cluster that otherwise looked perfect:
+`substrate verify` asserts ten things, chosen because each one has been
+silently false at some point on a cluster that otherwise looked perfect:
 
 ```
-[PASS] nodes Ready
-[PASS] system pods healthy
-[PASS] cluster DNS resolving          from inside a pod, not from a node
-[PASS] flux reconciling
-[PASS] api-server -> pod tunnel
-[PASS] required secrets present       via the ExternalSecret, not the Secret
+[PASS] nodes Ready                          against site.yml, not against whatever joined
+[PASS] system pods healthy                  per container, and DaemonSets fully scheduled
+[PASS] cluster DNS resolving                from inside a pod, not from a node
+[PASS] flux reconciling                     every Kustomization Ready, not merely installed
+[PASS] api-server -> pod tunnel             each controller directly — the VIP round-robins
+[PASS] required secrets present             via the ExternalSecret, not the Secret
+[PASS] platform spread across fleet         pod share per hypervisor, stricter on the failure-prone one
+[PASS] critical workloads spread            a NAMED list, with a minimum replica count
+[PASS] hypervisor labels match site.yml     partial labelling satisfies a spread vacuously
+[PASS] fleet survives losing a hypervisor   in MiB, not pod count
 ```
+
+The whole rebuild is one binary: `substrate rebuild --yes` wipes and
+provisions; `substrate verify` judges the result; `substrate fingerprint
+--save <name>` and `substrate compare a b` turn two rebuilds into a proof.
+The build path never destroys, the destroy path never builds, and the
+verifier is neither — see `RUST_PORT.md` for what is proven and how.
 
 The recurring lesson behind every one of them: **a check that confirms a system
 is running is not a check that it works.**
@@ -92,9 +102,10 @@ is running is not a check that it works.**
 
 | Path | |
 |---|---|
-| `provision.py` | the Python implementation — cloud-config, VM lifecycle, node join |
-| `ansible/` | the Ansible implementation, plus the render-equality test |
-| `gate.py` | destroy-and-rebuild verification |
+| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · render · architecture` |
+| `provision.py`, `gate.py` | the Python reference the Rust was proven against — to be archived after the first Rust rebuild (`RUST_PORT.md`) |
+| `ansible/` | the second bootstrap implementation, plus the render-equality test — archived with the Python |
+| `tests/golden/` | corpora GENERATED from the Python (shlex, gate decisions) that the Rust must reproduce |
 | `hosts.py`, `siteconfig.py` | fleet definition, read from `site.yml` |
 | `versions.yml` | every external artifact, pinned and checksummed |
 | `deploy-cplb.py` | HAProxy + keepalived control-plane load balancer |
@@ -155,8 +166,9 @@ found while building this were controls that were installed and *not working*.
 | `shellcheck -S style` | The scripts that run as root on every hypervisor and drain cluster nodes |
 | `check_render.py` | Both bootstrap implementations render byte-identical cloud-config |
 | `ansible --syntax-check` | The second implementation still parses |
-| `gate.py verify` | Six live checks against a real cluster |
-| `gate.py rebuild` + `compare` | The whole thing, from nothing, both ways — end states compared field by field |
+| `cargo test` | Rust unit tests, plus the generated corpora: `shlex_parity` (CPython's `shlex.quote`) and `gate_parity` (188 gate decisions) |
+| `substrate verify` | Ten live checks against a real cluster |
+| `substrate rebuild` + `compare` | The whole thing, from nothing — end states compared field by field across methods |
 
 The test suite's specification is the bug log. When something breaks, the fix
 ships with the test that would have caught it; tests written against imagined

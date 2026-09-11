@@ -466,7 +466,7 @@ pub fn reconcile_existing(host: &Host, vm: &Vm, admin_user: &str) {
 /// machines that are installing or reinstalling, so their host keys
 /// legitimately change underneath us. Scoping it to node access keeps it out of
 /// hypervisor SSH, which does verify.
-fn node_ssh(
+pub fn node_ssh(
     admin_user: &str,
     ip: &str,
     connect_timeout: u32,

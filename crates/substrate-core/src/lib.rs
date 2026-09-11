@@ -5,14 +5,17 @@
 //! checked byte-for-byte against a committed artefact, which is not true of
 //! `virsh` calls or a boot wait.
 
+pub mod architecture;
 pub mod config;
 pub mod exec;
+pub mod gate;
 pub mod jit;
 pub mod libvirt;
 pub mod posture;
 pub mod provision;
 pub mod render;
 pub mod versions;
+pub mod wipe;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
