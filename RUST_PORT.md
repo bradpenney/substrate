@@ -19,20 +19,20 @@ comparison belongs in the test suite as proof of equivalence before the cutover
 | command execution | `run`, `write_file` | `exec.rs` | live, local + over SSH |
 | libvirt inspection | 4 fns | `libvirt.rs` | live, identical for 5 VMs on both hypervisors |
 | host prep | 4 fns | `provision.rs` | compiles; idempotent, not yet run |
-| VM lifecycle | 4 fns | `provision.rs` | **compiles; NEVER EXECUTED** |
-| join + readiness | 8 fns | `provision.rs` | **compiles; NEVER EXECUTED** |
-| client access | 1 fn | `provision.rs` | **compiles; NEVER EXECUTED** |
+| VM lifecycle | 4 fns | `provision.rs` | **built the fleet 2026-09-11 20:27–20:38**, 5 VMs, zero retries |
+| join + readiness | 8 fns | `provision.rs` | live: bootstrap + 4 joiners, each after the previous registered |
+| client access | 1 fn | `provision.rs` | live: operator kubeconfig reached the new cluster |
 | orchestration | `main`, `plan` | `provision_fleet`, `plan` | dry-run byte-identical on both fleets |
 | wipe | `gate.py:wipe`, `orphaned_vms` | `wipe.rs` | dry-run byte-identical on the live fleet (incl. live virsh on both hosts) |
-| rebuild | `gate.py:rebuild` (wipe→build) | `main.rs:rebuild` | **NEVER EXECUTED** — composes the two above |
+| rebuild | `gate.py:rebuild` (wipe→build) | `main.rs:rebuild` | **first Rust rebuild 2026-09-11** — wipe + build, 11 min bootstrap→5 Ready |
 | verify (10 criteria) | `gate.py:verify` | `gate/mod.rs` | live differential: identical except where the cluster healed mid-run |
 | gate decisions | `gate.py` pure fns | `gate/logic.rs` | **188-case corpus GENERATED from CPython** (`gate_parity.rs`); 4 mutations caught |
 | fingerprint / compare | `gate.py` | `gate/mod.rs` | JSON and compare output byte-identical live |
 | roll | `gate.py:roll` | `gate/mod.rs:roll` | **NEVER EXECUTED** — composes ported primitives |
 
-**The write path has never run.** That is inherent — this project's test policy
-is that orchestration is "covered by the rebuild, not mocked" — and it is why
-the next rebuild is the real milestone, not a test run.
+**The write path ran on 2026-09-11** (`substrate rebuild --yes`): wipe of 5
+VMs, bootstrap on s2-vm1 at 20:27, all 5 nodes Ready at 20:38, no `create_vm`
+retry. Orchestration is "covered by the rebuild, not mocked" — and now it is.
 
 ## Running it
 
