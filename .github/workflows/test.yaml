@@ -7,10 +7,6 @@ name: test
 on:
   push:
     branches: [main]
-    # The badge step commits coverage.svg back to main. A GITHUB_TOKEN push
-    # cannot trigger a workflow anyway, but stating it here means the next
-    # reader does not have to know that rule to be sure there is no loop.
-    paths-ignore: [coverage.svg]
   pull_request:
   workflow_dispatch:
 
@@ -28,108 +24,6 @@ permissions:
   contents: read
 
 jobs:
-  pytest:
-    name: unit & regression
-    runs-on: ubuntu-latest
-    # The workflow default is `contents: read`; the badge step pushes to the
-    # orphan `badges` branch, so this ONE job needs write. Scoped to the job
-    # rather than raised workflow-wide: lint, shell and ansible have no reason
-    # to be able to write to the repository.
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-      - name: Install test dependencies
-        # cryptography is imported by create-client-cert.py, which several
-        # tests load. Omitting it produced 13 collection errors while the suite
-        # itself was fine.
-        run: python -m pip install --quiet pytest pytest-cov pyyaml jinja2 cryptography pydantic
-      - name: Run the suite
-        # No global --cov-fail-under: the gate is PER MODULE, in the next step.
-        # A single number over the whole repo hides the thing that matters —
-        # the orchestration modules drive real hosts over ssh/kubectl and are
-        # covered by `gate.py rebuild`, not by unit tests, so averaging them
-        # against the logic modules produces a figure that means nothing.
-        # No --cov-config=/dev/null either: that bypassed .coveragerc, which
-        # omits tests/. Counting the test files inflated the total from 35% to
-        # 54% without covering a line of substrate — a coverage figure is only
-        # meaningful against an honest denominator.
-        run: |
-          python -m pytest tests/ -v \
-            --cov --cov-report=term --cov-report=json:coverage.json
-
-      - name: Golden cloud-config is byte-exact and carries no real identity
-        # Belt and braces: the goldens are asserted by the suite above, but this
-        # step runs the generator's own --check so a CI log shows WHICH archetype
-        # drifted and by how much, without anyone re-running pytest locally to
-        # find out. It also fails if a golden was captured while the two
-        # renderers disagreed (ADR-093).
-        #
-        # No env block: regenerate.py FORCES the fixture and a fixed key rather
-        # than defaulting to them, because a golden rendered from a real
-        # site.yml would write real addresses into a committed file. Setting
-        # them here would look load-bearing and be ignored.
-        run: python3 tests/golden/regenerate.py --check
-
-      - name: Coverage gate (95% per logic module)
-        # Per module, not one global number. Driving the orchestration modules
-        # to 95% would mean stubbing a hypervisor and asserting the code calls
-        # the commands it calls; they are covered by `gate.py rebuild` instead.
-        run: python3 .github/scripts/check_coverage.py coverage.json
-      - name: Assert no real site config is committed
-        # site.yml carries addresses, an admin identity and credentials. The
-        # fixture exists so the suite never needs it; this makes that structural
-        # rather than a matter of remembering.
-        #
-        # MUST run BEFORE the badge step. That step switches to the orphan
-        # `badges` branch and deletes every file in the working tree, so after
-        # it there is no site.yml to find on a main push and this check passes
-        # vacuously — it only ever meant anything on pull requests, where the
-        # badge step is skipped.
-        run: |
-          if [ -f site.yml ]; then
-            echo "::error::site.yml is committed — it must stay gitignored (ADR-012)"
-            exit 1
-          fi
-
-      - name: Publish the logic-coverage badge
-        # Self-contained on purpose: no Codecov, no third-party upload, no extra
-        # token. Coverage data is a map of the codebase, and there is no reason
-        # to hand it to a service when a two-colour SVG does the job.
-        #
-        # COMMITTED TO main AND REFERENCED BY RELATIVE PATH, not pushed to an
-        # orphan `badges` branch. The branch version rendered as the plain text
-        # "logic coverage" in the README, because this repo is PRIVATE: GitHub's
-        # image proxy fetches raw.githubusercontent.com anonymously and gets a
-        # 404. A relative path is resolved against the repo itself, so it
-        # renders for anyone who can see the repo — private today, public later
-        # — with no host that has to be told who we are.
-        #
-        # Pushing here cannot loop: pushes made with GITHUB_TOKEN do not trigger
-        # workflows. The paths-ignore on the push trigger says so explicitly
-        # rather than relying on a reader knowing that rule.
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: |
-          set -euo pipefail
-          # logic-coverage.txt is written by check_coverage.py in the step
-          # above. Reading coverage.json's global total here instead published
-          # 58% under a badge that says "logic coverage" — the logic figure is
-          # 99%. The badge must report the number it is named after.
-          PCT=$(cat logic-coverage.txt)
-          python3 .github/scripts/make_coverage_badge.py "$PCT" > coverage.svg
-          if git diff --quiet -- coverage.svg; then
-            echo "coverage badge unchanged at ${PCT}%"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add coverage.svg
-          git commit -m "logic coverage: ${PCT}%"
-          git push origin HEAD:main
-
   rust:
     name: rust
     runs-on: ubuntu-latest
@@ -161,57 +55,27 @@ jobs:
         # Python in the loop, because `cargo test` has to stand on its own once
         # Python goes.
         run: cargo test --workspace
+      - name: Assert no real site config is committed
+        run: |
+          if [ -f site.yml ]; then
+            echo "::error::site.yml is committed — it must stay gitignored (ADR-012)"
+            exit 1
+          fi
+      - name: Assert the goldens carry no real identity
+        # tests/golden/regenerate.py --check did this while Python was the
+        # renderer. The goldens are now reproduced by `cargo test` above; this
+        # keeps the half of that check that was about DISCLOSURE, not bytes.
+        run: |
+          set -euo pipefail
+          if grep -rnE '192\.168\.|bradpenney|ssh-ed25519 AAAA[^T]' tests/golden/*.yaml; then
+            echo "::error::a golden carries a real address, name or key"
+            exit 1
+          fi
       - name: Test on musl
         # The musl build is what actually ships. Running the suite against it
         # too would catch a renderer that differed by libc — unlikely in pure
         # Rust, and cheap enough to prove rather than assume.
         run: cargo test --workspace --target x86_64-unknown-linux-musl
-
-  lint:
-    name: lint & format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-      - name: Install linters and the imports they resolve
-        # pylint follows imports, so the runtime dependencies have to be present
-        # or it reports import-error for code that is fine.
-        #
-        # PINNED, from the repo's own requirements. This list used to be spelled
-        # out here and unpinned, which meant an upstream release could change
-        # CI's verdict with no commit to this repository — a green build turning
-        # red, or worse a rule quietly relaxing, with nothing to bisect.
-        run: python -m pip install --quiet -r requirements-dev.txt
-
-      - name: black
-        # --check only: CI reports drift, it does not rewrite the repo. A
-        # formatter that edits on the server makes the local copy wrong.
-        #
-        # WHOLE TREE. This was `*.py tests/*.py .github/scripts/*.py` — three
-        # globs, none of which recurse. ansible/, dns/ and tests/golden/ were
-        # matched by nothing and drifted unformatted while CI reported green;
-        # five files had to be reformatted when it was finally run over
-        # everything. A fixed glob list silently stops covering new directories.
-        run: black --check --diff --line-length 88 .
-
-      - name: pylint (10.00/10 required)
-        # SOURCE only. Test files legitimately trip pytest idioms — fixtures
-        # shadowing names, exercising private helpers — and chasing them would
-        # mean weakening the rules that apply to the code that runs in anger.
-        # Every disable in .pylintrc is justified in place.
-        env:
-          SUBSTRATE_SITE_FILE: ${{ github.workspace }}/tests/fixtures/site.yml
-          HOMELAB_SSH_PUBLIC_KEY: "ssh-ed25519 AAAATESTKEYONLY ci@fixture"
-        # Every tracked .py EXCEPT tests/, rather than a top-level glob that
-        # covered 12 of 44 files. Derived from git, so a new source directory is
-        # included the day it is added instead of the day someone notices.
-        # PYTHONPATH: ansible/ and dns/ scripts import repo-root modules after a
-        # sys.path.insert at runtime, which pylint cannot see statically.
-        run: |
-          PYTHONPATH="${{ github.workspace }}" \
-          pylint $(git ls-files '*.py' | grep -v '^tests/') --fail-under=10
 
   shellcheck:
     name: shell
@@ -232,33 +96,3 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/mnt:ro" -w /mnt \
             koalaman/shellcheck:v0.11.0 -S style *.sh
-
-  ansible:
-    name: ansible
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-      - name: Install ansible-core
-        # pydantic because inventory.py loads the TYPED site config (ADR-089).
-        # Left out, this job fails at import while pytest and lint stay green —
-        # the same shape of miss as ADR-090.
-        run: python -m pip install --quiet ansible-core pyyaml pydantic
-      - name: Inventory resolves and the playbook parses
-        # The Ansible path is one of two interchangeable bootstrap
-        # implementations (ADR-020). A playbook that no longer parses would be
-        # found at rebuild time — 13 minutes in, mid-wipe — rather than here.
-        env:
-          SUBSTRATE_SITE_FILE: ${{ github.workspace }}/tests/fixtures/site.yml
-          # hosts.py resolves the admin SSH key at import time and refuses to
-          # guess if it cannot find one. tests/conftest.py sets this for pytest;
-          # the ansible job needs the same, and not having it is why this job
-          # failed while pytest passed. A dummy is correct here — nothing is
-          # provisioned, only parsed.
-          HOMELAB_SSH_PUBLIC_KEY: "ssh-ed25519 AAAATESTKEYONLY ci@fixture"
-        run: |
-          set -euo pipefail
-          python3 ansible/inventory.py --list > /dev/null
-          ansible-playbook -i ansible/inventory.py ansible/site.yml --syntax-check

@@ -4,7 +4,7 @@
 # ⚠️ THIS IS THE NODE PATCHING PATH. The hypervisors get nightly OS updates; the
 # k0s nodes are immutable and get NONE — they run whatever image they were built
 # from, indefinitely, CVEs included. The only way to patch them is to roll the
-# fleet onto a newer image (`gate.py roll --yes`). A stale pin here is a standing
+# fleet onto a newer image (`substrate roll --yes`). A stale pin here is a standing
 # security gap, not untidiness.
 #
 # Unlike flux-operator, the asset NAME encodes flavour and k0s version, e.g.
@@ -148,7 +148,7 @@ jobs:
             ### Merging this triggers a rolling node replacement
 
             `auto-roll.timer` on the hypervisor polls this repo and, on seeing a
-            changed pin on `main`, runs `gate.py roll --yes` — replacing nodes
+            changed pin on `main`, runs `substrate roll --yes` — replacing nodes
             **one at a time**, re-verifying full cluster health between each,
             and halting if anything fails to settle.
 

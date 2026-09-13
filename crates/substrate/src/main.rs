@@ -55,6 +55,16 @@ enum Command {
     Roll(RollArgs),
     /// Architecture: check conformance and render diagrams. Read-only.
     Architecture(ArchArgs),
+    /// Time-boxed platform-admin grants (ADR-065): grant | revoke | status.
+    Jit(JitArgs),
+    /// Mint a client certificate + kubeconfig context via the CSR API. Break-glass.
+    ClientCert(ClientCertArgs),
+    /// Deploy the HAProxy + keepalived control-plane LB to each hypervisor. See --apply.
+    DeployCplb(DeployCplbArgs),
+    /// Deploy the nightly hypervisor-update machinery to every hypervisor. See --apply.
+    DeployUpdates(DeployUpdatesArgs),
+    /// Deploy the host-tier observability stack (VictoriaMetrics, VictoriaLogs, Grafana). See --apply.
+    DeployObservability(DeployObservabilityArgs),
     /// Render one node's cloud-config to stdout. Read-only.
     Render(RenderArgs),
 }
@@ -101,6 +111,11 @@ fn main() -> Result<()> {
         Command::Fingerprint(args) => fingerprint(&cli.repo, args),
         Command::Compare(args) => compare(&cli.repo, args),
         Command::Roll(args) => roll(&cli.repo, args),
+        Command::Jit(args) => jit(args),
+        Command::ClientCert(args) => client_cert(args),
+        Command::DeployCplb(args) => deploy_cplb(&cli.repo, args),
+        Command::DeployUpdates(args) => deploy_updates(&cli.repo, args),
+        Command::DeployObservability(args) => deploy_observability(&cli.repo, args),
         Command::Architecture(args) => architecture(args),
     }
 }
@@ -833,6 +848,242 @@ DRY RUN — nothing was replaced. Add --yes to roll."
         "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
     )?;
     exit_with(gate.roll(args.node.as_deref(), &ssh_key))
+}
+
+#[derive(clap::Args, Debug)]
+struct JitArgs {
+    #[command(subcommand)]
+    cmd: JitCmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum JitCmd {
+    /// Grant platform-admin for a bounded window. Uses the break-glass context.
+    Grant {
+        /// The Kubernetes user to bind.
+        user: String,
+        /// Grant window in minutes (1–480).
+        #[arg(long, default_value_t = 30)]
+        minutes: i64,
+        /// Why this grant is needed. REQUIRED and recorded: an optional field
+        /// would be left empty exactly when it matters.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Remove the grant now. Uses the break-glass context.
+    Revoke,
+    /// Show whether a grant is outstanding. Runs as the current user.
+    Status,
+}
+
+fn jit(args: JitArgs) -> Result<()> {
+    let code = match args.cmd {
+        JitCmd::Grant {
+            user,
+            minutes,
+            reason,
+        } => substrate_core::jit_ops::grant(&user, minutes, &reason),
+        JitCmd::Revoke => substrate_core::jit_ops::revoke(),
+        JitCmd::Status => substrate_core::jit_ops::status(),
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+struct ClientCertArgs {
+    /// Username; becomes the certificate CN.
+    user: String,
+    /// O values. system:masters is refused.
+    #[arg(long, num_args = 0..)]
+    groups: Vec<String>,
+    /// Certificate lifetime in days (it cannot be revoked).
+    #[arg(long, default_value_t = 90)]
+    days: u32,
+    /// Where the key and certificate are written.
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
+    /// kubeconfig context to create (default: the username).
+    #[arg(long)]
+    context: Option<String>,
+    /// Print the CSR that would be submitted and stop. Nothing is written.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+fn client_cert(args: ClientCertArgs) -> Result<()> {
+    let out_dir = args.out_dir.unwrap_or_else(|| {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join(".kube")
+            .join("certs")
+    });
+    let req = substrate_core::client_cert::Request {
+        user: &args.user,
+        groups: &args.groups,
+        days: args.days,
+        out_dir,
+        context: args.context.as_deref(),
+        dry_run: args.dry_run,
+    };
+    if let Err(e) = substrate_core::client_cert::mint(&req) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+struct DeployCplbArgs {
+    /// Actually install on every hypervisor (default: print the plan and haproxy.cfg).
+    #[arg(long)]
+    apply: bool,
+    /// Print the exact installer stream that would be piped to `sudo bash -s`
+    /// on this hypervisor, then stop.
+    #[arg(long, value_name = "HYPERVISOR", conflicts_with = "apply")]
+    show_install: Option<String>,
+}
+
+fn deploy_cplb(repo: &std::path::Path, args: DeployCplbArgs) -> Result<()> {
+    // Escalation happens REMOTELY here (`ssh … sudo …`), never locally. Run
+    // under local sudo this SSHes as root, which has no key.
+    refuse_if_root("substrate deploy-cplb --apply");
+    let cfg = substrate_core::load(repo)?;
+    let cplb = substrate_core::cplb::Cplb::new(&cfg)?;
+    if let Some(host) = args.show_install {
+        if !cfg.hypervisors.contains_key(&host) {
+            anyhow::bail!("no such hypervisor in site.yml: {host}");
+        }
+        print!("{}", cplb.install_script(&host));
+        return Ok(());
+    }
+    cplb.print_plan();
+    if !args.apply {
+        println!("\n--- haproxy.cfg ---");
+        println!("{}", cplb.haproxy_cfg());
+        println!("\nDRY RUN — nothing installed. Re-run with --apply.");
+        return Ok(());
+    }
+    exit_with(cplb.apply() == 0)
+}
+
+#[derive(clap::Args, Debug)]
+struct DeployUpdatesArgs {
+    /// Actually install (default: print the file plan for each hypervisor).
+    ///
+    /// The Python defaulted to DEPLOYING and took `--dry-run` to opt out;
+    /// this is the safe-by-default shape every writer in this binary has.
+    #[arg(long)]
+    apply: bool,
+}
+
+fn deploy_updates(repo: &std::path::Path, args: DeployUpdatesArgs) -> Result<()> {
+    // Checked BEFORE the kubeconfig fetch, so the refusal arrives instantly
+    // instead of after an SSH round trip that fails on publickey.
+    refuse_if_root("substrate deploy-updates --apply");
+    let cfg = substrate_core::load(repo)?;
+    if let Err(e) = substrate_core::updates::deploy_all(repo, &cfg, !args.apply) {
+        eprintln!("ERROR: {e}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+struct DeployObservabilityArgs {
+    /// Actually install (default: print what would be installed, and the installer itself).
+    #[arg(long, conflicts_with = "check")]
+    apply: bool,
+    /// Report drift between this repository and the installed hosts. Read-only.
+    #[arg(long)]
+    check: bool,
+    /// Print one rendered file for one host and stop: scrape | grafana-ini |
+    /// rules | contactpoints | traefik | manifest | installer.
+    #[arg(long, value_name = "WHAT", conflicts_with_all = ["apply", "check"])]
+    render: Option<String>,
+    /// Hypervisor for --render (default: the observability host).
+    #[arg(long)]
+    host: Option<String>,
+}
+
+fn deploy_observability(repo: &std::path::Path, args: DeployObservabilityArgs) -> Result<()> {
+    use substrate_core::observability as obs;
+    refuse_if_root("substrate deploy-observability --apply");
+    let cfg = substrate_core::load(repo)?;
+    if let Some(h) = &cfg.observability.host
+        && !cfg.hypervisors.contains_key(h)
+    {
+        anyhow::bail!(
+            "site.yml: observability.host is '{h}', which is not a hypervisor. Known: {}",
+            cfg.hypervisors
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let topic = substrate_core::updates::ntfy_topic();
+    if let Some(what) = args.render {
+        let host = args
+            .host
+            .or_else(|| cfg.observability.host.clone())
+            .context("--host or observability.host")?;
+        let files = obs::files_for(repo, &cfg, &host, topic.as_deref())?;
+        let out = match what.as_str() {
+            "scrape" => obs::scrape_config(&cfg),
+            "grafana-ini" => obs::grafana_ini(repo, &cfg)?,
+            "rules" => obs::alerts::alert_rules(),
+            "contactpoints" => {
+                obs::alerts::contact_points(topic.as_deref().context("no NTFY_TOPIC")?)
+            }
+            "traefik" => obs::traefik_route(repo, &cfg)?,
+            "manifest" => obs::manifest_for(repo, &cfg, &host, &files)?,
+            "installer" => obs::render_installer(repo, &cfg, &host, &files)?,
+            other => anyhow::bail!("unknown --render {other}"),
+        };
+        print!("{out}");
+        return Ok(());
+    }
+    let hosts: Vec<substrate_core::exec::Host> = cfg
+        .hypervisors
+        .iter()
+        .map(|(n, hv)| substrate_core::exec::Host::from_config(n, hv))
+        .collect();
+    if args.check {
+        let (mut problems, mut unverified) = (Vec::new(), Vec::new());
+        for host in &hosts {
+            let (p, u) = obs::check(repo, &cfg, host, topic.as_deref())?;
+            problems.extend(p);
+            unverified.extend(u);
+        }
+        if !unverified.is_empty() {
+            println!("UNVERIFIED — these files were not checked:");
+            for line in &unverified {
+                println!("  [    ] {line}");
+            }
+            println!();
+        }
+        if !problems.is_empty() {
+            println!("DRIFT — the hosts do not match this repository:");
+            for line in &problems {
+                println!("  [BUG] {line}");
+            }
+            println!(
+                "\nThe host tier has no reconciler. Re-run with --apply to restore the repository's version."
+            );
+            std::process::exit(1);
+        }
+        println!("every host matches the repository");
+        return Ok(());
+    }
+    for host in &hosts {
+        if let Err(e) = obs::deploy(repo, &cfg, host, topic.as_deref(), !args.apply) {
+            eprintln!("ERROR: {e}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
 }
 
 #[derive(clap::Args, Debug)]

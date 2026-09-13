@@ -22,7 +22,8 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# The Python lives in archive/python/ since ADR-183; the corpus is frozen with it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "archive" / "python"))
 import gate  # noqa: E402
 
 cases: list[dict] = []

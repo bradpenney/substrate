@@ -6,14 +6,19 @@
 //! `virsh` calls or a boot wait.
 
 pub mod architecture;
+pub mod client_cert;
 pub mod config;
+pub mod cplb;
 pub mod exec;
 pub mod gate;
 pub mod jit;
+pub mod jit_ops;
 pub mod libvirt;
+pub mod observability;
 pub mod posture;
 pub mod provision;
 pub mod render;
+pub mod updates;
 pub mod versions;
 pub mod wipe;
 

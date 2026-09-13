@@ -131,6 +131,22 @@ fn every_archetype_reproduces_its_golden() {
             .unwrap_or_else(|_| panic!("{} is missing", archetype.file));
 
         if rendered != golden {
+            // UPDATE_GOLDENS=1 is the successor to the Python regenerate.py (deleted with ADR-183)
+            // now the Python is archived. It is deliberately a test-time
+            // switch and not a `--update-snapshots` flag on the binary: the
+            // diff is printed here and must be READ, because a golden is a
+            // decision about what the renderer should produce, not a record
+            // of what it happened to produce. `git diff tests/golden` before
+            // committing is the forcing function that writing it twice used
+            // to be.
+            if std::env::var_os("UPDATE_GOLDENS").is_some() {
+                std::fs::write(&golden_path, &rendered).expect("golden is writable");
+                eprintln!(
+                    "UPDATED {} — READ THE DIFF before committing",
+                    archetype.file
+                );
+                continue;
+            }
             failures.push(describe_difference(&archetype.file, &golden, &rendered));
         }
     }

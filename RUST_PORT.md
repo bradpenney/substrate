@@ -29,6 +29,13 @@ comparison belongs in the test suite as proof of equivalence before the cutover
 | gate decisions | `gate.py` pure fns | `gate/logic.rs` | **188-case corpus GENERATED from CPython** (`gate_parity.rs`); 4 mutations caught |
 | fingerprint / compare | `gate.py` | `gate/mod.rs` | JSON and compare output byte-identical live |
 | roll | `gate.py:roll` | `gate/mod.rs:roll` | **NEVER EXECUTED** — composes ported primitives |
+| posture-check (15 invariants) | `posture-check.py` | `posture.rs` | live differential (`posture-differential.sh`, retired with the Python); **runs on the timer since 2026-09-12** |
+| jit grants | `jit-admin.py` | `jit_ops.rs` | goldens (attribution, audit lines); `jit status` byte-identical live |
+| client certificates | `create-client-cert.py` | `client_cert.rs` | CSR structure + ASN.1 shape identical (openssl); refusal text identical; re-minted all three identities 2026-09-12 |
+| control-plane LB | `deploy-cplb.py` | `cplb.rs` | dry-run + per-host installer byte-identical (incl. a Python line-continuation artefact) |
+| host updates | `deploy_updates.py` | `updates.rs` | dry-run byte-identical; payload root-owned and mode-pinned |
+| host observability | `deploy-observability.py` | `observability/` | 877-line dry-run, 25 manifest files and `--check` identical live; rules.yaml via `fold_like_pyyaml` |
+| site config | `models.py`, `siteconfig.py`, `hosts.py` | `config.rs` | fixture + every refusal ported as a test |
 
 **The write path ran on 2026-09-11** (`substrate rebuild --yes`): wipe of 5
 VMs, bootstrap on s2-vm1 at 20:27, all 5 nodes Ready at 20:38, no `create_vm`
@@ -73,26 +80,30 @@ Longhorn volume.
 
 ## Archiving the Python
 
-Every Python entry point now has a Rust twin that has been proven against it.
-What archival means, in order, and what each step must NOT break:
+Done in this order, each step gated on the previous one (ADR-183):
 
-1. **`posture-check.timer` still runs `posture-check.py`.** Change
-   `~/homelab/systemd/posture-check.service` `ExecStart=` to the release
-   binary (`substrate posture-check`, from a path systemd may execute — NOT
-   under /home, SELinux `user_home_t` gives 203/EXEC) on BOTH hypervisors.
-   Watch one 07:30 run land green before step 2.
-2. **`git mv` the Python into `archive/python/`** — `provision.py`, `gate.py`,
-   `posture-check.py`, `deploy-*.py`, `render-cloud-config.py`, `siteconfig.py`,
-   `hosts.py`, `ansible/`, `tests/`, `.venv` handling in `Makefile`/CI.
-   Keep `tests/golden/*.py` generators: they are how the corpora are
-   regenerated, and they import the archived modules by path.
-3. **CI**: drop the pytest/pylint/black jobs, keep `cargo test`, `clippy`,
-   `fmt`, and the golden regeneration check.
-4. **README / anatomy / this file**: "Python" becomes history, not a path.
+1. **First Rust rebuild** — 2026-09-11, `substrate rebuild --yes`, 5/5 Ready,
+   `compare python rust` differing only by platform additions since 08-28.
+2. **`posture-check.timer` on the Rust binary** — 2026-09-12. `ExecStart=`
+   is `/usr/local/bin/substrate posture-check` (a static musl binary in a
+   `bin_t` path; SELinux gives 203/EXEC to anything under /home). First run
+   under systemd: `all 15 security invariants hold`.
+3. **`git mv` into `archive/python/`** — every `*.py`, `ansible/`, `tests/`,
+   `.pylintrc`, `.coveragerc`, `requirements*.txt`, the coverage scripts.
+   The three corpus generators stay in `tests/golden/` beside the corpora
+   they produce and import the archived modules from `archive/python/` by
+   path — they are the provenance of the contract, not a second
+   implementation, and nothing runs them but a human regenerating a corpus.
+4. **CI** is `cargo fmt/clippy/build/test` + musl + shellcheck. The two
+   Python CI helpers that remain (`select_kairos_asset.py`,
+   `flag_critical_paths.py`) run only inside GitHub Actions; porting them to
+   subcommands is the last step to zero Python.
+5. **README / anatomy / this file**: Python is history, not a path.
 
-Not before the first Rust rebuild has passed. Archiving the reference
-implementation before the port has built a cluster is the one order that
-cannot be undone cheaply.
+`archive/python/` is not a fallback. It is not run by anything, not tested by
+CI, and will drift from `site.yml`'s schema the first time that changes. If
+the Rust is ever wrong, the fix is in the Rust; the archive is where you go
+to read what the reference DID, with the goldens as the contract between them.
 
 ## Verifying equivalence
 

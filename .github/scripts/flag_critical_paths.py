@@ -37,15 +37,15 @@ CRITICAL = [
         "cluster trusts",
     ),
     (
-        "deploy_updates.py",
+        "crates/substrate-core/src/updates.rs",
         "composes the privileged installer that runs under sudo on both hosts",
     ),
     (
-        "deploy-observability.py",
+        "crates/substrate-core/src/observability/",
         "composes the privileged installer that runs under sudo on both hosts",
     ),
     (
-        "deploy-cplb.py",
+        "crates/substrate-core/src/cplb.rs",
         "composes the privileged installer that runs under sudo on both hosts",
     ),
     (
@@ -54,12 +54,15 @@ CRITICAL = [
         "hides all the others",
     ),
     (
-        "provision.py",
+        "crates/substrate-core/src/render.rs",
         "renders the cosign identity the cluster verifies against, and the SSH "
         "key baked into every node",
     ),
-    ("models.py", "defines what a valid site configuration is"),
-    ("siteconfig.py", "defines what a valid site configuration is"),
+    (
+        "crates/substrate-core/src/provision.rs",
+        "creates VMs, mints join tokens and rewrites the operator's kubeconfig",
+    ),
+    ("crates/substrate-core/src/config.rs", "defines what a valid site configuration is"),
     (".sh", "shell executed on a hypervisor"),
 ]
 

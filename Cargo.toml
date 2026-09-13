@@ -27,7 +27,7 @@ anyhow = "1"
 # so it does not threaten the static-musl build the installer depends on.
 # Hand-rolling RFC3339 is ~40 lines that get leap years and offsets wrong, to
 # save one small dependency on a check whose whole job is a time comparison.
-time = { version = "0.3.55", features = ["parsing"] }
+time = { version = "0.3.55", features = ["parsing", "formatting"] }
 
 [profile.release]
 # A provisioning tool is not hot; size and a clean backtrace matter more than

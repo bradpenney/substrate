@@ -181,12 +181,11 @@ flux:
   # provider.
   # cosign_issuer: '^https://token\\.actions\\.githubusercontent\\.com$'
 
-# Optional. Only needed by dns/migrate_to_cloudflare.py (ADR-037).
-# Credentials for that script live in .dns-migration.env (also gitignored),
-# as VERCEL_TOKEN= and CLOUDFLARE_TOKEN= lines.
+# Optional, and read by nothing since the Vercel→Cloudflare replication
+# finished (ADR-037; its one-shot script is gone with ADR-183). Kept parseable
+# so an existing site.yml still loads; safe to delete from yours.
 dns:
   domain: example.com
-  vercel_team: team_xxxxxxxxxxxxxxxxxxxxxxxx
 
 # Host-tier observability (ADR-098). Optional; omit to skip the metrics store.
 #

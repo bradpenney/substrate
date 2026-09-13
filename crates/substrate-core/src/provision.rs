@@ -664,6 +664,65 @@ pub fn wait_for_k0s_ready(admin_user: &str, ip: &str, timeout: u64, interval: u6
     false
 }
 
+/// The Pod Security labels k0s-autopilot must carry: privileged/baseline,
+/// mirroring kube-system (autopilot updates node binaries and needs host
+/// access). Public so the verifier can assert the same set it enforces.
+pub const AUTOPILOT_POD_SECURITY_LABELS: &[(&str, &str)] = &[
+    ("pod-security.kubernetes.io/enforce", "privileged"),
+    ("pod-security.kubernetes.io/enforce-version", "latest"),
+    ("pod-security.kubernetes.io/warn", "baseline"),
+    ("pod-security.kubernetes.io/audit", "baseline"),
+];
+
+/// Label the k0s-autopilot namespace AFTER the cluster is up.
+///
+/// The rendered manifest stack `/var/lib/k0s/manifests/namespace-labels/`
+/// is not enough on its own. Measured on the 2026-09-11 rebuild: the applier
+/// applied that stack at 23:29:29, and the namespace still came up carrying
+/// only `k0s.k0sproject.io/stack=autopilot` — autopilot (re)applies its own
+/// Namespace object after the stack ran and replaces the label set. Four
+/// rebuilds in a row surfaced the gap the same way: posture-check, afterwards.
+///
+/// So the labels are applied here, from the provisioner, once every node is
+/// Ready and autopilot has finished starting. `--overwrite` makes it
+/// idempotent; the read-back turns a silently ignored label into a failed
+/// build rather than a finding the next morning.
+pub fn enforce_autopilot_pod_security(admin_user: &str, bootstrap_ip: &str) -> Result<()> {
+    println!("=== k0s-autopilot: Pod Security labels ===");
+    let pairs: Vec<String> = AUTOPILOT_POD_SECURITY_LABELS
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    let cmd = format!(
+        "sudo k0s kubectl label namespace k0s-autopilot --overwrite {}",
+        pairs.join(" ")
+    );
+    let out = node_ssh(admin_user, bootstrap_ip, 10, &cmd)?;
+    if !out.ok() {
+        bail!("labelling k0s-autopilot failed: {}", out.stderr.trim());
+    }
+    let check = node_ssh(
+        admin_user,
+        bootstrap_ip,
+        10,
+        "sudo k0s kubectl get namespace k0s-autopilot -o jsonpath='{.metadata.labels}'",
+    )?;
+    for (k, v) in AUTOPILOT_POD_SECURITY_LABELS {
+        let want = format!("\"{k}\":\"{v}\"");
+        if !check.stdout.contains(&want) {
+            bail!(
+                "k0s-autopilot is missing {k}={v} after labelling: {}",
+                check.stdout.trim()
+            );
+        }
+    }
+    println!(
+        "k0s-autopilot: {} labels asserted",
+        AUTOPILOT_POD_SECURITY_LABELS.len()
+    );
+    Ok(())
+}
+
 /// Generate a CONTROLLER-role join token on the bootstrap node.
 ///
 /// Every node in this cluster is a controller (all-controllers design), so
@@ -1095,6 +1154,7 @@ pub fn provision_fleet(cfg: &SiteConfig, ssh_key: &str) -> Result<()> {
             NODE_READY_TIMEOUT,
             SSH_WAIT_INTERVAL,
         )?;
+        enforce_autopilot_pod_security(admin, &bootstrap_vm.static_ip)?;
         return refresh_client_access(admin, &bootstrap_vm.static_ip, &all_ips);
     }
 
@@ -1137,6 +1197,11 @@ pub fn provision_fleet(cfg: &SiteConfig, ssh_key: &str) -> Result<()> {
         NODE_READY_TIMEOUT,
         SSH_WAIT_INTERVAL,
     )?;
+
+    // Phase 3b: what the cluster cannot declare for itself. k0s owns the
+    // k0s-autopilot namespace (ADR-063: Flux must not), and its own manifest
+    // stack loses the race to autopilot — see enforce_autopilot_pod_security.
+    enforce_autopilot_pod_security(admin, &bootstrap_vm.static_ip)?;
 
     // Phase 4: leave the OPERATOR'S environment working too. A rebuild that
     // produces a healthy cluster you cannot talk to is not reproducible in any

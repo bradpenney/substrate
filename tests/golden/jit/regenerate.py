@@ -21,7 +21,8 @@ import json
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
+# The Python lives in archive/python/ since ADR-183; the goldens are frozen with it.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "archive" / "python"))
 import jit_admin_shim  # noqa: E402
 
 jit = jit_admin_shim.load()

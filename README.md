@@ -7,20 +7,15 @@ renders "repo or workflow not found". GitHub's own endpoint works while private
 but is fixed-style: no custom label, no logo, no colour, so it does not match
 the rest of this row. Restore these three:
 
-  [![tests](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/test.yaml?branch=main&label=tests&logo=pytest&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
+  [![tests](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/test.yaml?branch=main&label=tests&logo=rust&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
   [![bump-kairos](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-kairos.yaml?branch=main&label=kairos%20bump&logo=githubactions&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-kairos.yaml)
   [![bump-flux-operator](https://img.shields.io/github/actions/workflow/status/bradpenney/substrate/bump-flux-operator.yaml?branch=main&label=flux%20bump&logo=flux&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/bump-flux-operator.yaml)
 
-The coverage badge needs NO change: a relative path to the committed
-coverage.svg works in both visibility states and depends on no external host.
 Verify after flipping by fetching every badge URL and reading the SVG <title> —
 a 200 means shields answered, not that it answered with a status.
 -->
 
 [![tests](https://github.com/bradpenney/substrate/actions/workflows/test.yaml/badge.svg?branch=main)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
-[![logic coverage](coverage.svg)](#what-is-tested)
-[![pylint](https://img.shields.io/badge/pylint-10.00%2F10-brightgreen?logo=python&logoColor=white)](.pylintrc)
-[![code style: black](https://img.shields.io/badge/code%20style-black-000000)](https://github.com/psf/black)
 [![shellcheck](https://img.shields.io/badge/shellcheck-style%20clean-4EAA25?logo=gnubash&logoColor=white)](https://github.com/bradpenney/substrate/actions/workflows/test.yaml)
 [![rebuild](https://img.shields.io/badge/destroy%20%26%20rebuild-verified%20both%20methods-success)](#the-gate)
 [![SELinux](https://img.shields.io/badge/SELinux-enforcing-success)](#security-posture)
@@ -29,47 +24,39 @@ a 200 means shields answered, not that it answered with a status.
 [![k0s](https://img.shields.io/badge/k0s-1.36-0F1689?logo=kubernetes&logoColor=white)](https://k0sproject.io)
 [![Kairos](https://img.shields.io/badge/Kairos-v4.2.0-6E4AFF)](https://kairos.io)
 [![Flux](https://img.shields.io/badge/GitOps-Flux%20via%20OCI-5468FF?logo=flux&logoColor=white)](https://fluxcd.io)
-[![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Rust](https://img.shields.io/badge/Rust-1.98%20%C2%B7%20static%20musl-000000?logo=rust&logoColor=white)](crates/)
 [![rustfmt](https://img.shields.io/badge/rustfmt-clean-000000?logo=rust&logoColor=white)](rust-toolchain.toml)
 [![clippy](https://img.shields.io/badge/clippy-warnings%20are%20errors-000000?logo=rust&logoColor=white)](rust-toolchain.toml)
-[![pydantic](https://img.shields.io/badge/config-typed%20with%20pydantic-E92063?logo=pydantic&logoColor=white)](models.py)
-[![Ansible](https://img.shields.io/badge/Ansible-core-EE0000?logo=ansible&logoColor=white)](https://ansible.com)
 [![Licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
 
 Provisions a five-node [k0s](https://k0sproject.io) cluster across two
 bare-metal KVM hypervisors, from bare metal to a cluster Flux is already
 reconciling — with no manual step in between.
 
-The distinctive thing here is not the cluster. It is that the build is written
-**twice**, in Python and in Ansible, and a test proves the two produce
-byte-identical output.
+The distinctive thing here is not the cluster. It is that the build exists as
+**one static binary whose every output was proven against a reference
+implementation before that reference was retired** — so the thing that
+rebuilds the cluster is the thing that has already rebuilt it, byte for byte.
 
-## Why two implementations
+## Proven, then archived
 
-The goal is a cluster that can be destroyed and rebuilt on demand, and *trusted*
-afterwards. That guarantee is only as good as the thing checking it, so the
-check is a second independent implementation rather than a second look at the
-first one.
+The build was written first in Python, with Ansible as an independent second
+implementation and a test proving the two rendered byte-identical
+cloud-config. That pair caught real divergences — a change landing in one and
+not the other; a bootstrap credential the Ansible path never rendered at all.
 
-`ansible/check_render.py` renders the cloud-config both ways — bootstrap node,
-joining node, and a node with a dedicated storage disk — and diffs them:
+The Rust port replaced both, and had to clear the same bar. Three proof
+contracts, chosen by what each piece of the Python actually produced:
 
-```
-[ok ] bootstrap node (no token): byte-identical (10731 bytes)
-[ok ] joining node (with token): byte-identical (10883 bytes)
-[ok ] node WITH a Longhorn disk: byte-identical (11982 bytes)
-cloud-config renderers agree
-```
+| the Python produced | the Rust is held to |
+|---|---|
+| files (cloud-config, HAProxy, keepalived, installers, alert rules) | **committed goldens**, regenerated by `cargo test`; live dry-runs diffed byte for byte |
+| decisions (`shlex.quote`, the 10 gate criteria) | **corpora generated from CPython** — 35 shell-quoting cases, 188 gate decisions — replayed by `cargo test`; mutation-tested |
+| a cluster | **a rebuild**: `substrate rebuild --yes` on 2026-09-11, then `substrate compare python rust` on the saved end-state fingerprints |
 
-It earns its place regularly. It has caught a change landing in one
-implementation and not the other, and a pre-existing divergence where the
-Ansible path never rendered a bootstrap credential at all — a cluster that would
-have come up unable to issue certificates or take backups, with everything
-reporting healthy.
-
-Run it as `.venv/bin/python3 ansible/check_render.py` — it needs the repo's own
-virtualenv.
+The Python, the Ansible and their test suite live under `archive/python/` —
+history, not a fallback (ADR-183). The corpus generators there still run
+against the archived modules; nothing in `crates/` imports Python.
 
 ## The gate
 
@@ -102,16 +89,12 @@ is running is not a check that it works.**
 
 | Path | |
 |---|---|
-| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · render · architecture` |
-| `provision.py`, `gate.py` | the Python reference the Rust was proven against — to be archived after the first Rust rebuild (`RUST_PORT.md`) |
-| `ansible/` | the second bootstrap implementation, plus the render-equality test — archived with the Python |
-| `tests/golden/` | corpora GENERATED from the Python (shlex, gate decisions) that the Rust must reproduce |
-| `hosts.py`, `siteconfig.py` | fleet definition, read from `site.yml` |
+| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · render · architecture · jit · client-cert · deploy-cplb · deploy-updates · deploy-observability` |
+| `tests/golden/` | goldens and CPython-generated corpora the Rust must reproduce |
+| `archive/python/` | the reference implementation the Rust was proven against, plus the corpus generators (ADR-183) |
 | `versions.yml` | every external artifact, pinned and checksummed |
-| `deploy-cplb.py` | HAProxy + keepalived control-plane load balancer |
-| `jit-admin.py` | time-boxed cluster-admin grants |
-| `create-client-cert.py` | mint a scoped kubeconfig identity via the CSR API |
-| `posture-check.py` | daily assertion of the cluster's security invariants |
+| `systemd/`, `*.sh` | what runs on the hypervisors: nightly maintenance, auto-roll, host-tier observability — staged by `substrate deploy-*`, never pulled from git |
+| `observability-host/` | Grafana dashboards and provisioning for the host-tier stack |
 
 ## Configuration
 
@@ -126,8 +109,9 @@ runs *on* the cluster and stays private for the same reason.
 
 ```bash
 cp site.example.yml site.yml     # then edit
-python3 -m venv .venv && .venv/bin/pip install ansible-core
-.venv/bin/python3 ansible/check_render.py
+cargo build --release
+./target/release/substrate provision              # the plan; nothing is touched without --apply
+./target/release/substrate render --name s1-vm1 --ip 192.0.2.10 --hypervisor server1
 ```
 
 ## Nothing is unpinned
@@ -140,8 +124,8 @@ as a change to review, rather than letting `latest` decide.
 ## Security posture
 
 Every control below is **asserted continuously**, not configured once.
-`posture-check.py` runs on a timer and fails loudly if any of these stops being
-true — 14 invariants at present. The distinction matters: most of the defects
+`substrate posture-check` runs on a timer and fails loudly if any of these
+stops being true — 15 invariants at present. The distinction matters: most of the defects
 found while building this were controls that were installed and *not working*.
 
 | Control | How it is enforced |
@@ -162,52 +146,27 @@ found while building this were controls that were installed and *not working*.
 
 | Layer | What it proves |
 |---|---|
-| `pytest` | Unit and **regression** tests — every one written against a defect that actually occurred |
+| `cargo test` | 108 tests: unit and **regression** tests — every one written against a defect that actually occurred — plus the goldens and the CPython-generated corpora (`shlex_parity`, `gate_parity`) |
 | `shellcheck -S style` | The scripts that run as root on every hypervisor and drain cluster nodes |
-| `check_render.py` | Both bootstrap implementations render byte-identical cloud-config |
-| `ansible --syntax-check` | The second implementation still parses |
-| `cargo test` | Rust unit tests, plus the generated corpora: `shlex_parity` (CPython's `shlex.quote`) and `gate_parity` (188 gate decisions) |
+| `cargo clippy -D warnings`, `cargo fmt --check` | Warnings are errors; formatting is not a review topic |
 | `substrate verify` | Ten live checks against a real cluster |
-| `substrate rebuild` + `compare` | The whole thing, from nothing — end states compared field by field across methods |
+| `substrate rebuild` + `compare` | The whole thing, from nothing — end states compared field by field across rebuilds |
 
 The test suite's specification is the bug log. When something breaks, the fix
 ships with the test that would have caught it; tests written against imagined
 failures become decoration, tests written against real ones do not.
 
-**The coverage badge says "logic coverage" deliberately.** It measures lines
-executed by `pytest`, which is not the same as how much of this system is
-tested. `posture-check.py` reads 99% and still proves nothing on its own — what it
-asserts is only true of a live cluster, nightly; `gate.py` reads 20% and is
-exercised end to end by every rebuild; the static rules over the systemd units
-contribute nothing to the number and catch defects that shipped. Most of what is uncovered drives real hosts over ssh and kubectl,
-where a unit test would assert only that the code calls the commands it calls.
+There is deliberately no coverage number. Most of what this binary does drives
+real hosts over `ssh`, `virsh` and `kubectl`, where a unit test would assert
+only that the code calls the commands it calls. That layer is covered by the
+rebuild, not mocked — the pure decision logic underneath it is what the
+corpora pin.
 
-Coverage is enforced **per module** rather than as one global number: 95% on the
-logic modules, and the orchestration reported but not gated, because driving
-`virsh` and `ssh` to 95% would mean stubbing a hypervisor and asserting that the
-code calls the commands it calls. Logic sits at 99%.
-
-### Lint and format
-
-`pylint` is a **10.00/10 hard gate on the source**. Every disable in
-`.pylintrc` is justified in place, and the rule applied throughout is that a
-check is silenced only where the code is right and pylint's model of it is
-wrong — anything it found that was a genuine defect was fixed rather than
-suppressed. That included 45 `subprocess.run` calls given an explicit
-`check=False`, three text files opened without an encoding, an unchained
-`raise`, and a duplicate import.
-
-Test files are deliberately **not** held to 10/10: pytest idioms — fixtures
-shadowing names, tests exercising private helpers — would otherwise force
-weakening the rules that apply to the code that runs in anger.
-
-`black` owns formatting, including line length. Two tools disagreeing about the
-same property means one must yield, and the formatter is the one that can
-actually fix it.
-
-**Every function and class in the source carries a multi-line docstring** — 103
-of them, no one-liners. The house style is to say why the code is shaped the way
-it is, not to restate its name.
+**Doc comments say why the code is shaped the way it is**, not what a name
+already says. Where the Python did something
+surprising to be correct — PyYAML's line folding, a shell line-continuation
+artefact in an installer — the Rust reproduces it and the comment says which
+defect taught it.
 
 ## Design notes
 
