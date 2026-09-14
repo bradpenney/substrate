@@ -112,15 +112,19 @@ jobs:
           case "$v" in *"(${{ needs.version.outputs.version }})"*) ;; *) echo "binary is not stamped with the release tag"; exit 1;; esac
       - name: SBOM (CycloneDX)
         uses: firestoned/github-actions/rust/generate-sbom@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        # No `package:` input: the pinned cargo-cyclonedx rejects --package
+        # (v0.2.1's first run), so the action's default `--all` describes every
+        # workspace crate and writes <crate>.cdx.json beside each Cargo.toml.
         with:
           target: ${{ env.TARGET }}
-          package: substrate
       - name: Stage the artifact
-        # cargo-cyclonedx writes <crate>.cdx.json beside the crate's Cargo.toml.
         run: |
           mkdir -p dist
           cp "target/$TARGET/release/substrate" "dist/$ASSET"
-          cp crates/substrate/substrate.cdx.json "dist/$ASSET.sbom.cdx.json"
+          sbom=$(find . -name '*.cdx.json' -not -path '*/target/*' -path '*/crates/substrate/*' | head -1)
+          [ -n "$sbom" ] || sbom=$(find . -name '*.cdx.json' -not -path '*/target/*' | head -1)
+          [ -n "$sbom" ] || { echo "no SBOM was produced"; exit 1; }
+          cp "$sbom" "dist/$ASSET.sbom.cdx.json"
           ls -l dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
