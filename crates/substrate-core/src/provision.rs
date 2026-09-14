@@ -525,6 +525,75 @@ pub fn etcd_prune(admin_user: &str, bootstrap_host: &Host, bootstrap_ip: &str, d
     );
 }
 
+/// Remove the destroyed node's Kubernetes Node object, and with it Longhorn's
+/// record of the node.
+///
+/// A replacement joins under the SAME name. Left in place, the old Node
+/// object is simply re-adopted by the new kubelet — and Longhorn's node CR
+/// hanging off it still carries the OLD disk's UUID, so the fresh disk is
+/// refused ("record diskUUID doesn't match the one on the disk"), the node
+/// never takes a replica again, and every volume that had one there stays
+/// degraded (bug-154, found on the first real roll). Longhorn deletes its
+/// node CR itself when the Kubernetes Node goes away, and creates a fresh
+/// one when the replacement registers; this is the only clean path — its
+/// webhook refuses to delete the CR of a node it still thinks is Ready.
+///
+/// Also evicts the dead node's pods immediately instead of after the
+/// five-minute tolerations, which is why the app comes back sooner.
+pub fn forget_node(admin_user: &str, donor_host: &Host, donor_ip: &str, dead: &Vm) {
+    println!(
+        "[{}] removing the Node object for {} (and Longhorn's record of it)...",
+        donor_host.name, dead.name
+    );
+    let _ = node_ssh(
+        admin_user,
+        donor_ip,
+        90,
+        &format!(
+            "sudo k0s kubectl delete node {} --ignore-not-found --timeout=60s",
+            dead.name
+        ),
+    );
+    let has_longhorn = node_ssh(
+        admin_user,
+        donor_ip,
+        10,
+        "sudo k0s kubectl get crd nodes.longhorn.io",
+    )
+    .map(|o| o.ok())
+    .unwrap_or(false);
+    if !has_longhorn {
+        return;
+    }
+    for i in 0..24 {
+        let gone = node_ssh(
+            admin_user,
+            donor_ip,
+            10,
+            &format!(
+                "sudo k0s kubectl -n longhorn-system get nodes.longhorn.io {}",
+                dead.name
+            ),
+        )
+        .map(|o| !o.ok())
+        .unwrap_or(false);
+        if gone {
+            println!("    longhorn forgot {}", dead.name);
+            return;
+        }
+        println!(
+            "    waiting for longhorn to forget {} ({}s)...",
+            dead.name,
+            i * 5
+        );
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    println!(
+        "    WARNING: longhorn still records {} — its disk will show DiskNotReady after the join; remove and re-add the disk by hand (bug-154)",
+        dead.name
+    );
+}
+
 /// Map node name -> Ready, as the cluster currently sees it.
 ///
 /// Queried through `k0s kubectl` on the bootstrap node rather than a local

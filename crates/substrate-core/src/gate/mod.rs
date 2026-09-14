@@ -828,7 +828,10 @@ impl<'a> Gate<'a> {
         let started = Instant::now();
         let deadline = started + Duration::from_secs(timeout);
         let mut last = String::new();
-        println!("    waiting for etcd: {} members expected, up to {timeout}s", want.len());
+        println!(
+            "    waiting for etcd: {} members expected, up to {timeout}s",
+            want.len()
+        );
         while Instant::now() < deadline {
             let members = provision::node_ssh(
                 &self.cfg.admin_user,
@@ -1047,6 +1050,8 @@ impl<'a> Gate<'a> {
             // A destroyed node's etcd membership outlives it; the ghost costs
             // quorum on the NEXT replacement.
             provision::etcd_prune(admin, donor_host, &donor_vm.static_ip, vm);
+            // And its Node object, so Longhorn forgets the old disk (bug-154).
+            provision::forget_node(admin, donor_host, &donor_vm.static_ip, vm);
             let iso = format!(
                 "{}/{}-cloudinit.iso",
                 self.cfg.libvirt.iso_pool_path, vm.name
