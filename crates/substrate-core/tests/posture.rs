@@ -698,6 +698,7 @@ fn a_direct_connection_that_ANSWERS_is_the_lock_being_broken() {
     // ingress without passing the edge allowlist. 200 here is the failure.
     let p = OriginProbe {
         hostname_configured: true,
+        edge: Some("203.0.113.10".into()),
         through: "200".into(),
         direct: Some("200".into()),
     };
@@ -718,6 +719,7 @@ fn a_refused_direct_connection_is_the_HEALTHY_answer() {
     // than a boolean someone could read the wrong way round.
     let p = OriginProbe {
         hostname_configured: true,
+        edge: Some("203.0.113.10".into()),
         through: "200".into(),
         direct: Some("000".into()),
     };
@@ -734,6 +736,7 @@ fn a_refused_direct_connection_is_the_HEALTHY_answer() {
 fn the_public_site_not_returning_200_is_a_failure() {
     let p = OriginProbe {
         hostname_configured: true,
+        edge: Some("203.0.113.10".into()),
         through: "503".into(),
         direct: Some("000".into()),
     };
@@ -765,6 +768,7 @@ fn an_unconfigured_hostname_SKIPS_rather_than_failing() {
 fn a_configured_hostname_with_no_origin_still_checks_the_public_side() {
     let p = OriginProbe {
         hostname_configured: true,
+        edge: Some("203.0.113.10".into()),
         through: "200".into(),
         direct: None,
     };
@@ -775,9 +779,28 @@ fn a_configured_hostname_with_no_origin_still_checks_the_public_side() {
 }
 
 #[test]
+fn no_public_answer_means_the_cloudflare_path_was_not_probed_and_that_FAILS() {
+    // The host's own resolver answers the ingress's LAN address under
+    // split-horizon (ADR-187); a probe that used it would pass without ever
+    // touching Cloudflare. So the probe pins to a public answer, and having
+    // none is a check that could not see — which must fail, not pass.
+    let p = OriginProbe {
+        hostname_configured: true,
+        edge: None,
+        through: String::new(),
+        direct: Some("000".into()),
+    };
+    let mut r = Report::default();
+    check_origin_lock(&p, &mut r);
+    assert_eq!(r.failures.len(), 1);
+    assert!(r.failures[0].contains("NOT probed"), "got {:?}", r.failures);
+}
+
+#[test]
 fn an_empty_direct_status_reads_as_no_response_not_as_blank() {
     let p = OriginProbe {
         hostname_configured: true,
+        edge: Some("203.0.113.10".into()),
         through: "200".into(),
         direct: Some(String::new()),
     };

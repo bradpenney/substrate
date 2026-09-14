@@ -26,9 +26,12 @@ admin_user: youruser
 
 network:
   gateway: 192.0.2.1
+  # The hypervisors, not the router and not anything in the cluster: nodes
+  # resolve through unbound on the host tier, and `deploy-resolver` gives each
+  # hypervisor this same list (ADR-182).
   dns_servers:
-    - 192.0.2.1
-    - 8.8.8.8
+    - 192.0.2.10
+    - 192.0.2.11
   # Bridge on each hypervisor that VMs attach to, so nodes get real LAN IPs.
   bridge: br0
   # The VM's NIC name, matched by NAME in systemd-networkd.
@@ -186,6 +189,17 @@ flux:
 # so an existing site.yml still loads; safe to delete from yours.
 dns:
   domain: example.com
+  # The authoritative pair in the cluster. List every address their MetalLB
+  # pool can hand out; unbound forwards the zone to whichever answers and,
+  # forward-first, recurses publicly when none do.
+  forwarders:
+    - 192.0.2.207
+    - 192.0.2.208
+  # Everything else, over TLS. addr@port#name — the name is what the
+  # certificate is verified against.
+  upstreams:
+    - 1.1.1.1@853#cloudflare-dns.com
+    - 9.9.9.9@853#dns.quad9.net
 
 # Host-tier observability (ADR-098). Optional; omit to skip the metrics store.
 #

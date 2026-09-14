@@ -61,6 +61,8 @@ enum Command {
     ClientCert(ClientCertArgs),
     /// Deploy the HAProxy + keepalived control-plane LB to each hypervisor. See --apply.
     DeployCplb(DeployCplbArgs),
+    /// Deploy the LAN's recursive resolvers (unbound) to each hypervisor, ADR-182. See --apply.
+    DeployResolver(DeployResolverArgs),
     /// Deploy the nightly hypervisor-update machinery to every hypervisor. See --apply.
     DeployUpdates(DeployUpdatesArgs),
     /// Deploy the host-tier observability stack (VictoriaMetrics, VictoriaLogs, Grafana). See --apply.
@@ -114,6 +116,7 @@ fn main() -> Result<()> {
         Command::Jit(args) => jit(args),
         Command::ClientCert(args) => client_cert(args),
         Command::DeployCplb(args) => deploy_cplb(&cli.repo, args),
+        Command::DeployResolver(args) => deploy_resolver(&cli.repo, args),
         Command::DeployUpdates(args) => deploy_updates(&cli.repo, args),
         Command::DeployObservability(args) => deploy_observability(&cli.repo, args),
         Command::Architecture(args) => architecture(args),
@@ -534,7 +537,14 @@ fn gather_origin(repo: &std::path::Path) -> substrate_core::posture::OriginProbe
             .unwrap_or_default()
     };
 
-    let through = curl(&[]);
+    // Pinned to the address a PUBLIC resolver gives, never this host's own:
+    // under split-horizon (ADR-187) the host's resolver answers the ingress's
+    // LAN address, and the probe would get its 200 without leaving the house.
+    let edge = public_address(&hostname);
+    let through = edge
+        .as_deref()
+        .map(|ip| curl(&["--resolve", &format!("{hostname}:443:{ip}")]))
+        .unwrap_or_default();
     let direct = cfg
         .posture
         .origin_ip
@@ -543,9 +553,29 @@ fn gather_origin(repo: &std::path::Path) -> substrate_core::posture::OriginProbe
 
     OriginProbe {
         hostname_configured: true,
+        edge,
         through,
         direct,
     }
+}
+
+/// The hostname's A record as the public internet sees it. Two resolvers, so
+/// one's bad night does not page as a broken origin lock.
+fn public_address(hostname: &str) -> Option<String> {
+    for resolver in ["@1.1.1.1", "@8.8.8.8"] {
+        let out = std::process::Command::new("dig")
+            .args(["+short", "+time=3", "+tries=1", resolver, "A", hostname])
+            .output()
+            .ok()?;
+        if let Some(ip) = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|l| l.parse::<std::net::Ipv4Addr>().is_ok())
+        {
+            return Some(ip.to_string());
+        }
+    }
+    None
 }
 
 /// Probe each restricted port from a source that must be denied, and — only if
@@ -966,6 +996,38 @@ fn deploy_cplb(repo: &std::path::Path, args: DeployCplbArgs) -> Result<()> {
         return Ok(());
     }
     exit_with(cplb.apply() == 0)
+}
+
+#[derive(clap::Args, Debug)]
+struct DeployResolverArgs {
+    /// Actually install on every hypervisor (default: print the plan and both drop-ins).
+    #[arg(long)]
+    apply: bool,
+    /// Print the exact installer stream that would be piped to `sudo bash -s`
+    /// on every hypervisor, then stop.
+    #[arg(long, conflicts_with = "apply")]
+    show_install: bool,
+}
+
+fn deploy_resolver(repo: &std::path::Path, args: DeployResolverArgs) -> Result<()> {
+    // Same shape as deploy-cplb: escalation happens REMOTELY, never locally.
+    refuse_if_root("substrate deploy-resolver --apply");
+    let cfg = substrate_core::load(repo)?;
+    let r = substrate_core::resolver::Resolver::from_site(&cfg)?;
+    if args.show_install {
+        print!("{}", r.install_script());
+        return Ok(());
+    }
+    r.print_plan();
+    if !args.apply {
+        println!("\n--- /etc/unbound/local.d/substrate.conf ---");
+        print!("{}", r.server_conf());
+        println!("\n--- /etc/unbound/conf.d/substrate.conf ---");
+        print!("{}", r.forward_conf());
+        println!("\nDRY RUN — nothing installed. Re-run with --apply.");
+        return Ok(());
+    }
+    exit_with(r.apply() == 0)
 }
 
 #[derive(clap::Args, Debug)]

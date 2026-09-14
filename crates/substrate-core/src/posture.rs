@@ -601,6 +601,15 @@ pub fn check_peer_units(states: &[PeerUnitState], r: &mut Report) {
 pub struct OriginProbe {
     /// None when no public hostname is configured at all.
     pub hostname_configured: bool,
+    /// The address a PUBLIC resolver gave for the hostname, which `through`
+    /// was pinned to. None when no public resolver answered — then `through`
+    /// was never probed, and the check must say so rather than pass.
+    ///
+    /// The hypervisor's own resolver cannot be trusted for this: with
+    /// split-horizon (ADR-187) it answers the ingress's LAN address, and a
+    /// probe that followed it would collect its 200 from one room away and
+    /// report that as "through Cloudflare".
+    pub edge: Option<String>,
     pub through: String,
     /// None when no origin address is configured, so the bypass was not tried.
     pub direct: Option<String>,
@@ -619,13 +628,18 @@ pub fn check_origin_lock(p: &OriginProbe, r: &mut Report) {
         r.note("origin lock: no public_hostname configured, check skipped");
         return;
     }
+    let Some(edge) = p.edge.as_deref() else {
+        // A check that cannot see must fail loudly, not pass quietly.
+        r.fail("public site: no public resolver answered for the hostname, so the Cloudflare path was NOT probed");
+        return;
+    };
     if p.through != "200" {
         r.fail(format!(
             "public site via Cloudflare returned {}, expected 200",
             p.through
         ));
     } else {
-        r.note("public site: 200 through Cloudflare");
+        r.note(format!("public site: 200 through Cloudflare (edge {edge})"));
     }
     let Some(direct) = p.direct.as_deref() else {
         r.note("origin lock: no origin_ip configured, bypass check skipped");

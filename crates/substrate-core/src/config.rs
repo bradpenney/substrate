@@ -245,7 +245,16 @@ fn default_cosign_issuer() -> String {
     r"^https://token\\.actions\\.githubusercontent\\.com$".to_string()
 }
 
-/// The public zone and which records are proxied.
+/// The estate's zone, and how the LAN resolves it (ADR-182).
+///
+/// `domain` is the zone the authoritative pair in the cluster serves for the
+/// LAN. `forwarders` are the pair's addresses — every address the pair could
+/// hold, since they float inside a MetalLB pool rather than being pinned.
+/// `upstreams` are the public resolvers everything else goes to, over TLS,
+/// in unbound's `addr@port#authname` form.
+///
+/// `proxied` and `vercel_team` fed the retired Cloudflare migration script
+/// and are read by nothing; they stay accepted so an older site.yml parses.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DnsConfig {
@@ -255,6 +264,10 @@ pub struct DnsConfig {
     pub proxied: Vec<String>,
     #[serde(default)]
     pub vercel_team: Option<String>,
+    #[serde(default)]
+    pub forwarders: Vec<String>,
+    #[serde(default)]
+    pub upstreams: Vec<String>,
 }
 
 /// The whole of `site.yml`, validated.

@@ -89,7 +89,7 @@ is running is not a check that it works.**
 
 | Path | |
 |---|---|
-| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · render · architecture · jit · client-cert · deploy-cplb · deploy-updates · deploy-observability` |
+| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · render · architecture · jit · client-cert · deploy-cplb · deploy-resolver · deploy-updates · deploy-observability` |
 | `tests/golden/` | goldens and CPython-generated corpora the Rust must reproduce |
 | `archive/python/` | the reference implementation the Rust was proven against, plus the corpus generators (ADR-183) |
 | `versions.yml` | every external artifact, pinned and checksummed |
