@@ -150,6 +150,14 @@ pub fn cloud_config(cfg: &SiteConfig, vm: &Vm, join_token: Option<&str>, ssh_key
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "30".to_string()),
         );
+        // A FILE, rotated by the apiserver itself, never "-" (stdout): stdout
+        // is the k0s supervisor's pipe, and the supervisor buffers what
+        // journald does not drain — 11.9 GB of it on one node (bug-150).
+        // maxage alone never rotates a file that is still being written.
+        if audit_path != "-" {
+            api_extra_args.insert("audit-log-maxsize", "100".into());
+            api_extra_args.insert("audit-log-maxbackup", "5".into());
+        }
         // Levels, from the top down. Order matters: the FIRST matching rule
         // wins, so the noise-suppression rules have to come before the
         // catch-all.
@@ -193,6 +201,20 @@ pub fn cloud_config(cfg: &SiteConfig, vm: &Vm, join_token: Option<&str>, ssh_key
                 verbs: ["get", "list", "watch"]
               - level: None
                 nonResourceURLs: ["/healthz*", "/readyz*", "/livez*", "/version", "/metrics"]
+              # Leader-election leases are renewed every few seconds by every
+              # controller in the cluster and say nothing about who did what.
+              # Logged at RequestResponse they were most of a 40 MB / 10 min
+              # audit stream that, piped through the k0s supervisor to a
+              # journald that could not keep up, sat in the supervisor's memory
+              # until the node OOMed (bug-150). Events are the other half.
+              - level: None
+                resources:
+                  - group: "coordination.k8s.io"
+                    resources: ["leases"]
+                  - group: ""
+                    resources: ["events"]
+                  - group: "events.k8s.io"
+                    resources: ["events"]
               # Everything that changes state.
               - level: RequestResponse
                 verbs: ["create", "update", "patch", "delete", "deletecollection"]

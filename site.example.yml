@@ -138,11 +138,12 @@ api_hardening:
   # Only then can the old key be dropped.
   secrets_encryption_key: "REPLACE-ME-32-random-bytes-base64"
 
-  # Audit log destination. "-" means stdout, which journald captures.
-  # Deliberately not a file: the nodes run an immutable OS where most of the
-  # filesystem is read-only, and a log path that silently fails to write is
-  # worse than no audit log at all -- it looks like one.
-  audit_log_path: "-"
+  # Audit log destination: a FILE under the persistent k0s data directory,
+  # rotated by the apiserver (100 MB × 5). Not "-" (stdout): stdout is the
+  # k0s supervisor's pipe, and a supervisor whose journald falls behind holds
+  # the whole stream in memory until the node runs out of it. The path must
+  # be writable on an immutable OS; /var/lib/k0s is where k0s already writes.
+  audit_log_path: "/var/lib/k0s/audit.log"
   audit_log_maxage: "30"
 
 # --- posture check (ADR-073) ---

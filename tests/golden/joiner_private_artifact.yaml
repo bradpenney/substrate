@@ -46,6 +46,8 @@ stages:
                   - 10.99.0.99
                 extraArgs:
                   audit-log-maxage: "30"
+                  audit-log-maxbackup: "5"
+                  audit-log-maxsize: "100"
                   audit-log-path: "/var/log/k0s/audit.log"
                   audit-policy-file: "/etc/k0s/audit-policy.yaml"
                   encryption-provider-config: "/etc/k0s/encryption.yaml"
@@ -141,6 +143,20 @@ stages:
                 verbs: ["get", "list", "watch"]
               - level: None
                 nonResourceURLs: ["/healthz*", "/readyz*", "/livez*", "/version", "/metrics"]
+              # Leader-election leases are renewed every few seconds by every
+              # controller in the cluster and say nothing about who did what.
+              # Logged at RequestResponse they were most of a 40 MB / 10 min
+              # audit stream that, piped through the k0s supervisor to a
+              # journald that could not keep up, sat in the supervisor's memory
+              # until the node OOMed (bug-150). Events are the other half.
+              - level: None
+                resources:
+                  - group: "coordination.k8s.io"
+                    resources: ["leases"]
+                  - group: ""
+                    resources: ["events"]
+                  - group: "events.k8s.io"
+                    resources: ["events"]
               # Everything that changes state.
               - level: RequestResponse
                 verbs: ["create", "update", "patch", "delete", "deletecollection"]

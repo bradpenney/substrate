@@ -354,6 +354,27 @@ pub fn alert_rules() -> String {
     )
 }
 
+/// The body ntfy receives, in ITS shape rather than Grafana's.
+///
+/// Grafana's default webhook body is its whole alert payload — several KB —
+/// and ntfy turns anything over its 4 KB message limit into an attachment,
+/// so every page arrived as a JSON file to open rather than a line to read
+/// (bug-149). This template posts to ntfy's JSON endpoint (the root URL, topic
+/// in the body) with a title, a one-line-per-target message, and a priority
+/// that drops when the group resolves. Labels only in the body: a summary
+/// annotation with a quote in it would break the JSON.
+pub fn ntfy_payload_template(topic: &str) -> String {
+    format!(
+        r#"{{
+  "topic": "{topic}",
+  "title": "{{{{ .CommonLabels.alertname }}}}: {{{{ .Status }}}} ({{{{ len .Alerts }}}})",
+  "message": "{{{{ range .Alerts }}}}{{{{ .Labels.job }}}} {{{{ .Labels.instance }}}}\n{{{{ end }}}}",
+  "priority": {{{{ if eq .Status "firing" }}}}4{{{{ else }}}}2{{{{ end }}}},
+  "tags": ["{{{{ .Status }}}}"]
+}}"#
+    )
+}
+
 /// The ntfy contact point and the policy that routes to it. THE TOPIC IS A
 /// SECRET (a capability URL), resolved from the operator's environment at
 /// deploy time and installed root:grafana 0640.
@@ -373,8 +394,14 @@ pub fn contact_points_document(topic: &str) -> Value {
                         (
                             "settings",
                             map(vec![
-                                ("url", s(&format!("https://ntfy.sh/{topic}"))),
+                                // The ROOT, not /<topic>: ntfy's JSON publish
+                                // endpoint takes the topic in the body.
+                                ("url", s("https://ntfy.sh/")),
                                 ("httpMethod", s("POST")),
+                                (
+                                    "payload",
+                                    map(vec![("template", s(&ntfy_payload_template(topic)))]),
+                                ),
                             ]),
                         ),
                     ])]),
@@ -408,4 +435,41 @@ pub fn contact_points(topic: &str) -> String {
             100
         )
     )
+}
+
+#[cfg(test)]
+mod ntfy_payload_tests {
+    use super::*;
+
+    #[test]
+    fn the_payload_is_ntfy_shaped_json_with_the_topic_in_the_body() {
+        // Render the template with the Go-template holes stubbed, then parse:
+        // a payload that is not JSON is an attachment again (bug-149).
+        let t = ntfy_payload_template("t0pic");
+        let rendered = t
+            .replace("{{ .CommonLabels.alertname }}", "target-down")
+            .replace("{{ .Status }}", "firing")
+            .replace("{{ len .Alerts }}", "3")
+            .replace(
+                "{{ range .Alerts }}{{ .Labels.job }} {{ .Labels.instance }}\\n{{ end }}",
+                "kubelet s2-vm1\\nkubelet s2-vm2\\n",
+            )
+            .replace("{{ if eq .Status \"firing\" }}4{{ else }}2{{ end }}", "4");
+        let v: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!(v["topic"], "t0pic");
+        assert_eq!(v["priority"], 4);
+        assert!(v["message"].as_str().unwrap().contains("kubelet s2-vm1"));
+    }
+
+    #[test]
+    fn the_contact_point_posts_to_the_root_with_the_template() {
+        let doc = contact_points_document("t0pic");
+        let settings = &doc["contactPoints"][0]["receivers"][0]["settings"];
+        assert_eq!(
+            settings["url"], "https://ntfy.sh/",
+            "topic goes in the body, not the path"
+        );
+        let tpl = settings["payload"]["template"].as_str().unwrap();
+        assert!(tpl.contains("\"topic\": \"t0pic\""));
+    }
 }
