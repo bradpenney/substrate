@@ -34,12 +34,12 @@ trap 'rm -rf "$work"' EXIT
 cd "$work"
 
 echo "==> ${REPO} ${VERSION}"
-for f in "$ASSET" "$ASSET.sha256" "$ASSET.sigstore.json"; do
-    curl -fsSL -o "$f" "$BASE/$f"
+for f in "$ASSET" "$ASSET.sigstore.json" "checksums.sha256"; do
+    curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$f" "$BASE/$f"
 done
 
-echo "==> checksum"
-sha256sum -c "$ASSET.sha256"
+echo "==> checksum (from the release's checksums.sha256)"
+grep -E " ${ASSET}$" checksums.sha256 | sha256sum -c
 
 echo "==> signature (must be ${IDENTITY})"
 cosign verify-blob \
