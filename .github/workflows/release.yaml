@@ -186,6 +186,10 @@ jobs:
       # does). With `false` its own `final` gate reports failure (v0.2.2's
       # first run) even though the provenance was created, signed and stored.
       upload-assets: true
+      # Provenance lands in Rekor's PUBLIC transparency log, and the generator
+      # refuses to run for a private repository unless told to. This repository
+      # is public (2026-09-14, after a full-history scan found no secrets, no
+      # WAN address, and only test-fixture LAN addresses), so no override.
 
   # ── publish ───────────────────────────────────────────────────────────────
   publish:
