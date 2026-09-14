@@ -14,10 +14,45 @@ use clap::{Parser, Subcommand};
 use std::io::Write as _;
 use std::path::PathBuf;
 
+/// `<crate version> (<git describe>)`: what this binary was built from.
+/// Baked in by build.rs; see `build_is_released`.
+const BUILD: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("SUBSTRATE_BUILD"),
+    ")"
+);
+
+/// A released build is one whose stamp is exactly a tag: `v0.2.0`. Anything
+/// with commits after the tag, a `-dirty` suffix, or no git at all is a
+/// development build, and the commands that change the fleet refuse it
+/// (ADR-192): the fleet runs artifacts, not working trees.
+fn build_is_released() -> bool {
+    let stamp = env!("SUBSTRATE_BUILD");
+    stamp.starts_with('v')
+        && !stamp.ends_with("-dirty")
+        && stamp[1..].chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Refuse to change the fleet from anything but a released build. Dry runs
+/// and read-only commands are unaffected: development builds must still be
+/// able to show what they WOULD do.
+fn refuse_if_unreleased(tool: &str) {
+    if build_is_released() {
+        return;
+    }
+    eprintln!(
+        "REFUSING {tool}: this is a development build ({BUILD}), not a release.\n\
+         The fleet is changed only by a released, signed artifact installed at\n\
+         /usr/local/bin/substrate (ADR-192). Dry runs still work from this build."
+    );
+    std::process::exit(2);
+}
+
 #[derive(Parser)]
 #[command(
     name = "substrate",
-    version,
+    version = BUILD,
     about = "Provision and operate the k0s fleet."
 )]
 struct Cli {
@@ -717,6 +752,9 @@ unsafe extern "C" {
 
 fn provision(repo: &std::path::Path, args: ProvisionArgs) -> Result<()> {
     refuse_if_root("substrate provision --apply");
+    if args.apply {
+        refuse_if_unreleased("substrate provision --apply");
+    }
     let cfg = substrate_core::load(repo)?;
     if !args.apply {
         return substrate_core::provision::plan(&cfg);
@@ -744,6 +782,9 @@ struct WipeArgs {
 
 fn wipe(repo: &std::path::Path, args: WipeArgs) -> Result<()> {
     refuse_if_root("substrate wipe --yes");
+    if args.yes {
+        refuse_if_unreleased("substrate wipe --yes");
+    }
     let cfg = substrate_core::load(repo)?;
     substrate_core::wipe::wipe(&cfg, !args.yes);
     Ok(())
@@ -758,6 +799,9 @@ fn wipe(repo: &std::path::Path, args: WipeArgs) -> Result<()> {
 /// step (`gate.py verify` until that is ported).
 fn rebuild(repo: &std::path::Path, args: WipeArgs) -> Result<()> {
     refuse_if_root("substrate rebuild --yes");
+    if args.yes {
+        refuse_if_unreleased("substrate rebuild --yes");
+    }
     let cfg = substrate_core::load(repo)?;
     if !args.yes {
         substrate_core::wipe::wipe(&cfg, true);
@@ -849,6 +893,9 @@ fn compare(repo: &std::path::Path, args: CompareArgs) -> Result<()> {
 
 fn roll(repo: &std::path::Path, args: RollArgs) -> Result<()> {
     refuse_if_root("substrate roll --yes");
+    if args.yes {
+        refuse_if_unreleased("substrate roll --yes");
+    }
     let cfg = substrate_core::load(repo)?;
     let gate = substrate_core::gate::Gate::new(&cfg)?;
     if !args.yes {
@@ -979,6 +1026,9 @@ fn deploy_cplb(repo: &std::path::Path, args: DeployCplbArgs) -> Result<()> {
     // Escalation happens REMOTELY here (`ssh … sudo …`), never locally. Run
     // under local sudo this SSHes as root, which has no key.
     refuse_if_root("substrate deploy-cplb --apply");
+    if args.apply {
+        refuse_if_unreleased("substrate deploy-cplb --apply");
+    }
     let cfg = substrate_core::load(repo)?;
     let cplb = substrate_core::cplb::Cplb::new(&cfg)?;
     if let Some(host) = args.show_install {
@@ -1012,6 +1062,9 @@ struct DeployResolverArgs {
 fn deploy_resolver(repo: &std::path::Path, args: DeployResolverArgs) -> Result<()> {
     // Same shape as deploy-cplb: escalation happens REMOTELY, never locally.
     refuse_if_root("substrate deploy-resolver --apply");
+    if args.apply {
+        refuse_if_unreleased("substrate deploy-resolver --apply");
+    }
     let cfg = substrate_core::load(repo)?;
     let r = substrate_core::resolver::Resolver::from_site(&cfg)?;
     if args.show_install {
@@ -1044,6 +1097,9 @@ fn deploy_updates(repo: &std::path::Path, args: DeployUpdatesArgs) -> Result<()>
     // Checked BEFORE the kubeconfig fetch, so the refusal arrives instantly
     // instead of after an SSH round trip that fails on publickey.
     refuse_if_root("substrate deploy-updates --apply");
+    if args.apply {
+        refuse_if_unreleased("substrate deploy-updates --apply");
+    }
     let cfg = substrate_core::load(repo)?;
     if let Err(e) = substrate_core::updates::deploy_all(repo, &cfg, !args.apply) {
         eprintln!("ERROR: {e}");
@@ -1072,6 +1128,9 @@ struct DeployObservabilityArgs {
 fn deploy_observability(repo: &std::path::Path, args: DeployObservabilityArgs) -> Result<()> {
     use substrate_core::observability as obs;
     refuse_if_root("substrate deploy-observability --apply");
+    if args.apply {
+        refuse_if_unreleased("substrate deploy-observability --apply");
+    }
     let cfg = substrate_core::load(repo)?;
     if let Some(h) = &cfg.observability.host
         && !cfg.hypervisors.contains_key(h)

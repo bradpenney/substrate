@@ -1,0 +1,212 @@
+# Release (ADR-192): a PUBLISHED GitHub Release becomes a signed, checksummed,
+# attested, static binary — the only form in which the provisioner may act
+# on the fleet.
+#
+# Shape follows firestoned/bindy's build.yaml, the standard this repository
+# holds itself to:
+#   - triggers on `release: published`, not on a tag push: a human writes the
+#     release, the tag alone does nothing;
+#   - least privilege: `contents: read` at the top, and only the jobs that
+#     sign, attest or upload escalate;
+#   - every action pinned by full commit SHA, with the version as a comment;
+#   - a gate chain the publishing jobs `need`: the release commit must be
+#     SIGNED, formatted, clippy-clean, tested, free of RustSec advisories,
+#     and the tag must equal the crate version;
+#   - build once; the artifact flows to signing, SBOM, provenance and the
+#     release as an uploaded artifact;
+#   - keyless cosign signature under THIS workflow's identity (install.sh
+#     verifies that identity, not "any signature"), a CycloneDX SBOM, SLSA
+#     L3 provenance from the official generator, and one checksums file
+#     covering all of it.
+#
+# One platform, deliberately: x86_64 static musl is what Kairos and Fedora
+# run; bindy's five-platform matrix has no consumer here. Nothing is named
+# "latest". A host installs a version.
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  TARGET: x86_64-unknown-linux-musl
+  ASSET: substrate-x86_64-unknown-linux-musl
+
+jobs:
+  # ── gates ─────────────────────────────────────────────────────────────────
+  verify-commits:
+    name: Release commit is signed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: firestoned/github-actions/security/verify-signed-commits@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          verify-mode: release
+
+  version:
+    name: Tag equals crate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        # A release whose binary says one thing and whose tag says another is
+        # two versions with one name. Refuse before building anything.
+        run: |
+          crate=$(grep -m1 '^version' crates/substrate/Cargo.toml | cut -d'"' -f2)
+          tag="${GITHUB_REF_NAME}"
+          [ "v$crate" = "$tag" ] || { echo "release tag $tag != Cargo.toml version v$crate"; exit 1; }
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  audit:
+    name: RustSec advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: firestoned/github-actions/rust/security-scan@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          cargo-audit-version: "0.22.0"
+          upload-artifact-name: cargo-audit-report-release
+
+  # ── build once ────────────────────────────────────────────────────────────
+  build:
+    name: Static binary + tests + SBOM
+    runs-on: ubuntu-latest
+    needs: [verify-commits, version, lint, audit]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0      # build.rs stamps `git describe --tags`
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+      - name: Build
+        run: cargo build --release --target "$TARGET"
+      - name: Tests, same profile and target, so the dependency graph compiles once
+        run: cargo test --release --target "$TARGET"
+      - name: The binary is static and knows its version
+        run: |
+          ./check-static-binary.sh "target/$TARGET/release/substrate"
+          v=$("./target/$TARGET/release/substrate" --version)
+          echo "$v"
+          case "$v" in *"(${{ needs.version.outputs.version }})"*) ;; *) echo "binary is not stamped with the release tag"; exit 1;; esac
+      - name: SBOM (CycloneDX)
+        uses: firestoned/github-actions/rust/generate-sbom@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          target: ${{ env.TARGET }}
+          package: substrate
+      - name: Stage the artifact
+        # cargo-cyclonedx writes <crate>.cdx.json beside the crate's Cargo.toml.
+        run: |
+          mkdir -p dist
+          cp "target/$TARGET/release/substrate" "dist/$ASSET"
+          cp crates/substrate/substrate.cdx.json "dist/$ASSET.sbom.cdx.json"
+          ls -l dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # ── sign ──────────────────────────────────────────────────────────────────
+  sign:
+    name: Cosign signature (keyless, this workflow's identity)
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: dist
+          path: dist
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - run: cosign sign-blob --yes --bundle "dist/$ASSET.sigstore.json" "dist/$ASSET"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signature
+          path: dist/${{ env.ASSET }}.sigstore.json
+          if-no-files-found: error
+
+  # ── provenance ────────────────────────────────────────────────────────────
+  subjects:
+    name: Provenance subjects
+    runs-on: ubuntu-latest
+    needs: [build]
+    outputs:
+      hashes: ${{ steps.h.outputs.hashes }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: dist
+          path: dist
+      - id: h
+        run: |
+          cd dist
+          sha256sum "$ASSET" "$ASSET.sbom.cdx.json" > subjects.txt
+          cat subjects.txt
+          echo "hashes=$(base64 -w0 subjects.txt)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    name: SLSA provenance
+    needs: [subjects, version]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.subjects.outputs.hashes }}
+      provenance-name: substrate-${{ needs.version.outputs.version }}.intoto.jsonl
+      upload-assets: false
+
+  # ── publish ───────────────────────────────────────────────────────────────
+  publish:
+    name: Upload release assets
+    runs-on: ubuntu-latest
+    needs: [build, sign, provenance, version]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: dist
+          path: release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signature
+          path: release
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: release
+      - name: One checksums file over everything
+        run: |
+          cd release
+          sha256sum -- * > checksums.sha256
+          cat checksums.sha256
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          files: |
+            release/*
+          fail_on_unmatched_files: true
