@@ -99,8 +99,11 @@ access-control: __LAN__ allow
 # the public zone ever be signed.
 private-domain: \"{zone}\"
 domain-insecure: \"{zone}\"
-# Verifies the public resolvers' certificates for DNS over TLS.
-tls-cert-bundle: \"/etc/pki/tls/certs/ca-bundle.crt\"
+# Verifies the public resolvers' certificates for DNS over TLS against the
+# system trust store. Not a bundle path: the classic
+# /etc/pki/tls/certs/ca-bundle.crt no longer exists on Fedora 44, and unbound
+# refuses to START on a missing bundle — with no resolver running at all.
+tls-system-cert: yes
 # This LAN has no IPv6 route. Left on, iterative fallback tries unreachable
 # v6 transports first and the fallback this exists for gets slow.
 do-ip6: no
@@ -338,7 +341,10 @@ mod tests {
         assert!(conf.contains("interface: __IP__"));
         assert!(conf.contains("access-control: __LAN__ allow"));
         assert!(conf.contains("private-domain: \"example.com\""));
-        assert!(conf.contains("tls-cert-bundle:"));
+        assert!(
+            conf.contains("tls-system-cert: yes") && !conf.contains("tls-cert-bundle"),
+            "a bundle path that does not exist stops unbound from starting"
+        );
     }
 
     #[test]

@@ -275,38 +275,56 @@ systemctl is-active haproxy keepalived
     }
 }
 
-/// `ssh -o BatchMode=yes -o StrictHostKeyChecking=no <target> sudo bash -s`
-/// (or `sudo bash -s` locally) with the script on stdin; output inherits the
-/// terminal, exactly as the Python's un-captured subprocess did.
+/// Run the installer under sudo on one host; output inherits the terminal.
+///
+/// Locally: `sudo bash -s` with the script on stdin. Remotely the script
+/// cannot ride on stdin, because sudo on a host WITHOUT a NOPASSWD rule needs
+/// a pty to ask for the password, and `ssh -t` gives stdin to the pty. So the
+/// script is staged unprivileged first (BatchMode, no prompt possible) and
+/// then run through `ssh -t … sudo bash <file>`, the same shape as
+/// deploy-updates. The old stdin form only ever worked while server2 carried
+/// its temporary NOPASSWD grant.
 pub fn run_installer(ssh_target: Option<&str>, script: &str) -> i32 {
     use std::io::Write as _;
-    let mut cmd = match ssh_target {
-        Some(t) => {
-            let mut c = std::process::Command::new("ssh");
-            c.args([
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "StrictHostKeyChecking=no",
-                t,
-                "sudo",
-                "bash",
-                "-s",
-            ]);
-            c
+    let Some(t) = ssh_target else {
+        let mut cmd = std::process::Command::new("sudo");
+        cmd.args(["bash", "-s"]).stdin(std::process::Stdio::piped());
+        let Ok(mut child) = cmd.spawn() else {
+            return 127;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(script.as_bytes());
         }
-        None => {
-            let mut c = std::process::Command::new("sudo");
-            c.args(["bash", "-s"]);
-            c
-        }
+        return child.wait().map_or(1, |s| s.code().unwrap_or(1));
     };
-    cmd.stdin(std::process::Stdio::piped());
+
+    let batch = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"];
+    let staged = "/tmp/substrate-installer.$$.sh";
+    let stage = format!("f={staged}; umask 077; cat > \"$f\" && echo \"$f\"");
+    let mut cmd = std::process::Command::new("ssh");
+    cmd.args(batch)
+        .arg(t)
+        .arg(&stage)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
     let Ok(mut child) = cmd.spawn() else {
         return 127;
     };
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(script.as_bytes());
     }
-    child.wait().map_or(1, |s| s.code().unwrap_or(1))
+    let Ok(out) = child.wait_with_output() else {
+        return 1;
+    };
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || !path.starts_with("/tmp/substrate-installer.") {
+        eprintln!("  could not stage the installer on {t}");
+        return 1;
+    }
+
+    let inner = format!("sudo bash {path}; rc=$?; rm -f {path}; exit $rc");
+    std::process::Command::new("ssh")
+        .args(["-o", "StrictHostKeyChecking=no", "-t", t, &inner])
+        .status()
+        .map_or(1, |s| s.code().unwrap_or(1))
 }
