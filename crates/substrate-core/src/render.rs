@@ -563,34 +563,6 @@ stages:
             PasswordAuthentication no
             KbdInteractiveAuthentication no
             PermitRootLogin prohibit-password
-        - path: /var/lib/k0s/manifests/namespace-labels/k0s-autopilot.yaml
-          permissions: 0644
-          content: |
-            ---
-            # k0s creates this namespace itself, so Flux must not own it
-            # (ADR-063, one object one owner) -- but until now nothing owned its
-            # Pod Security labels either. They were hand-applied, and silently
-            # did not survive a rebuild: three rebuilds in a row came up with
-            # k0s-autopilot unenforced, found each time only afterwards by
-            # posture-check. infrastructure-config/pod-security.yaml has carried
-            # a comment tracking this as a follow-up; this is that fix.
-            #
-            # Declaring it in k0s's OWN manifest deployer puts the labels under
-            # the same owner that creates the namespace, so they are reapplied
-            # on every boot instead of being remembered by a human.
-            #
-            # privileged/baseline mirrors kube-system: autopilot updates node
-            # binaries and legitimately needs host access.
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: k0s-autopilot
-              labels:
-                kubernetes.io/metadata.name: k0s-autopilot
-                pod-security.kubernetes.io/enforce: privileged
-                pod-security.kubernetes.io/enforce-version: latest
-                pod-security.kubernetes.io/warn: baseline
-                pod-security.kubernetes.io/audit: baseline
         - path: /var/lib/k0s/manifests/flux-instance/instance.yaml
           permissions: 0644
           content: |

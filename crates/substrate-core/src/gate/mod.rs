@@ -825,8 +825,10 @@ impl<'a> Gate<'a> {
     /// roll broke.
     fn wait_etcd_healthy(&self, expected: &[String], timeout: u64) -> bool {
         let want: BTreeSet<String> = expected.iter().cloned().collect();
-        let deadline = Instant::now() + Duration::from_secs(timeout);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(timeout);
         let mut last = String::new();
+        println!("    waiting for etcd: {} members expected, up to {timeout}s", want.len());
         while Instant::now() < deadline {
             let members = provision::node_ssh(
                 &self.cfg.admin_user,
@@ -882,6 +884,12 @@ impl<'a> Gate<'a> {
                     ));
                 }
             }
+            // Never silent: an operator watching a blank line for five
+            // minutes cannot tell a wait from a hang (bug-152).
+            println!(
+                "    etcd: {last} ({}s elapsed)",
+                started.elapsed().as_secs()
+            );
             sleep(10);
         }
         println!("    etcd did NOT become healthy within {timeout}s — {last}");
@@ -896,8 +904,10 @@ impl<'a> Gate<'a> {
         if !local_kubectl(&["get", "crd", "volumes.longhorn.io"]).ok() {
             return true;
         }
-        let deadline = Instant::now() + Duration::from_secs(timeout);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(timeout);
         let mut last = String::new();
+        println!("    waiting for longhorn: every volume healthy, up to {timeout}s");
         while Instant::now() < deadline {
             if let Some(v) = parse(&local_kubectl(&[
                 "-n",
@@ -936,8 +946,19 @@ impl<'a> Gate<'a> {
                     );
                     return true;
                 }
-                last = bad.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
+                last = format!(
+                    "{} of {} volume(s) not healthy: {}",
+                    bad.len(),
+                    items.len(),
+                    bad.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+                );
+            } else {
+                last = "could not read volumes (API not answering)".to_string();
             }
+            println!(
+                "    longhorn: {last} ({}s elapsed)",
+                started.elapsed().as_secs()
+            );
             sleep(15);
         }
         println!("    longhorn volumes did NOT become healthy within {timeout}s — {last}");

@@ -676,17 +676,22 @@ pub const AUTOPILOT_POD_SECURITY_LABELS: &[(&str, &str)] = &[
 
 /// Label the k0s-autopilot namespace AFTER the cluster is up.
 ///
-/// The rendered manifest stack `/var/lib/k0s/manifests/namespace-labels/`
-/// is not enough on its own. Measured on the 2026-09-11 rebuild: the applier
-/// applied that stack at 23:29:29, and the namespace still came up carrying
-/// only `k0s.k0sproject.io/stack=autopilot` — autopilot (re)applies its own
-/// Namespace object after the stack ran and replaces the label set. Four
-/// rebuilds in a row surfaced the gap the same way: posture-check, afterwards.
+/// THIS IS THE ONLY OWNER OF THESE LABELS. There used to be a rendered
+/// manifest stack, `/var/lib/k0s/manifests/namespace-labels/`, declaring the
+/// same Namespace with the labels. Two owners of one object: autopilot's own
+/// stack applies the Namespace without them, its three-way merge therefore
+/// stripped them, the `require-pss-labels` admission policy denied that, and
+/// the whole autopilot stack failed and retried every 30 seconds — with k0s's
+/// applier re-annotating its in-memory resources on every retry until the
+/// leader's supervisor process ran out of memory (bug-150, ADR-191: nodes
+/// hung one after another for a night and a morning). The stack is gone.
 ///
-/// So the labels are applied here, from the provisioner, once every node is
-/// Ready and autopilot has finished starting. `--overwrite` makes it
-/// idempotent; the read-back turns a silently ignored label into a failed
-/// build rather than a finding the next morning.
+/// Labels set with `kubectl label` live only in the object, not in any
+/// stack's last-applied record, so neither applier's patch touches them and
+/// the admission policy stays satisfied. Applied once every node is Ready and
+/// autopilot has finished starting; `--overwrite` makes it idempotent; the
+/// read-back turns a silently ignored label into a failed build rather than a
+/// finding the next morning.
 pub fn enforce_autopilot_pod_security(admin_user: &str, bootstrap_ip: &str) -> Result<()> {
     println!("=== k0s-autopilot: Pod Security labels ===");
     let pairs: Vec<String> = AUTOPILOT_POD_SECURITY_LABELS
