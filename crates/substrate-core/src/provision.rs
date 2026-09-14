@@ -270,6 +270,12 @@ pub fn build_seed_iso(
     crate::exec::write_file(host, &format!("/tmp/{}-meta-data", vm.name), "")?;
 
     let iso = format!("{}/{}-cloudinit.iso", cfg.libvirt.iso_pool_path, vm.name);
+    // A seed ISO left by a previous life of this node is owned by qemu once
+    // libvirt attached it, and mkisofs cannot overwrite a file it cannot
+    // open — "Failed to open device: Permission denied" (bug-156, the first
+    // `provision --apply` into a fleet with a destroyed node). Unlinking needs
+    // write on the directory only, which the libvirt group has.
+    let _ = run(host, &["rm".to_string(), "-f".into(), iso.clone()], None);
     run_checked(
         host,
         &[

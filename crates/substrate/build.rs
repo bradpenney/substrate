@@ -21,9 +21,22 @@ fn main() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=SUBSTRATE_BUILD={describe}");
-    // Rebuild the stamp when HEAD or the index moves; a stale stamp would be
-    // the exact lie this exists to prevent.
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
-    println!("cargo:rerun-if-changed=../../.git/index");
-    println!("cargo:rerun-if-changed=../../.git/refs/tags");
+    // Rebuild the stamp when HEAD, the index, the tags, OR THE SOURCE moves.
+    // Declaring any rerun-if-changed disables cargo's default "any file in
+    // the package" rule, and the first version of this script listed only the
+    // .git paths — so an edit to provision.rs after a tag was built produced a
+    // binary that still said `(v0.2.0)`: a dirty tree presenting as a release,
+    // the exact lie this exists to prevent (bug-157). Directories are scanned
+    // recursively.
+    for p in [
+        "../../.git/HEAD",
+        "../../.git/index",
+        "../../.git/refs/tags",
+        "src",
+        "Cargo.toml",
+        "../substrate-core/src",
+        "../substrate-core/Cargo.toml",
+    ] {
+        println!("cargo:rerun-if-changed={p}");
+    }
 }
