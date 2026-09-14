@@ -45,6 +45,19 @@ else
     echo "  kubectl already present"
 fi
 
+# cosign: what install.sh verifies a substrate release with (ADR-192). Pinned
+# by checksum in versions.yml; a verifier that arrives unverified is theatre.
+if /usr/local/bin/cosign version 2>/dev/null | grep -q "GitVersion:.*__COSIGN_VERSION__"; then
+    echo "  cosign __COSIGN_VERSION__ already present"
+else
+    echo "  installing cosign __COSIGN_VERSION__..."
+    tmp=$(mktemp)
+    curl -fsSL -o "$tmp" "__COSIGN_URL__"
+    echo "__COSIGN_SHA256__  $tmp" | sha256sum -c --quiet
+    install -m 0755 -o root -g root "$tmp" /usr/local/bin/cosign
+    rm -f "$tmp"
+fi
+
 systemctl daemon-reload
 systemctl enable --now hypervisor-update.timer >/dev/null
 systemctl enable hypervisor-uncordon.service >/dev/null
@@ -54,7 +67,20 @@ echo "  uncordon:        $(systemctl is-enabled hypervisor-uncordon.service)"
 echo "  OnFailure:       $(systemctl show -p OnFailure --value hypervisor-update.service)"
 echo "  notify.env:      $(stat -c '%a %U' /etc/homelab/notify.env 2>/dev/null || echo 'ABSENT - failures will not notify')"
 echo "  kubeconfig:      $(stat -c '%a %U' /etc/homelab/kubeconfig)"
+echo "  cosign:          $(/usr/local/bin/cosign version 2>/dev/null | grep -oE 'GitVersion:\s*\S+' || echo 'ABSENT - install.sh cannot verify releases')"
 "#;
+
+/// The installer with every pinned host tool substituted in. Rendered from
+/// the config rather than baked, so a bump in versions.yml is the whole
+/// change.
+pub fn installer(cfg: &SiteConfig) -> String {
+    let c = &cfg.host_tools.cosign;
+    INSTALLER
+        .replace("__KUBECTL_URL__", KUBECTL_URL)
+        .replace("__COSIGN_VERSION__", &c.version)
+        .replace("__COSIGN_URL__", &c.url)
+        .replace("__COSIGN_SHA256__", &c.sha256)
+}
 
 /// Tar the install set, every entry owned by root and mode-pinned. Modes
 /// travel in the archive rather than being chmod'd afterwards, so the secret
@@ -131,7 +157,7 @@ fn run_checked(host: &Host, argv: &[&str]) -> Result<String> {
 /// Stage the payload unprivileged, then run ONE privileged installer. The
 /// sudo step is deliberately not output-captured: a captured prompt is an
 /// invisible prompt, and the run would look like a hang.
-pub fn apply(host: &Host, files: &[PlannedFile]) -> Result<()> {
+pub fn apply(host: &Host, files: &[PlannedFile], installer: &str) -> Result<()> {
     let staging = run_checked(host, &["mktemp", "-d", "/tmp/substrate-deploy.XXXXXX"])?
         .trim()
         .to_string();
@@ -148,11 +174,7 @@ pub fn apply(host: &Host, files: &[PlannedFile]) -> Result<()> {
             &build_payload(files, stamp)?,
             &format!("{staging}/payload.tar.gz"),
         )?;
-        stage_bytes(
-            host,
-            INSTALLER.replace("__KUBECTL_URL__", KUBECTL_URL).as_bytes(),
-            &format!("{staging}/install.sh"),
-        )?;
+        stage_bytes(host, installer.as_bytes(), &format!("{staging}/install.sh"))?;
         run_checked(
             host,
             &["chmod", "600", &format!("{staging}/payload.tar.gz")],
@@ -348,12 +370,12 @@ pub fn deploy_all(repo: &Path, cfg: &SiteConfig, dry_run: bool) -> Result<()> {
                 );
             }
             println!(
-                "[{}] DRY RUN — would then run the installer under one sudo",
-                host.name
+                "[{}] DRY RUN — would then run the installer under one sudo (cosign {} pinned by checksum)",
+                host.name, cfg.host_tools.cosign.version
             );
             continue;
         }
-        apply(host, &files)?;
+        apply(host, &files, &installer(cfg))?;
         println!("[{}] deployed", host.name);
     }
     Ok(())

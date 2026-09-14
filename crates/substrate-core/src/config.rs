@@ -97,6 +97,27 @@ pub struct KairosConfig {
     pub version: Option<String>,
 }
 
+/// One pinned host tool: version, checksum, and where the asset comes from.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedTool {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub sha256: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+/// Tools the hypervisors need beside the cluster. Filled from `versions.yml`
+/// at load time; `deploy-updates` installs them by checksum.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HostToolsConfig {
+    #[serde(default)]
+    pub cosign: PinnedTool,
+}
+
 /// Arguments passed to k0s on every node, and the join-token lifetime.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -296,4 +317,6 @@ pub struct SiteConfig {
     pub observability: ObservabilityConfig,
     #[serde(default)]
     pub dns: DnsConfig,
+    #[serde(default)]
+    pub host_tools: HostToolsConfig,
 }

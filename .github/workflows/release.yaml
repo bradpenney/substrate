@@ -182,7 +182,10 @@ jobs:
     with:
       base64-subjects: ${{ needs.subjects.outputs.hashes }}
       provenance-name: substrate-${{ needs.version.outputs.version }}.intoto.jsonl
-      upload-assets: false
+      # The generator attaches the provenance to the release itself (as bindy
+      # does). With `false` its own `final` gate reports failure (v0.2.2's
+      # first run) even though the provenance was created, signed and stored.
+      upload-assets: true
 
   # ── publish ───────────────────────────────────────────────────────────────
   publish:
@@ -205,12 +208,18 @@ jobs:
           name: ${{ needs.provenance.outputs.provenance-name }}
           path: release
       - name: One checksums file over everything
+        # Covers the binary, SBOM, signature bundle AND the provenance the
+        # generator already attached; the provenance itself is not uploaded a
+        # second time.
         run: |
           cd release
           sha256sum -- * > checksums.sha256
           cat checksums.sha256
+          mkdir -p ../upload
+          for f in *; do case "$f" in *.intoto.jsonl) ;; *) cp "$f" ../upload/;; esac; done
+          ls -l ../upload
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           files: |
-            release/*
+            upload/*
           fail_on_unmatched_files: true

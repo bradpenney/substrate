@@ -27,7 +27,7 @@ IDENTITY="https://github.com/${REPO}/.github/workflows/release.yaml@refs/tags/${
 ISSUER="https://token.actions.githubusercontent.com"
 DEST="${DEST:-/usr/local/bin/substrate}"
 
-command -v cosign >/dev/null || { echo "cosign is required to verify the release (dnf install cosign, or sigstore's installer)" >&2; exit 1; }
+command -v cosign >/dev/null || { echo "cosign is required to verify the release: run 'substrate deploy-updates --apply' first (it installs cosign pinned by checksum from versions.yml)" >&2; exit 1; }
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

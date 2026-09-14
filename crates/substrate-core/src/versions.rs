@@ -66,5 +66,19 @@ pub fn merge(repo_root: &Path, site: &mut Value) -> Result<()> {
         Value::from(get("flux_distribution", "version")?),
     );
 
+    // Host tools, pinned the same way. `{version}` in the URL is substituted
+    // here so the installer receives a literal address it can only fetch.
+    let cosign_version = get("cosign", "version")?;
+    let mut cosign = serde_yaml_ng::Mapping::new();
+    cosign.insert(Value::from("version"), Value::from(cosign_version.clone()));
+    cosign.insert(Value::from("sha256"), Value::from(get("cosign", "sha256")?));
+    cosign.insert(
+        Value::from("url"),
+        Value::from(get("cosign", "url")?.replace("{version}", &cosign_version)),
+    );
+    let mut tools = serde_yaml_ng::Mapping::new();
+    tools.insert(Value::from("cosign"), Value::Mapping(cosign));
+    map.insert(Value::from("host_tools"), Value::Mapping(tools));
+
     Ok(())
 }
