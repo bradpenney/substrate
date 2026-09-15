@@ -29,12 +29,12 @@ flux_distribution:
 # fleet onto a newer image (`gate.py roll`), so letting this pin go stale is a
 # standing security gap, not a tidiness issue.
 kairos:
-  version: v4.2.0
+  version: v4.3.0
   # The asset name encodes flavour + k0s version, so a bump may change more of
   # this string than just the tag — the bump bot resolves the real asset name
   # from the release rather than guessing.
-  iso_url: "https://github.com/kairos-io/kairos/releases/download/v4.2.0/kairos-hadron-v0.5.1-standard-amd64-generic-v4.2.0-k0sv1.36.3%2Bk0s.2.iso"
-  iso_sha256: "f59abdafdfca95fd15bd2d92b1bb766f125a92e9b50e7d920c245e31032c3cf3"
+  iso_url: "https://github.com/kairos-io/kairos/releases/download/v4.3.0/kairos-hadron-v0.5.1-standard-amd64-generic-v4.3.0-k0sv1.36.4%2Bk0s.0.iso"
+  iso_sha256: "d4f3e0488e6c1d80185e3bb9a3862f5b3f93834cbbf96a9b889483eca3a78d8b"
 
 # --- observability, host tier (ADR-098) --------------------------------------
 #
