@@ -145,16 +145,18 @@ jobs:
             notes. Flavour is held constant (hadron / standard / amd64 /
             generic) — switching flavour is an architectural change, not a bump.
 
-            ### Merging this triggers a rolling node replacement
+            ### Merging this deploys nothing — the roll is a separate, manual step
 
-            `auto-roll.timer` on the hypervisor polls this repo and, on seeing a
-            changed pin on `main`, runs `substrate roll --yes` — replacing nodes
-            **one at a time**, re-verifying full cluster health between each,
-            and halting if anything fails to settle.
+            `auto-roll.timer` is disabled (ADR-186: a host timer must not pull
+            from git). After merging, on the hypervisor:
 
-            **So approving this from your phone starts a fleet-wide node
-            rebuild.** That is the intent, but it is not a no-op: expect roughly
-            2-3 minutes per node.
+                git pull && substrate roll            # preview: lists the nodes
+                substrate roll --yes                  # replaces them one at a time
+
+            The roll re-verifies full cluster health between nodes and halts if
+            anything fails to settle; expect roughly 2-3 minutes per node. Until
+            it is run, the nodes stay on the previous image — a merged bump is
+            a decision, not a patched fleet.
 
             Check the k0s version in the asset name — a k0s bump rides along
             with the image.

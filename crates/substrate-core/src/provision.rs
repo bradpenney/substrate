@@ -8,7 +8,7 @@
 
 use crate::config::SiteConfig;
 use crate::exec::{Host, run, run_checked};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 /// Tools a hypervisor must have before anything is attempted.
 pub const REQUIRED_TOOLS: &[&str] = &[
@@ -962,6 +962,97 @@ pub fn create_vm(
     )
 }
 
+/// The admin credentials land under the same context name `client-cert`
+/// minting reads them from — one name, declared once.
+use crate::client_cert::BREAK_GLASS_CONTEXT;
+
+/// Merge the cluster, user and context from a `k0s kubeconfig admin` document
+/// into an existing kubeconfig, all three under the name `break-glass`.
+///
+/// Pure: takes and returns text, so the shape of the result is testable
+/// without a cluster. Every other entry in `existing` is kept as it is —
+/// that is the whole point (see `refresh_client_access`).
+pub fn merge_break_glass(existing: &str, admin: &str) -> Result<String> {
+    use serde_yaml_ng::{Mapping, Value};
+
+    let admin: Value = serde_yaml_ng::from_str(admin).context("admin kubeconfig is not yaml")?;
+    let first = |key: &str, inner: &str| -> Result<Value> {
+        admin
+            .get(key)
+            .and_then(Value::as_sequence)
+            .and_then(|s| s.first())
+            .and_then(|e| e.get(inner))
+            .cloned()
+            .with_context(|| format!("admin kubeconfig has no {key}[0].{inner}"))
+    };
+    let cluster = first("clusters", "cluster")?;
+    let user = first("users", "user")?;
+
+    let mut doc: Value = if existing.trim().is_empty() {
+        Value::Mapping(Mapping::new())
+    } else {
+        serde_yaml_ng::from_str(existing).context("existing kubeconfig is not yaml")?
+    };
+    let map = doc
+        .as_mapping_mut()
+        .context("existing kubeconfig is not a mapping")?;
+    map.entry(Value::from("apiVersion"))
+        .or_insert_with(|| Value::from("v1"));
+    map.entry(Value::from("kind"))
+        .or_insert_with(|| Value::from("Config"));
+
+    // Replace the entry named break-glass in a named list, or append it.
+    let mut upsert = |list: &str, inner: &str, body: Value| -> Result<()> {
+        let mut entry = Mapping::new();
+        entry.insert(Value::from("name"), Value::from(BREAK_GLASS_CONTEXT));
+        entry.insert(Value::from(inner), body);
+        let entry = Value::Mapping(entry);
+        let seq = map
+            .entry(Value::from(list))
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut()
+            .with_context(|| format!("kubeconfig: {list} is not a list"))?;
+        match seq
+            .iter_mut()
+            .find(|e| e.get("name").and_then(Value::as_str) == Some(BREAK_GLASS_CONTEXT))
+        {
+            Some(slot) => *slot = entry,
+            None => seq.push(entry),
+        }
+        Ok(())
+    };
+    upsert("clusters", "cluster", cluster)?;
+    upsert("users", "user", user)?;
+    let mut ctx = Mapping::new();
+    ctx.insert(Value::from("cluster"), Value::from(BREAK_GLASS_CONTEXT));
+    ctx.insert(Value::from("user"), Value::from(BREAK_GLASS_CONTEXT));
+    upsert("contexts", "context", Value::Mapping(ctx))?;
+
+    // Leave the operator where they were, unless "where they were" no longer
+    // exists — a first-ever kubeconfig, or a context someone deleted.
+    let current_exists = map
+        .get("current-context")
+        .and_then(Value::as_str)
+        .map(|cur| {
+            map.get("contexts")
+                .and_then(Value::as_sequence)
+                .map(|s| {
+                    s.iter()
+                        .any(|e| e.get("name").and_then(Value::as_str) == Some(cur))
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if !current_exists {
+        map.insert(
+            Value::from("current-context"),
+            Value::from(BREAK_GLASS_CONTEXT),
+        );
+    }
+
+    serde_yaml_ng::to_string(&doc).context("kubeconfig re-serialises")
+}
+
 /// Make the OPERATOR'S OWN tooling work again after a rebuild.
 ///
 /// A rebuild leaves two pieces of stale client-side state, and both bit
@@ -979,6 +1070,18 @@ pub fn create_vm(
 /// the cluster is genuinely fine and only the workstation is wrong. But
 /// "reproducible" has to mean the environment works after a rebuild, not just
 /// that the pods are Running.
+///
+/// THE ADMIN KUBECONFIG IS MERGED IN AS `break-glass`, NEVER WRITTEN OVER THE
+/// FILE. This used to replace `~/.kube/config` wholesale, which is fine the
+/// morning after a rebuild (every cert in it is dead anyway) and wrong after a
+/// ROLL, where the CA is unchanged: the scoped `brad`, `hypervisor-update` and
+/// `break-glass` contexts vanished, the operator was left on cluster-admin as
+/// the current context, and posture-check — which asserts through
+/// `--context brad` on purpose (ADR-071) — failed all eight kubectl queries
+/// the next morning (bug-165, 2026-09-15). Merging keeps every other context
+/// as it is; a rebuild's dead certs are re-minted by `client-cert`, which
+/// overwrites its own entries. `current-context` is only set when the file
+/// has none, or names a context that no longer exists.
 pub fn refresh_client_access(
     admin_user: &str,
     bootstrap_ip: &str,
@@ -1027,7 +1130,7 @@ pub fn refresh_client_access(
     let kube_dir = std::path::Path::new(&home).join(".kube");
     std::fs::create_dir_all(&kube_dir)?;
     let kube_config = kube_dir.join("config");
-    if kube_config.exists() {
+    let existing = if kube_config.exists() {
         let stamp = std::process::Command::new("date")
             .arg("+%Y%m%d-%H%M%S")
             .output()
@@ -1035,19 +1138,32 @@ pub fn refresh_client_access(
             .unwrap_or_default();
         let backup = kube_dir.join(format!("config.bak.{stamp}"));
         let _ = std::fs::copy(&kube_config, &backup);
-    }
-    std::fs::write(&kube_config, &out.stdout)?;
+        std::fs::read_to_string(&kube_config)?
+    } else {
+        String::new()
+    };
+    let merged = merge_break_glass(&existing, &out.stdout)?;
+    std::fs::write(&kube_config, merged)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&kube_config, std::fs::Permissions::from_mode(0o600));
     }
-    println!("  kubeconfig refreshed: {}", kube_config.display());
+    println!(
+        "  kubeconfig: admin credentials merged as context {BREAK_GLASS_CONTEXT} in {}",
+        kube_config.display()
+    );
 
     // Prove it actually works rather than assuming. A kubeconfig that parses
     // but cannot authenticate looks identical to a good one on disk.
     match std::process::Command::new("kubectl")
-        .args(["get", "nodes", "--no-headers"])
+        .args([
+            "--context",
+            BREAK_GLASS_CONTEXT,
+            "get",
+            "nodes",
+            "--no-headers",
+        ])
         .output()
     {
         Ok(c) if c.status.success() => println!(
@@ -1367,5 +1483,113 @@ mod tests {
         };
         let h = Host::from_config("hvA", &hv);
         assert_eq!(h.peer_target.as_deref(), Some("brad@via-peer"));
+    }
+
+    const ADMIN: &str = "\
+apiVersion: v1
+kind: Config
+clusters:
+- name: local
+  cluster:
+    server: https://192.0.2.10:6443
+    certificate-authority-data: Q0E=
+users:
+- name: user
+  user:
+    client-certificate-data: Q0VSVA==
+    client-key-data: S0VZ
+contexts:
+- name: Default
+  context:
+    cluster: local
+    user: user
+current-context: Default
+";
+
+    const SCOPED: &str = "\
+apiVersion: v1
+kind: Config
+clusters:
+- name: break-glass
+  cluster:
+    server: https://192.0.2.10:6443
+    certificate-authority-data: T0xE
+users:
+- name: brad
+  user:
+    client-certificate: /home/brad/.kube/certs/brad.crt
+    client-key: /home/brad/.kube/certs/brad.key
+- name: break-glass
+  user:
+    client-certificate-data: T0xE
+    client-key-data: T0xE
+contexts:
+- name: brad
+  context:
+    cluster: break-glass
+    user: brad
+- name: break-glass
+  context:
+    cluster: break-glass
+    user: break-glass
+current-context: brad
+";
+
+    fn names(doc: &serde_yaml_ng::Value, list: &str) -> Vec<String> {
+        doc[list]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn merging_admin_credentials_keeps_the_scoped_contexts_and_the_current_one() {
+        // bug-165: the roll used to write the admin kubeconfig OVER this file,
+        // and posture-check's `--context brad` failed every query next morning.
+        let merged = merge_break_glass(SCOPED, ADMIN).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&merged).unwrap();
+
+        assert_eq!(names(&doc, "contexts"), ["brad", "break-glass"]);
+        assert_eq!(names(&doc, "users"), ["brad", "break-glass"]);
+        assert_eq!(names(&doc, "clusters"), ["break-glass"]);
+        assert_eq!(doc["current-context"].as_str(), Some("brad"));
+        // and the break-glass entries are the NEW credentials, not the stale ones
+        assert_eq!(
+            doc["users"][1]["user"]["client-certificate-data"].as_str(),
+            Some("Q0VSVA==")
+        );
+        assert_eq!(
+            doc["clusters"][0]["cluster"]["certificate-authority-data"].as_str(),
+            Some("Q0E=")
+        );
+        // the scoped identity's cert paths are untouched
+        assert_eq!(
+            doc["users"][0]["user"]["client-certificate"].as_str(),
+            Some("/home/brad/.kube/certs/brad.crt")
+        );
+    }
+
+    #[test]
+    fn a_missing_kubeconfig_becomes_break_glass_only() {
+        let merged = merge_break_glass("", ADMIN).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&merged).unwrap();
+        assert_eq!(names(&doc, "contexts"), ["break-glass"]);
+        assert_eq!(doc["current-context"].as_str(), Some("break-glass"));
+        assert_eq!(doc["kind"].as_str(), Some("Config"));
+    }
+
+    #[test]
+    fn a_current_context_that_no_longer_exists_falls_back_to_break_glass() {
+        let orphaned = SCOPED.replace("current-context: brad", "current-context: gone");
+        let merged = merge_break_glass(&orphaned, ADMIN).unwrap();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&merged).unwrap();
+        assert_eq!(doc["current-context"].as_str(), Some("break-glass"));
+    }
+
+    #[test]
+    fn an_admin_document_without_credentials_is_refused_before_anything_is_written() {
+        assert!(merge_break_glass(SCOPED, "apiVersion: v1\nkind: Config\n").is_err());
     }
 }

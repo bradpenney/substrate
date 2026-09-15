@@ -21,6 +21,13 @@
 //! `tests/golden/archetypes.yaml`, the same file `regenerate.py` reads.
 //! Declaring them separately would let the two harnesses drift into testing
 //! different things while both reported success.
+//!
+//! WHICH VERSIONS ARE RENDERED
+//! `tests/fixtures/versions.yml`, frozen — never the live `versions.yml` at
+//! the repo root. The root file moves every time a bump bot merges, and a
+//! golden must not move with it: the renderer is under test, not the pin.
+//! The renderer is pointed at a temp directory holding only the fixture, so
+//! nothing at the root can leak into a golden by accident.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -84,17 +91,35 @@ fn site_file(archetype: &Archetype, tmp: &tempfile::TempDir) -> PathBuf {
     path
 }
 
+/// A repository root for the renderer that carries the FROZEN pins.
+///
+/// `--repo` is where the binary looks for `versions.yml`. Handing it the real
+/// root would render whatever the bump bots last merged, and the goldens
+/// would go red on every bump — which is exactly what happened with
+/// bump-flux-operator #4. So the renderer gets a temp directory holding only
+/// `tests/fixtures/versions.yml`; the fixture `site.yml` arrives by env.
+fn fixture_repo(tmp: &tempfile::TempDir) -> PathBuf {
+    let dir = tmp.path().join("repo");
+    std::fs::create_dir_all(&dir).expect("temp repo is creatable");
+    std::fs::copy(
+        repo_root().join("tests/fixtures/versions.yml"),
+        dir.join("versions.yml"),
+    )
+    .expect("fixture versions.yml is readable");
+    dir
+}
+
 /// Render one archetype through the built binary.
 ///
 /// Both variables are SET rather than defaulted. A golden rendered from a real
 /// `site.yml` would bake real addresses and a real key into a committed file,
 /// so this must never inherit an operator's environment.
-fn render(archetype: &Archetype, site: &Path) -> String {
+fn render(archetype: &Archetype, repo: &Path, site: &Path) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_substrate"))
         .arg("render")
         .args(&archetype.args)
         .arg("--repo")
-        .arg(repo_root())
+        .arg(repo)
         .env("SUBSTRATE_SITE_FILE", site)
         .env(
             "HOMELAB_SSH_PUBLIC_KEY",
@@ -122,10 +147,11 @@ fn every_archetype_reproduces_its_golden() {
     );
 
     let tmp = tempfile::tempdir().expect("temp dir");
+    let repo = fixture_repo(&tmp);
     let mut failures = Vec::new();
 
     for archetype in &archetypes {
-        let rendered = render(archetype, &site_file(archetype, &tmp));
+        let rendered = render(archetype, &repo, &site_file(archetype, &tmp));
         let golden_path = golden_dir().join(&archetype.file);
         let golden = std::fs::read_to_string(&golden_path)
             .unwrap_or_else(|_| panic!("{} is missing", archetype.file));
@@ -203,8 +229,9 @@ fn the_private_artifact_archetype_actually_renders_a_pull_secret() {
         .find(|a| !a.private_artifact)
         .expect("at least one archetype must not");
 
-    assert!(render(private, &site_file(private, &tmp)).contains("pullSecret: ghcr-auth"));
-    assert!(!render(plain, &site_file(plain, &tmp)).contains("pullSecret: ghcr-auth"));
+    let repo = fixture_repo(&tmp);
+    assert!(render(private, &repo, &site_file(private, &tmp)).contains("pullSecret: ghcr-auth"));
+    assert!(!render(plain, &repo, &site_file(plain, &tmp)).contains("pullSecret: ghcr-auth"));
 }
 
 #[test]
