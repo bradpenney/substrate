@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily cluster security posture check
+Documentation=https://github.com/bradpenney/substrate
+
+[Timer]
+# Morning, after the 03:17 etcd snapshot and the 03:00 nextcloud backup, so a
+# failure in either is already visible by the time this reports. Each
+# hypervisor gets its own slot (substituted by deploy-posture, 30 min apart)
+# so two read-heavy runs do not land on the API server together and a finding
+# on one host is not masked by a clean run on the other in the same minute.
+OnCalendar=*-*-* __ON_CALENDAR__:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

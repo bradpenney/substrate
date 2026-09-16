@@ -1,0 +1,32 @@
+[Unit]
+Description=Assert the k0s cluster's security invariants still hold
+Documentation=https://github.com/bradpenney/substrate
+# Every control on this cluster is preventive; this unit is the only thing that
+# NOTICES when one stops being true. A failure fires a notification rather than
+# sitting silently in the journal.
+OnFailure=posture-check-notify.service publish-status.service
+# The site shows this run (ADR-194) whichever way it went: a run with findings
+# is exactly the run the public should see. publish-status is its own unit so
+# a Cloudflare problem is a publish failure, never "a security invariant broke".
+OnSuccess=publish-status.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as the scoped read-only identity, never break-glass (ADR-071). Both
+# placeholders are substituted by `substrate deploy-posture` from site.yml, so
+# the repository carries no identity (ADR-012).
+User=__ADMIN_USER__
+Environment=POSTURE_CONTEXT=__POSTURE_CONTEXT__
+# SELinux: a systemd service may not execute a user_home_t binary, so nothing
+# under /home is on PATH. /usr/local/bin/kubectl is bin_t and is placed by
+# deploy-updates.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# --repo /etc/substrate: site.yml and versions.yml are deployed there by
+# deploy-posture, so the check reads the same configuration on every
+# hypervisor and needs no repository checkout (server2 has none).
+# --record writes the run as the published document, pass or fail, for
+# publish-status.service (OnSuccess/OnFailure above) to send.
+ExecStart=/usr/local/bin/substrate posture-check --repo /etc/substrate --record /var/lib/substrate/posture.json
+TimeoutStartSec=300

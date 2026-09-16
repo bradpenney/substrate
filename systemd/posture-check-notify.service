@@ -1,0 +1,10 @@
+[Unit]
+Description=Notify when a cluster security invariant breaks
+Documentation=https://github.com/bradpenney/substrate
+
+[Service]
+Type=oneshot
+# The notifier is placed on every hypervisor by deploy-updates; nothing under
+# /home is needed.
+ExecStart=/usr/local/bin/homelab-notify.sh "Cluster Security Drift" \
+  "A security invariant broke on %H. Check: journalctl -u posture-check.service -n 40"

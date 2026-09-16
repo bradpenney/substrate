@@ -28,10 +28,15 @@ pub struct Line {
 
 /// The document. `held`/`invariants` feed the strip, `lines` the terminal,
 /// `findings` both. `ran_at` is RFC 3339 UTC; the Worker localises it.
+///
+/// NO HOSTNAME. The first document carried `host: "server1"` and the Worker
+/// printed it under the hero terminal — Brad: "that is not a great leak".
+/// The site needs to know that a host ran the check, never which one; the
+/// journal on the machine already knows. What is published is what is
+/// public, and a machine name is not.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Document {
     pub ran_at: String,
-    pub host: String,
     pub provisioner: String,
     pub invariants: usize,
     pub held: usize,
@@ -63,7 +68,7 @@ impl Document {
     /// Build the document from a finished report. `ran_at` is passed in so the
     /// shape is testable without a clock; the binary passes now. Every line
     /// passes through `redact` on the way in — the document is public.
-    pub fn from_report(r: &Report, ran_at: &str, host: &str, provisioner: &str) -> Self {
+    pub fn from_report(r: &Report, ran_at: &str, provisioner: &str) -> Self {
         let mut lines: Vec<Line> = r
             .notes
             .iter()
@@ -78,7 +83,6 @@ impl Document {
         }));
         Document {
             ran_at: ran_at.to_string(),
-            host: host.to_string(),
             provisioner: provisioner.to_string(),
             invariants: r.notes.len() + r.failures.len(),
             held: r.notes.len(),
@@ -98,13 +102,12 @@ impl Document {
     /// One line for the journal: what is about to be, or was, published.
     pub fn summary(&self) -> String {
         format!(
-            "{} — {} of {} invariants hold, {} finding(s), provisioner {}, host {}",
+            "{} — {} of {} invariants hold, {} finding(s), provisioner {}",
             self.ran_at,
             self.held,
             self.invariants,
             self.findings.len(),
-            self.provisioner,
-            self.host
+            self.provisioner
         )
     }
 }
@@ -202,7 +205,7 @@ mod tests {
 
     #[test]
     fn the_document_counts_every_line_and_keeps_failures_as_findings() {
-        let d = Document::from_report(&report(), "2026-09-15T23:55:34Z", "server1", "0.2.4");
+        let d = Document::from_report(&report(), "2026-09-15T23:55:34Z", "0.2.4");
         assert_eq!(d.invariants, 3);
         assert_eq!(d.held, 2);
         assert_eq!(
@@ -239,7 +242,7 @@ mod tests {
         let mut r = Report::default();
         r.note("selinux: 192.168.2.101 enforcing");
         r.fail("peer 192.168.2.101: hypervisor-update.service active");
-        let d = Document::from_report(&r, "t", "h", "v");
+        let d = Document::from_report(&r, "t", "v");
         assert!(!d.to_json().unwrap().contains("192.168."));
     }
 
@@ -248,14 +251,14 @@ mod tests {
         let mut r = Report::default();
         r.note("a");
         r.note("b");
-        let d = Document::from_report(&r, "t", "h", "v");
+        let d = Document::from_report(&r, "t", "v");
         assert_eq!((d.held, d.invariants), (2, 2));
         assert!(d.findings.is_empty());
     }
 
     #[test]
     fn the_json_round_trips_and_carries_the_worker_field_names() {
-        let d = Document::from_report(&report(), "2026-09-15T23:55:34Z", "server1", "0.2.4");
+        let d = Document::from_report(&report(), "2026-09-15T23:55:34Z", "0.2.4");
         let text = d.to_json().unwrap();
         for field in [
             "ran_at",
@@ -263,11 +266,14 @@ mod tests {
             "held",
             "findings",
             "provisioner",
-            "host",
             "lines",
         ] {
             assert!(text.contains(&format!("\"{field}\"")), "{field} missing");
         }
+        assert!(
+            !text.contains("host"),
+            "a machine name must never be in the document"
+        );
         assert_eq!(Document::from_json(&text).unwrap(), d);
     }
 

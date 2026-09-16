@@ -82,7 +82,7 @@ is running is not a check that it works.**
 
 | Path | |
 |---|---|
-| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · publish-status · render · architecture · jit · client-cert · deploy-cplb · deploy-resolver · deploy-updates · deploy-observability` |
+| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · publish-status · render · architecture · jit · client-cert · deploy-cplb · deploy-resolver · deploy-updates · deploy-posture · deploy-observability` |
 | `tests/golden/` | goldens and CPython-generated corpora the Rust must reproduce |
 | `archive/python/` | the reference implementation the Rust was proven against, plus the corpus generators (ADR-183) |
 | `versions.yml` | every external artifact, pinned and checksummed |
@@ -178,9 +178,17 @@ addresses are redacted before the document leaves the host. A broken publish
 is itself a watched unit, so it becomes a finding on the next run.
 
 ```
+substrate deploy-posture            # preview: the seven files each hypervisor gets
+substrate deploy-posture --apply    # units, config and env template on every hypervisor, one sudo each
 substrate publish-status            # preview: the document and where it would go
 substrate publish-status --yes      # PUT it (token via a root-owned EnvironmentFile)
 ```
+
+The check runs on **every** hypervisor (ADR-196), each in its own timer
+slot, each asserting itself and its peer; both publish, and the document
+never names a machine. `deploy-posture` enables the timer only where the
+scoped kubeconfig context exists, and never overwrites a token a human has
+typed into `/etc/substrate/publish-status.env`.
 
 ### What is tested
 

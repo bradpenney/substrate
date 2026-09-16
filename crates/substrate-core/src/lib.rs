@@ -9,6 +9,7 @@ pub mod architecture;
 pub mod client_cert;
 pub mod config;
 pub mod cplb;
+pub mod deploy_posture;
 pub mod exec;
 pub mod gate;
 pub mod jit;

@@ -102,6 +102,8 @@ enum Command {
     DeployResolver(DeployResolverArgs),
     /// Deploy the nightly hypervisor-update machinery to every hypervisor. See --apply.
     DeployUpdates(DeployUpdatesArgs),
+    /// Deploy posture-check + publish-status units to every hypervisor (ADR-196). See --apply.
+    DeployPosture(DeployPostureArgs),
     /// Deploy the host-tier observability stack (VictoriaMetrics, VictoriaLogs, Grafana). See --apply.
     DeployObservability(DeployObservabilityArgs),
     /// Render one node's cloud-config to stdout. Read-only.
@@ -178,6 +180,7 @@ fn main() -> Result<()> {
         Command::DeployCplb(args) => deploy_cplb(&cli.repo, args),
         Command::DeployResolver(args) => deploy_resolver(&cli.repo, args),
         Command::DeployUpdates(args) => deploy_updates(&cli.repo, args),
+        Command::DeployPosture(args) => deploy_posture(&cli.repo, args),
         Command::DeployObservability(args) => deploy_observability(&cli.repo, args),
         Command::Architecture(args) => architecture(args),
     }
@@ -295,11 +298,7 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
 fn record_posture(r: &substrate_core::posture::Report, path: &std::path::Path) -> Result<()> {
     use substrate_core::status::{Document, now_rfc3339};
     let ran_at = now_rfc3339()?;
-    let host = std::process::Command::new("hostname")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    let doc = Document::from_report(r, &ran_at, &host, env!("CARGO_PKG_VERSION"));
+    let doc = Document::from_report(r, &ran_at, env!("CARGO_PKG_VERSION"));
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, doc.to_json()?)?;
     std::fs::rename(&tmp, path)?;
@@ -1215,6 +1214,26 @@ fn deploy_updates(repo: &std::path::Path, args: DeployUpdatesArgs) -> Result<()>
     }
     let cfg = substrate_core::load(repo)?;
     if let Err(e) = substrate_core::updates::deploy_all(repo, &cfg, !args.apply) {
+        eprintln!("ERROR: {e}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+struct DeployPostureArgs {
+    /// Actually install (default: print the file plan for every hypervisor).
+    #[arg(long)]
+    apply: bool,
+}
+
+fn deploy_posture(repo: &std::path::Path, args: DeployPostureArgs) -> Result<()> {
+    refuse_if_root("substrate deploy-posture --apply");
+    if args.apply {
+        refuse_if_unreleased("substrate deploy-posture --apply");
+    }
+    let cfg = substrate_core::load(repo)?;
+    if let Err(e) = substrate_core::deploy_posture::deploy_all(repo, &cfg, !args.apply) {
         eprintln!("ERROR: {e}");
         std::process::exit(1);
     }

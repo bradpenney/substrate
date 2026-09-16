@@ -203,6 +203,7 @@ fn pf(data: impl Into<Vec<u8>>, remote: &str, mode: u32) -> PlannedFile {
         data: data.into(),
         remote: remote.to_string(),
         mode,
+        owner: None,
     }
 }
 

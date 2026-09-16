@@ -26,6 +26,9 @@ pub struct PlannedFile {
     pub data: Vec<u8>,
     pub remote: String,
     pub mode: u32,
+    /// Owning user, root when None. Set for a file a service user must read
+    /// but nobody else may (a 0600 site.yml for the posture check).
+    pub owner: Option<String>,
 }
 
 const INSTALLER: &str = r#"#!/bin/bash
@@ -94,10 +97,12 @@ pub fn build_payload(files: &[PlannedFile], stamp: u64) -> Result<Vec<u8>> {
         h.set_size(f.data.len() as u64);
         h.set_mode(f.mode);
         h.set_mtime(stamp);
+        // Ownership travels by NAME: GNU tar, extracting as root, resolves
+        // uname/gname on the host, so the uid need not be known here.
         h.set_uid(0);
         h.set_gid(0);
-        h.set_username("root")?;
-        h.set_groupname("root")?;
+        h.set_username(f.owner.as_deref().unwrap_or("root"))?;
+        h.set_groupname(f.owner.as_deref().unwrap_or("root"))?;
         h.set_entry_type(tar::EntryType::Regular);
         tar.append_data(&mut h, &f.remote, f.data.as_slice())?;
     }
@@ -274,27 +279,32 @@ pub fn plan(
             data: read("hypervisor-update.sh")?,
             remote: "usr/local/bin/hypervisor-update.sh".into(),
             mode: 0o755,
+            owner: None,
         },
         PlannedFile {
             data: read("hypervisor-uncordon.sh")?,
             remote: "usr/local/bin/hypervisor-uncordon.sh".into(),
             mode: 0o755,
+            owner: None,
         },
         PlannedFile {
             data: read("notify.sh")?,
             remote: "usr/local/bin/homelab-notify.sh".into(),
             mode: 0o755,
+            owner: None,
         },
         // Cluster credentials for the health gate. Root-only: it's cluster-admin.
         PlannedFile {
             data: kubeconfig.as_bytes().to_vec(),
             remote: "etc/homelab/kubeconfig".into(),
             mode: 0o600,
+            owner: None,
         },
         PlannedFile {
             data: env.into_bytes(),
             remote: "etc/homelab/update.env".into(),
             mode: 0o644,
+            owner: None,
         },
     ];
     for unit in [
@@ -307,6 +317,7 @@ pub fn plan(
             data: read(&format!("systemd/{unit}"))?,
             remote: format!("etc/systemd/system/{unit}"),
             mode: 0o644,
+            owner: None,
         });
     }
     // 0600 and separate from update.env: that file is world-readable and
@@ -316,6 +327,7 @@ pub fn plan(
             data: format!("NTFY_TOPIC={t}\n").into_bytes(),
             remote: "etc/homelab/notify.env".into(),
             mode: 0o600,
+            owner: None,
         });
     }
     Ok(files)
@@ -393,11 +405,13 @@ mod tests {
                 data: b"#!/bin/sh\n".to_vec(),
                 remote: "usr/local/bin/x.sh".into(),
                 mode: 0o755,
+                owner: None,
             },
             PlannedFile {
                 data: b"NTFY_TOPIC=t\n".to_vec(),
                 remote: "etc/homelab/notify.env".into(),
                 mode: 0o600,
+                owner: None,
             },
         ];
         let gz = build_payload(&files, 1_700_000_000).unwrap();

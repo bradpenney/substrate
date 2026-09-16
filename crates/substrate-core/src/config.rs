@@ -182,6 +182,21 @@ pub struct PostureConfig {
     pub public_hostname: Option<String>,
     #[serde(default)]
     pub origin_ip: Option<String>,
+    /// The kubeconfig context the check runs as: the scoped, read-only
+    /// identity (ADR-071). Never break-glass.
+    #[serde(default = "default_posture_context")]
+    pub context: String,
+    /// Where `publish-status` sends the run (ADR-194): the Cloudflare account
+    /// and KV namespace. Ids, not secrets — the token is typed into
+    /// /etc/substrate/publish-status.env by hand, once, and never lives here.
+    #[serde(default)]
+    pub status_account_id: Option<String>,
+    #[serde(default)]
+    pub status_kv_namespace_id: Option<String>,
+}
+
+fn default_posture_context() -> String {
+    "brad".into()
 }
 
 /// Where the host-tier observability stack runs (ADR-098).

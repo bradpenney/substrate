@@ -1,0 +1,20 @@
+[Unit]
+Description=Publish the last posture-check run to the public site (ADR-194)
+Documentation=https://github.com/bradpenney/substrate
+# Started by posture-check.service through OnSuccess= and OnFailure=, never on
+# its own timer: it publishes a RUN, so it runs when there has been one.
+# Nothing notifies on this unit's failure directly -- posture-check watches it
+# (it is on the host-units list), so a broken publish is a finding next
+# morning, on the site it failed to update.
+
+[Service]
+Type=oneshot
+User=__ADMIN_USER__
+# CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_KV_NAMESPACE_ID, CLOUDFLARE_KV_TOKEN.
+# Root-owned, 0600: systemd reads it before dropping to the admin user, so the
+# token is never readable from a shell. deploy-posture installs the template
+# with the ids filled in; the token is typed in once, by a human.
+EnvironmentFile=/etc/substrate/publish-status.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/substrate publish-status --from /var/lib/substrate/posture.json --yes
+TimeoutStartSec=60
