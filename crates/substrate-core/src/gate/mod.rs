@@ -36,8 +36,26 @@ pub struct Gate<'a> {
     bootstrap_ip: String,
 }
 
+/// The arguments a local kubectl runs with: ALWAYS the break-glass context
+/// first. Never the operator's current context — `brad` is read-only
+/// (ADR-071) and forbidden `/healthz/etcd`, which made the etcd probe report
+/// every node "not serving" on a healthy cluster and would have halted the
+/// roll after one node (bug-171). `refresh_client_access` writes this
+/// context wherever a rebuild or roll has run, so it is always there.
+pub fn local_kubectl_args(args: &[&str]) -> Vec<String> {
+    std::iter::once(format!(
+        "--context={}",
+        crate::client_cert::BREAK_GLASS_CONTEXT
+    ))
+    .chain(args.iter().map(ToString::to_string))
+    .collect()
+}
+
 fn local_kubectl(args: &[&str]) -> Output {
-    match std::process::Command::new("kubectl").args(args).output() {
+    match std::process::Command::new("kubectl")
+        .args(local_kubectl_args(args))
+        .output()
+    {
         Ok(o) => Output {
             status: o.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -968,6 +986,14 @@ impl<'a> Gate<'a> {
         false
     }
 
+    /// Volumes that would lose their last healthy replica with `node`
+    /// (bug-158). An empty answer when Longhorn is not installed.
+    fn volumes_orphaned_by(&self, node: &str) -> Vec<String> {
+        parse(&self.kubectl("-n longhorn-system get replicas.longhorn.io -o json"))
+            .map(|r| crate::longhorn::volumes_without_surviving_replica(&r, node))
+            .unwrap_or_default()
+    }
+
     fn node_kubelet_version(&self, name: &str) -> Option<String> {
         let r = self.kubectl(&format!(
             "get node {name} -o jsonpath={{.status.nodeInfo.kubeletVersion}}"
@@ -1046,12 +1072,28 @@ impl<'a> Gate<'a> {
                 );
                 return false;
             }
+            // NEVER destroy a volume's last healthy replica (bug-158). Longhorn
+            // rebuilds nothing for a detached volume, so across same-name
+            // replacements one can erode to a single replica — on this node.
+            let doomed = self.volumes_orphaned_by(&vm.name);
+            if !doomed.is_empty() {
+                println!(
+                    "REFUSING to roll {}: volume(s) with no healthy replica elsewhere: {}",
+                    vm.name,
+                    doomed.join(", ")
+                );
+                println!("  Attach each one (a pod that mounts it) so Longhorn rebuilds its");
+                println!("  replicas, then roll again. Destroying this node is data loss.");
+                return false;
+            }
             provision::destroy_and_undefine(host, vm);
             // A destroyed node's etcd membership outlives it; the ghost costs
             // quorum on the NEXT replacement.
             provision::etcd_prune(admin, donor_host, &donor_vm.static_ip, vm);
-            // And its Node object, so Longhorn forgets the old disk (bug-154).
+            // Its Node object, so pods reschedule...
             provision::forget_node(admin, donor_host, &donor_vm.static_ip, vm);
+            // ...and its volumes, so they can (bug-170).
+            provision::detach_dead_node_volumes(admin, donor_host, &donor_vm.static_ip, vm);
             let iso = format!(
                 "{}/{}-cloudinit.iso",
                 self.cfg.libvirt.iso_pool_path, vm.name
@@ -1103,6 +1145,18 @@ impl<'a> Gate<'a> {
                 provision::SSH_WAIT_INTERVAL,
             ) {
                 println!("ROLL HALTED: {e}");
+                return false;
+            }
+            // Longhorn still holds the destroyed disk's UUID against this
+            // name; without this the Longhorn wait below never converges
+            // (bug-154).
+            if let Err(e) =
+                provision::readmit_longhorn_disk(admin, donor_host, &donor_vm.static_ip, vm)
+            {
+                println!(
+                    "ROLL HALTED: Longhorn would not re-admit {}'s disk: {e}",
+                    vm.name
+                );
                 return false;
             }
             if !self.check_system_pods() {

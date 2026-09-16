@@ -531,24 +531,32 @@ pub fn etcd_prune(admin_user: &str, bootstrap_host: &Host, bootstrap_ip: &str, d
     );
 }
 
-/// Remove the destroyed node's Kubernetes Node object, and with it Longhorn's
-/// record of the node.
+/// `sudo k0s kubectl <args>` on a node that is still alive. Everything
+/// Longhorn-related during a roll goes through the token donor, never a
+/// local kubeconfig: the node being replaced may be the one it points at.
+fn k0s_kubectl(admin_user: &str, ip: &str, args: &str) -> Result<crate::exec::Output> {
+    node_ssh(admin_user, ip, 10, &format!("sudo k0s kubectl {args}"))
+}
+
+fn k0s_kubectl_json(admin_user: &str, ip: &str, args: &str) -> Option<serde_json::Value> {
+    let out = k0s_kubectl(admin_user, ip, &format!("{args} -o json")).ok()?;
+    if !out.ok() {
+        return None;
+    }
+    serde_json::from_str(&out.stdout).ok()
+}
+
+/// Delete a dead node's Node object so pods reschedule and the scheduler
+/// stops counting it.
 ///
-/// A replacement joins under the SAME name. Left in place, the old Node
-/// object is simply re-adopted by the new kubelet — and Longhorn's node CR
-/// hanging off it still carries the OLD disk's UUID, so the fresh disk is
-/// refused ("record diskUUID doesn't match the one on the disk"), the node
-/// never takes a replica again, and every volume that had one there stays
-/// degraded (bug-154, found on the first real roll). Longhorn deletes its
-/// node CR itself when the Kubernetes Node goes away, and creates a fresh
-/// one when the replacement registers; this is the only clean path — its
-/// webhook refuses to delete the CR of a node it still thinks is Ready.
-///
-/// Also evicts the dead node's pods immediately instead of after the
-/// five-minute tolerations, which is why the app comes back sooner.
+/// Longhorn KEEPS its own `nodes.longhorn.io` record regardless (proven
+/// five times out of five on the 2026-09-16 roll — the two-minute wait this
+/// used to do never once succeeded), so the re-created node's disk comes
+/// back with the old UUID on record. That is [`readmit_longhorn_disk`]'s
+/// job after the join, not something to wait for here.
 pub fn forget_node(admin_user: &str, donor_host: &Host, donor_ip: &str, dead: &Vm) {
     println!(
-        "[{}] removing the Node object for {} (and Longhorn's record of it)...",
+        "[{}] removing the Node object for {}...",
         donor_host.name, dead.name
     );
     let _ = node_ssh(
@@ -560,44 +568,132 @@ pub fn forget_node(admin_user: &str, donor_host: &Host, donor_ip: &str, dead: &V
             dead.name
         ),
     );
-    let has_longhorn = node_ssh(
-        admin_user,
-        donor_ip,
-        10,
-        "sudo k0s kubectl get crd nodes.longhorn.io",
-    )
-    .map(|o| o.ok())
-    .unwrap_or(false);
-    if !has_longhorn {
+}
+
+/// Release every volume still attached to a node that no longer exists
+/// (bug-170). With the Node gone, its pods are collected at once and
+/// reschedule — onto a `Multi-Attach error`, because the attach/detach
+/// controller waits six minutes for a kubelet that will never answer to
+/// confirm the unmount. Deleting the VolumeAttachment objects makes the CSI
+/// attacher unpublish now; a single-writer tenant is back in seconds
+/// instead of serving 500s for the wait. Best-effort: nothing here can make
+/// the roll worse than the wait it replaces.
+pub fn detach_dead_node_volumes(admin_user: &str, donor_host: &Host, donor_ip: &str, dead: &Vm) {
+    let Some(vas) = k0s_kubectl_json(admin_user, donor_ip, "get volumeattachments") else {
+        return;
+    };
+    let names = crate::longhorn::attachments_on_node(&vas, &dead.name);
+    if names.is_empty() {
         return;
     }
-    for i in 0..24 {
-        let gone = node_ssh(
-            admin_user,
-            donor_ip,
-            10,
-            &format!(
-                "sudo k0s kubectl -n longhorn-system get nodes.longhorn.io {}",
-                dead.name
-            ),
-        )
-        .map(|o| !o.ok())
-        .unwrap_or(false);
-        if gone {
-            println!("    longhorn forgot {}", dead.name);
-            return;
-        }
-        println!(
-            "    waiting for longhorn to forget {} ({}s)...",
-            dead.name,
-            i * 5
-        );
-        std::thread::sleep(std::time::Duration::from_secs(5));
-    }
     println!(
-        "    WARNING: longhorn still records {} — its disk will show DiskNotReady after the join; remove and re-add the disk by hand (bug-154)",
+        "[{}] releasing {} volume attachment(s) from {}...",
+        donor_host.name,
+        names.len(),
         dead.name
     );
+    let _ = k0s_kubectl(
+        admin_user,
+        donor_ip,
+        &format!("delete volumeattachment {} --wait=false", names.join(" ")),
+    );
+}
+
+/// How long a re-added disk gets to come up Ready and Schedulable.
+pub const DISK_ADMIT_TIMEOUT: u64 = 120;
+
+/// Re-admit a re-created node's Longhorn disk (bug-154), or confirm it needs
+/// nothing. Longhorn's node CR outlives the node and keeps the destroyed
+/// disk's UUID, so the fresh disk at the same path is refused with
+/// `record diskUUID doesn't match the one on the disk` and no replica is
+/// ever rebuilt there. The three-patch procedure that fixes it — evict the
+/// entry, remove it, re-add the path under a NEW key with the SAME
+/// `storageReserved` — was run by hand on every node of the first two
+/// rolls. Now it is a step.
+pub fn readmit_longhorn_disk(
+    admin_user: &str,
+    donor_host: &Host,
+    donor_ip: &str,
+    node: &Vm,
+) -> Result<()> {
+    use crate::longhorn;
+    let cr = format!("-n longhorn-system nodes.longhorn.io {}", node.name);
+    let get = |args: &str| k0s_kubectl_json(admin_user, donor_ip, &format!("get {cr}{args}"));
+    let Some(before) = get("") else {
+        // No Longhorn, or no record for this node: nothing to re-admit.
+        return Ok(());
+    };
+    let Some(stale) = longhorn::stale_disk(&before) else {
+        if longhorn::disk_admitted(&before) {
+            println!("    longhorn disk on {} already admitted", node.name);
+        }
+        return Ok(());
+    };
+    println!(
+        "[{}] re-admitting {}'s longhorn disk (stale record {}, reserved {})...",
+        donor_host.name, node.name, stale.key, stale.storage_reserved
+    );
+    let patch = |body: &str| -> Result<crate::exec::Output> {
+        k0s_kubectl(
+            admin_user,
+            donor_ip,
+            &format!(
+                "patch {cr} --type=json -p {}",
+                crate::exec::shell_quote(body)
+            ),
+        )
+    };
+    let out = patch(&longhorn::evict_patch(&stale.key))?;
+    if !out.ok() {
+        bail!("evict patch refused: {}", out.stderr.trim());
+    }
+    std::thread::sleep(std::time::Duration::from_secs(15));
+    let out = patch(&longhorn::remove_patch(&stale.key))?;
+    if !out.ok() {
+        bail!("remove patch refused: {}", out.stderr.trim());
+    }
+    for _ in 0..6 {
+        if !get("").is_some_and(|n| longhorn::has_disk_status(&n)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    let new_key = longhorn::new_disk_key(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    );
+    let readd = longhorn::readd_patch(&new_key, stale.storage_reserved);
+    let mut last = String::new();
+    let mut added = false;
+    for _ in 0..5 {
+        let out = patch(&readd)?;
+        if out.ok() {
+            added = true;
+            break;
+        }
+        last = out.stderr.trim().to_string();
+        if !longhorn::is_syncing_error(&last) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    if !added {
+        bail!("re-add patch refused: {last}");
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DISK_ADMIT_TIMEOUT);
+    while std::time::Instant::now() < deadline {
+        if get("").is_some_and(|n| longhorn::disk_admitted(&n)) {
+            println!("    longhorn admitted {}'s disk as {new_key}", node.name);
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    bail!(
+        "disk {new_key} on {} not Ready+Schedulable after {DISK_ADMIT_TIMEOUT}s",
+        node.name
+    )
 }
 
 /// Map node name -> Ready, as the cluster currently sees it.

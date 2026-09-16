@@ -73,7 +73,11 @@ verifier is neither — see `RUST_PORT.md` for what is proven and how.
 Day to day, nodes change by `substrate roll --yes`: one node at a time,
 destroyed and re-created from a fresh render, cluster health re-verified
 between each. The rebuild is the catastrophe drill; the roll is how a
-configuration change reaches the fleet (ADR-190).
+configuration change reaches the fleet (ADR-190). A roll owns every step
+of a replacement: it refuses to destroy a volume's last healthy replica,
+releases the dead node's volumes so single-writer tenants fail over in
+seconds, and re-admits the re-created node's Longhorn disk itself — the
+operator's terminal stays empty from `--yes` to `roll complete`.
 
 The recurring lesson behind every one of them: **a check that confirms a system
 is running is not a check that it works.**

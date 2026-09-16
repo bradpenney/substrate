@@ -15,6 +15,7 @@ pub mod gate;
 pub mod jit;
 pub mod jit_ops;
 pub mod libvirt;
+pub mod longhorn;
 pub mod observability;
 pub mod posture;
 pub mod provision;

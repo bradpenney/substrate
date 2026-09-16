@@ -212,3 +212,12 @@ fn every_generated_case_matches_cpython() {
         failures.join("\n\n")
     );
 }
+
+/// bug-171: the gate's local kubectl must never inherit the operator's
+/// current context. `brad` is read-only and forbidden `/healthz/etcd`.
+#[test]
+fn local_kubectl_always_breaks_glass() {
+    let args = substrate_core::gate::local_kubectl_args(&["get", "--raw", "/healthz/etcd"]);
+    assert_eq!(args[0], "--context=break-glass");
+    assert_eq!(&args[1..], ["get", "--raw", "/healthz/etcd"]);
+}
