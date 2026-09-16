@@ -510,7 +510,7 @@ fn a_healthy_host_produces_the_summary_note() {
     let mut r = Report::default();
     check_failed_units(&st, &mut r);
     assert!(r.failures.is_empty());
-    assert_eq!(r.notes, vec!["host units: 8 watched, none failed"]);
+    assert_eq!(r.notes, vec!["host units: 9 watched, none failed"]);
 }
 
 #[test]

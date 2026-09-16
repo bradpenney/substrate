@@ -73,7 +73,9 @@ enum Command {
     /// `posture-differential.sh` for the harness that proves the two
     /// agree. Until all thirteen are ported, posture-check.py remains the
     /// one that runs on the timer.
-    PostureCheck,
+    PostureCheck(PostureCheckArgs),
+    /// Publish the last recorded posture run to the site's KV store (ADR-194). See --yes.
+    PublishStatus(PublishStatusArgs),
     /// Provision the k0s VM fleet. Idempotent. WRITES — see --apply.
     Provision(ProvisionArgs),
     /// DESTROY the whole fleet: VMs, disks, seed ISOs, host keys. See --yes.
@@ -104,6 +106,28 @@ enum Command {
     DeployObservability(DeployObservabilityArgs),
     /// Render one node's cloud-config to stdout. Read-only.
     Render(RenderArgs),
+}
+
+#[derive(clap::Args)]
+struct PostureCheckArgs {
+    /// Also write the run as the ADR-194 document (JSON) to this path, pass
+    /// or fail — `publish-status` sends it. The unit records here.
+    #[arg(long, value_name = "FILE")]
+    record: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct PublishStatusArgs {
+    /// The document posture-check recorded.
+    #[arg(
+        long,
+        value_name = "FILE",
+        default_value = "/var/lib/substrate/posture.json"
+    )]
+    from: PathBuf,
+    /// Actually PUT it. Without this, print what would be published and where.
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(clap::Args)]
@@ -140,7 +164,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Render(args) => render(&cli.repo, args),
-        Command::PostureCheck => posture_check(&cli.repo),
+        Command::PostureCheck(args) => posture_check(&cli.repo, args),
+        Command::PublishStatus(args) => publish_status(args),
         Command::Provision(args) => provision(&cli.repo, args),
         Command::Wipe(args) => wipe(&cli.repo, args),
         Command::Rebuild(args) => rebuild(&cli.repo, args),
@@ -165,7 +190,7 @@ fn main() -> Result<()> {
 /// `[ok  ]` padding and the stdout/stderr split are all reproduced rather than
 /// improved, because the differential harness compares this text against the
 /// Python's.
-fn posture_check(repo: &std::path::Path) -> Result<()> {
+fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     use substrate_core::posture::{
         Report, check_admission_policies, check_cluster_admin, check_credentials,
         check_default_deny, check_failed_units, check_firewall_restrictions, check_flux,
@@ -246,6 +271,16 @@ fn posture_check(repo: &std::path::Path) -> Result<()> {
         eprintln!("  [FAIL] {f}");
     }
     println!();
+
+    // Recorded BEFORE the verdict decides the exit code: a run with findings
+    // is exactly the run the site must show (ADR-194), and a recording
+    // failure is reported but never turns a clean run into a failed unit.
+    if let Some(path) = &args.record
+        && let Err(e) = record_posture(&r, path)
+    {
+        eprintln!("  (could not record the run to {}: {e})", path.display());
+    }
+
     if r.failures.is_empty() {
         println!("all {} security invariants hold", r.notes.len());
         Ok(())
@@ -253,6 +288,84 @@ fn posture_check(repo: &std::path::Path) -> Result<()> {
         eprintln!("{} security invariant(s) BROKEN", r.failures.len());
         std::process::exit(1);
     }
+}
+
+/// Write the run as the published document, atomically (tmp + rename), so a
+/// publish that races the write never reads half a file.
+fn record_posture(r: &substrate_core::posture::Report, path: &std::path::Path) -> Result<()> {
+    use substrate_core::status::{Document, now_rfc3339};
+    let ran_at = now_rfc3339()?;
+    let host = std::process::Command::new("hostname")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let doc = Document::from_report(r, &ran_at, &host, env!("CARGO_PKG_VERSION"));
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, doc.to_json()?)?;
+    std::fs::rename(&tmp, path)?;
+    println!("  recorded: {} ({})", path.display(), doc.summary());
+    Ok(())
+}
+
+/// PUT the recorded document to the site's KV namespace.
+///
+/// `--yes` gates the write; without it the document and the target are
+/// printed and nothing leaves the host. The token arrives in
+/// `CLOUDFLARE_KV_TOKEN` (a root-owned EnvironmentFile on the unit) and is
+/// handed to curl through a header file, never an argument.
+fn publish_status(args: PublishStatusArgs) -> Result<()> {
+    use substrate_core::status::{Document, curl_args, publish_succeeded, target_from_env};
+
+    let text = std::fs::read_to_string(&args.from).with_context(|| {
+        format!(
+            "no recorded run at {} — has posture-check --record run?",
+            args.from.display()
+        )
+    })?;
+    let doc = Document::from_json(&text)?;
+    let target = target_from_env(|k| std::env::var(k).ok())?;
+
+    println!("document : {}", doc.summary());
+    println!("target   : {}", target.url());
+    if !args.yes {
+        println!(
+            "
+preview only — pass --yes to publish"
+        );
+        return Ok(());
+    }
+
+    let token = std::env::var("CLOUDFLARE_KV_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .context("CLOUDFLARE_KV_TOKEN is not set — publish-status needs it (see /etc/substrate/publish-status.env)")?;
+    let dir = tempfile::tempdir()?;
+    let header = dir.path().join("hdr");
+    std::fs::write(&header, format!("Authorization: Bearer {token}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&header, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let out = std::process::Command::new("curl")
+        .args(curl_args(
+            &target,
+            &args.from.to_string_lossy(),
+            &header.to_string_lossy(),
+        ))
+        .output()
+        .context("curl is not installed")?;
+    let body = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        anyhow::bail!(
+            "curl failed: {}{}",
+            String::from_utf8_lossy(&out.stderr).trim(),
+            body.trim()
+        );
+    }
+    publish_succeeded(&body)?;
+    println!("published: {} → {}", args.from.display(), target.key);
+    Ok(())
 }
 
 /// Query the cluster as JSON.

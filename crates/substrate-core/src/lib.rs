@@ -19,6 +19,7 @@ pub mod posture;
 pub mod provision;
 pub mod render;
 pub mod resolver;
+pub mod status;
 pub mod updates;
 pub mod versions;
 pub mod wipe;

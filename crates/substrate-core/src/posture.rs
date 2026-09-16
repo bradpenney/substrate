@@ -426,6 +426,10 @@ pub const WATCHED_UNITS: &[&str] = &[
     // stops running, the symptom is the ABSENCE of a reminder, so nothing else
     // would ever notice that platform upgrades were piling up unreviewed.
     "component-nag.service",
+    // Publishes each run to the public site (ADR-194). Fired by posture-check
+    // itself, so its failure would otherwise show only as a strip that never
+    // updates -- and "stale" on the site says nothing about why.
+    "publish-status.service",
     // NOT posture-check.service itself. Watching yourself deadlocks: one failure
     // marks the unit failed, the next run then fails BECAUSE it is failed, and it
     // can never clear -- the unit only leaves the failed state by succeeding.

@@ -1,6 +1,6 @@
 [package]
 name = "substrate"
-version = "0.2.3"
+version = "0.2.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,6 +17,8 @@ anyhow.workspace = true
 # posture-check parses kubectl's JSON. The workspace already pins it for
 # substrate-core, so this adds no new dependency to the tree.
 serde_json.workspace = true
+# publish-status hands curl the token through a private header file.
+tempfile = "3"
 
 [dev-dependencies]
 serde.workspace = true

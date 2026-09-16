@@ -82,7 +82,7 @@ is running is not a check that it works.**
 
 | Path | |
 |---|---|
-| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · render · architecture · jit · client-cert · deploy-cplb · deploy-resolver · deploy-updates · deploy-observability` |
+| `crates/` | **the implementation**: `substrate provision · wipe · rebuild · verify · fingerprint · compare · roll · posture-check · publish-status · render · architecture · jit · client-cert · deploy-cplb · deploy-resolver · deploy-updates · deploy-observability` |
 | `tests/golden/` | goldens and CPython-generated corpora the Rust must reproduce |
 | `archive/python/` | the reference implementation the Rust was proven against, plus the corpus generators (ADR-183) |
 | `versions.yml` | every external artifact, pinned and checksummed |
@@ -165,6 +165,22 @@ found while building this were controls that were installed and *not working*.
 | Privilege on hosts | No standing `NOPASSWD`. Deployments escalate once, per host, and say so |
 | Ingress | Origin locked so the public path cannot be bypassed |
 | The provisioner itself | Released as a signed, attested artifact; a working-tree build refuses to change the fleet |
+
+### The run is published
+
+Every posture-check run — pass or fail — is recorded as a JSON document
+(`posture-check --record`) and sent to the public site by `substrate
+publish-status`, a separate unit fired from the check's `OnSuccess=` and
+`OnFailure=`. The site's edge Worker fills its status strip and hero terminal
+from that document and from nothing else: no run published in 26 hours reads
+as **stale**, and there is no default number that looks real. Private
+addresses are redacted before the document leaves the host. A broken publish
+is itself a watched unit, so it becomes a finding on the next run.
+
+```
+substrate publish-status            # preview: the document and where it would go
+substrate publish-status --yes      # PUT it (token via a root-owned EnvironmentFile)
+```
 
 ### What is tested
 
