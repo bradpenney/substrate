@@ -165,7 +165,12 @@ if [ ! -e /etc/substrate/publish-status.env ]; then
     install -m 0600 -o root -g root /etc/substrate/publish-status.env.example /etc/substrate/publish-status.env
     echo "  publish-status.env: CREATED from template -- add CLOUDFLARE_KV_TOKEN before the next run"
 else
-    echo "  publish-status.env: kept ($(stat -c '%a %U' /etc/substrate/publish-status.env))"
+    # Kept, but its mode is not negotiable: a token file that arrived by hand
+    # arrived 644 once (server2, 2026-09-15) and was readable by every local
+    # user. Content is the human's; permissions are the deploy's.
+    chown root:root /etc/substrate/publish-status.env
+    chmod 0600 /etc/substrate/publish-status.env
+    echo "  publish-status.env: kept, mode enforced ($(stat -c '%a %U' /etc/substrate/publish-status.env))"
 fi
 if ! grep -q '^CLOUDFLARE_KV_TOKEN=.\+' /etc/substrate/publish-status.env; then
     echo "  WARNING: CLOUDFLARE_KV_TOKEN is empty -- publish-status will fail (and be a finding) until it is set"
