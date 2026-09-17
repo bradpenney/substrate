@@ -261,3 +261,27 @@ fn a_bootstrap_node_may_not_also_carry_a_join_token() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("mutually exclusive"));
 }
+
+/// A node's cloud-config must not depend on how many hypervisors there are
+/// (ADR-199): the same archetype rendered against the one-host and the
+/// three-host fixtures reproduces the same golden, byte for byte. The
+/// archetype chosen sits on `hvA`, the host every fixture shares.
+#[test]
+fn node_render_is_independent_of_fleet_shape() {
+    let archetype = archetypes()
+        .into_iter()
+        .find(|a| a.file == "joiner_storage_disk.yaml")
+        .expect("the hvA archetype is declared");
+    let golden = std::fs::read_to_string(golden_dir().join(&archetype.file)).expect("golden");
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let repo = fixture_repo(&tmp);
+    for fixture in ["site-one-host.yml", "site-three-hosts.yml"] {
+        let site = repo_root().join("tests/fixtures").join(fixture);
+        let rendered = render(&archetype, &repo, &site);
+        assert!(
+            rendered == golden,
+            "{fixture} rendered a different node:\n{}",
+            describe_difference(&archetype.file, &golden, &rendered)
+        );
+    }
+}

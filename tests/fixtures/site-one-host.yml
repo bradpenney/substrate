@@ -1,0 +1,89 @@
+# The ONE-HOST fleet (ADR-199): a stranger with a single server and three
+# nodes on it. Derived from site.yml — same schema, same fake values — with
+# exactly the differences a one-host site has: one hypervisor, no peer, all
+# nodes on it, one VRRP priority. Every place the tooling assumes a second
+# host is a test against this file.
+admin_user: operator
+
+network:
+  gateway: 10.99.0.1
+  dns_servers: [10.99.0.1, 10.99.0.2]
+  bridge: br0
+  primary_nic: ens2
+
+hypervisors:
+  hvA:
+    ssh_target: null          # local: the tooling runs on this one
+    # No peer_target: there is nobody to reach it FROM. A one-host site must
+    # not be made to invent an address for a peer that does not exist.
+    disk_pool: default
+    pool_needs_nocow: true    # btrfs
+
+control_plane:
+  vip: 10.99.0.99
+  vrrp_router_id: 51
+  auth_pass: fake-vrrp-pass
+  priorities: {hvA: 100}
+
+external_secrets:
+  host: https://secrets.example.invalid
+  client_id: 00000000-0000-0000-0000-000000000000
+  client_secret: fake-client-secret
+  project_slug: fake-project
+  environment_slug: prod
+
+# Three nodes, odd for etcd, all on the one host. 14 GiB each is the honest
+# floor for a 64 GiB server with the host itself left room to breathe.
+nodes:
+  a-vm1: {hypervisor: hvA, ip: 10.99.0.20, bootstrap: true, memory_mib: 14336, vcpu: 4, storage_disk_gb: 200}
+  a-vm2: {hypervisor: hvA, ip: 10.99.0.21, memory_mib: 14336, vcpu: 4, storage_disk_gb: 200}
+  a-vm3: {hypervisor: hvA, ip: 10.99.0.22, memory_mib: 14336, vcpu: 4, storage_disk_gb: 200}
+
+defaults: {memory_mib: 6144, vcpu: 2, disk_gb: 40, storage_disk_gb: 0}
+
+kairos:
+  iso_url: https://example.invalid/kairos.iso
+  iso_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+k0s:
+  args: ["--enable-worker", "--no-taints", "--profile=homelab"]
+  token_expiry: 24h
+
+api_hardening:
+  secrets_encryption_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  audit_log_path: /var/log/k0s/audit.log
+  audit_log_maxage: "30"
+
+posture:
+  public_hostname: hello.example.invalid
+  origin_ip: 203.0.113.1
+
+libvirt:
+  iso_pool: isos
+  iso_pool_path: /var/lib/libvirt/isos
+
+flux:
+  oci_repository: ghcr.io/example/config
+  oci_tag: main
+  ghcr_username: example
+  ghcr_token: ""
+  # Who must have signed the config artifact (ADR-069/094). Stored exactly
+  # as it must appear in the rendered yaml — interpolated verbatim, never
+  # escaped at render time.
+  cosign_subject: '^https://github\\.com/example/config/\\.github/workflows/publish\\.yaml@refs/heads/main$'
+
+dns:
+  domain: example.invalid
+  proxied: [hello]
+  vercel_team: fake-team
+
+# Host-tier observability (ADR-098). hvA is the fixture's "local" hypervisor,
+# standing in for the machine with memory to spare.
+observability:
+  host: hvA
+  hostname: observe.example.invalid
+  retention_months: 6
+  # Carried so CI actually EXERCISES this field. It was missing from the Rust
+  # schema for some time and no test could see it: the golden tests render this
+  # fixture, and CI has no real site.yml to try instead.
+  github_org: fixture-org

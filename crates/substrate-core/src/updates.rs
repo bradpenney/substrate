@@ -203,6 +203,14 @@ pub fn apply(host: &Host, files: &[PlannedFile], installer: &str) -> Result<()> 
     result
 }
 
+/// Every OTHER hypervisor, in name order — the hosts a reboot must be
+/// interlocked with and a posture run must probe. Zero of them is a one-host
+/// site (ADR-199); two or more is N. `deploy_all` still pairs each host with
+/// the first of these (bug-173) until the plan carries the list.
+pub fn peers_of<'a>(hosts: &'a [Host], host: &Host) -> Vec<&'a Host> {
+    hosts.iter().filter(|h| h.name != host.name).collect()
+}
+
 /// SSH target string the HOST will use to reach its PEER. Not just the peer's
 /// `ssh_target`: that is written from server1's point of view and is None
 /// for server1 itself. From another host, server1 is a real remote.

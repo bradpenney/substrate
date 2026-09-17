@@ -86,8 +86,10 @@ pub fn validate(cfg: &config::SiteConfig) -> Result<()> {
     // A hypervisor the tooling runs ON has no ssh_target, so nothing else
     // carries an address its PEER could use — and the nightly-update health
     // check needs exactly that. Catch it here rather than at 03:00.
+    // Only when there IS another hypervisor: a one-host site (ADR-199) has
+    // nobody to reach it from, and must not be made to invent an address.
     for (name, hv) in &cfg.hypervisors {
-        if hv.ssh_target.is_none() && hv.peer_target.is_none() {
+        if cfg.hypervisors.len() > 1 && hv.ssh_target.is_none() && hv.peer_target.is_none() {
             anyhow::bail!(
                 "site.yml: hypervisor '{name}' has `ssh_target: null` (runs locally) \
                  but no `peer_target`.\n  \
