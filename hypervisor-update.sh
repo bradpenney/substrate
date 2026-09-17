@@ -5,19 +5,25 @@
 # Applies updates every night, but only REBOOTS when the system genuinely
 # requires it (kernel/glibc/systemd class updates) AND it is safe to do so.
 #
-# Safety gates before any reboot — ALL must pass:
-#   1. The peer hypervisor is reachable over SSH.
-#   2. The peer's VMs are all running.
+# Safety gates before any reboot — ALL must pass, for EVERY peer:
+#   1. Each peer hypervisor is reachable over SSH.
+#   2. Each peer's VMs are all running.
 #   3. The k0s cluster is fully healthy: every expected node Ready, and no
 #      node already NotReady.
-#   4. No other hypervisor is currently mid-reboot (a lock file on the peer),
-#      so the two can never reboot simultaneously.
+#   4. No other hypervisor is currently mid-reboot (a lock file on any peer),
+#      so no two hosts can ever reboot simultaneously.
+#
+# PEER_HOSTS is the space-separated list of every OTHER hypervisor (written by
+# deploy-updates from site.yml). It may be EMPTY: a one-host site has no peer
+# to gate on, and says so, and still checks the cluster (ADR-199). It is a
+# list, not a pair, because at three hosts a pairwise gate lets two of them
+# reboot together (bug-173).
 #
 # Rationale: rebooting a hypervisor takes ALL its k0s nodes down at once. With
-# nodes split 2/3 across two hosts, either host rebooting means temporary loss
-# of etcd quorum regardless of ordering. The cluster recovers on its own
-# (verified), but the gates ensure it only ever happens from a known-good
-# starting state, one host at a time, and only when actually necessary.
+# nodes split across hosts, any host rebooting means temporary loss of etcd
+# quorum regardless of ordering. The cluster recovers on its own (verified),
+# but the gates ensure it only ever happens from a known-good starting state,
+# one host at a time, and only when actually necessary.
 #
 # Nodes are drained before shutdown so workloads terminate gracefully rather
 # than being killed with the VM.
@@ -26,7 +32,9 @@
 
 set -uo pipefail
 
-PEER_HOST="${PEER_HOST:?PEER_HOST must be set (e.g. user@10.0.0.5)}"
+# PEER_HOSTS may be empty (one host). PEER_HOST is honoured for an env file
+# written by an older deploy-updates; the two are never both set.
+PEER_HOSTS="${PEER_HOSTS-${PEER_HOST-}}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-/etc/homelab/kubeconfig}"
 LOCK_FILE="/var/run/hypervisor-reboot.lock"
 LOG_TAG="hypervisor-update"
@@ -45,10 +53,12 @@ log() { logger -t "$LOG_TAG" "$*"; echo "$(date -Is) $*"; }
 # updates forever.
 SSH_USER="${SSH_USER:?SSH_USER must be set — the unprivileged account used for peer health checks}"
 
+# ssh_peer <host> <cmd...>
 ssh_peer() {
+    local host="$1"; shift
     runuser -u "$SSH_USER" -- \
         ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-            "$PEER_HOST" "$@" 2>/dev/null
+            "$host" "$@" 2>/dev/null
 }
 
 kubectl_q() {
@@ -115,30 +125,35 @@ if [[ -e "$LOCK_FILE" ]]; then
     exit 1
 fi
 
-if ! ssh_peer true; then
-    log "ABORT: peer $PEER_HOST unreachable — refusing to reboot"
-    exit 1
+if [[ -z "$PEER_HOSTS" ]]; then
+    log "no peers configured — one-host site; peer gates do not apply"
 fi
+for peer in $PEER_HOSTS; do
+    if ! ssh_peer "$peer" true; then
+        log "ABORT: peer $peer unreachable — refusing to reboot"
+        exit 1
+    fi
 
-if ssh_peer "test -e $LOCK_FILE"; then
-    log "DEFER: peer $PEER_HOST is mid-reboot (lock present) — refusing to reboot simultaneously"
-    # The gate working. The peer reboots nightly; this is the expected collision.
-    exit "$DEFERRED"
-fi
+    if ssh_peer "$peer" "test -e $LOCK_FILE"; then
+        log "DEFER: peer $peer is mid-reboot (lock present) — refusing to reboot simultaneously"
+        # The gate working. Peers reboot nightly; this is the expected collision.
+        exit "$DEFERRED"
+    fi
 
-# Peer's VMs must all be running. If the peer hosts no VMs yet (server1 today)
-# this is vacuously true, which is correct.
-peer_not_running=$(ssh_peer "virsh -c qemu:///system list --all --name" \
-    | while read -r vm; do
-          [[ -z "$vm" ]] && continue
-          state=$(ssh_peer "virsh -c qemu:///system domstate $vm")
-          [[ "$state" != "running" ]] && echo "$vm"
-      done)
-if [[ -n "$peer_not_running" ]]; then
-    log "DEFER: peer has VMs not running: $peer_not_running"
-    # Usually the same event as the line above, seen from a different angle.
-    exit "$DEFERRED"
-fi
+    # The peer's VMs must all be running. A peer hosting no VMs yet is
+    # vacuously fine, which is correct.
+    peer_not_running=$(ssh_peer "$peer" "virsh -c qemu:///system list --all --name" \
+        | while read -r vm; do
+              [[ -z "$vm" ]] && continue
+              state=$(ssh_peer "$peer" "virsh -c qemu:///system domstate $vm")
+              [[ "$state" != "running" ]] && echo "$vm"
+          done)
+    if [[ -n "$peer_not_running" ]]; then
+        log "DEFER: peer $peer has VMs not running: $peer_not_running"
+        # Usually the same event as the line above, seen from a different angle.
+        exit "$DEFERRED"
+    fi
+done
 
 # Cluster must be fully healthy: at least one node, and none NotReady.
 nodes=$(kubectl_q get nodes --no-headers)
@@ -155,7 +170,7 @@ if [[ -n "$not_ready" ]]; then
     # being told about it every time is not.
     exit "$DEFERRED"
 fi
-log "gates passed: peer healthy, all $(echo "$nodes" | wc -l) cluster nodes Ready"
+log "gates passed: $(echo $PEER_HOSTS | wc -w) peer(s) healthy, all $(echo "$nodes" | wc -l) cluster nodes Ready"
 
 # ------------------------------------------------------- backup interlock ---
 

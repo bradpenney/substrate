@@ -61,8 +61,15 @@ pub const EXPECTED_POLICIES: &[&str] = &["require-pss-labels", "workload-hygiene
 /// pylint disable. Same behaviour, no shared mutable state.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
+    /// Invariants that hold. Each one is counted.
     pub notes: Vec<String>,
+    /// Invariants that do not. Each one is a finding.
     pub failures: Vec<String>,
+    /// Things worth saying that are NOT invariants — "peer: none configured"
+    /// on a one-host site. Printed, never counted, never published: a line
+    /// that cannot fail must not be allowed to raise the number that holds
+    /// (ADR-199).
+    pub info: Vec<String>,
 }
 
 impl Report {
@@ -71,6 +78,9 @@ impl Report {
     }
     pub fn fail(&mut self, s: impl Into<String>) {
         self.failures.push(s.into());
+    }
+    pub fn info(&mut self, s: impl Into<String>) {
+        self.info.push(s.into());
     }
 }
 
@@ -558,7 +568,13 @@ pub fn check_selinux(probes: &[SelinuxProbe], r: &mut Report) {
     }
 }
 
-/// Peer units this host watches on the OTHER hypervisor's behalf.
+/// Said once when a site has no peer hypervisor at all: the peer checks are
+/// not skipped invariants, they are invariants that do not exist here.
+pub fn note_no_peers(r: &mut Report) {
+    r.info("peer: none configured — one-host site, peer checks do not apply");
+}
+
+/// Peer units this host watches on the OTHER hypervisors' behalf.
 pub const PEER_UNITS: &[&str] = &["hypervisor-update.service"];
 
 /// One peer unit's reported state. `state` is None when the host was
@@ -760,6 +776,7 @@ pub fn check_firewall_restrictions(probes: Option<&[FirewallProbe]>, r: &mut Rep
         return;
     };
     let mut checked = 0usize;
+    let mut ports = std::collections::BTreeSet::new();
     for p in probes {
         match p.leaked {
             None => {
@@ -789,10 +806,22 @@ pub fn check_firewall_restrictions(probes: Option<&[FirewallProbe]>, r: &mut Rep
             continue;
         }
         checked += 1;
+        ports.insert(p.port);
     }
     if checked > 0 {
+        // Distinct PORTS, not probes: with N peers every port is asked N
+        // times, and "6 ports" would be a lie the strip repeats. The number
+        // of vantage points is said only when there is more than one, so a
+        // two-host site's line reads exactly as it always has.
+        let vantage = checked / ports.len().max(1);
+        let from = if vantage > 1 {
+            format!(", asked from {vantage} peers")
+        } else {
+            String::new()
+        };
         r.note(format!(
-            "firewall: {checked} port(s) refuse non-allow-listed sources"
+            "firewall: {} port(s) refuse non-allow-listed sources{from}",
+            ports.len()
         ));
     }
 }

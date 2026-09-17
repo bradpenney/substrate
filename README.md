@@ -189,8 +189,9 @@ substrate publish-status --yes      # PUT it (token via a root-owned Environment
 ```
 
 The check runs on **every** hypervisor (ADR-196), each in its own timer
-slot, each asserting itself and its peer; both publish, and the document
-never names a machine. `deploy-posture` enables the timer only where the
+slot, each asserting itself and every other hypervisor; all of them publish,
+and the document never names a machine. A one-host site has no peers and
+says so (ADR-199); nothing there is counted as an invariant that holds. `deploy-posture` enables the timer only where the
 scoped kubeconfig context exists, and never overwrites a token a human has
 typed into `/etc/substrate/publish-status.env`.
 

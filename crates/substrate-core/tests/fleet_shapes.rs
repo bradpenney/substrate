@@ -158,8 +158,8 @@ fn peers_of_is_every_other_host() {
 }
 
 #[test]
-#[ignore = "bug-173: deploy-updates writes ONE PEER_HOST per host — the first other host by name — so at N=3 hvB and hvC both gate on hvA and may reboot together. Un-ignore when plan() carries every peer."]
 fn the_update_env_names_every_peer() {
+    // bug-173: one PEER_HOST per host let hvB and hvC both gate on hvA.
     use substrate_core::exec::Host;
     let cfg = fixture("site-three-hosts.yml");
     let hosts: Vec<Host> = cfg
@@ -167,24 +167,39 @@ fn the_update_env_names_every_peer() {
         .iter()
         .map(|(n, hv)| Host::from_config(n, hv))
         .collect();
-    let hv_a = hosts.iter().find(|h| h.name == "hvA").expect("hvA");
-    let first_peer = substrate_core::updates::peers_of(&hosts, hv_a)[0];
-    let files = substrate_core::updates::plan(
-        &repo(),
-        &cfg,
-        hv_a,
-        first_peer,
-        "fake-kubeconfig: true",
-        None,
-    )
-    .expect("plan renders");
+    let env_for = |name: &str| -> String {
+        let host = hosts.iter().find(|h| h.name == name).expect(name);
+        let peers = substrate_core::updates::peers_of(&hosts, host);
+        substrate_core::updates::peer_hosts_value(host, &peers).expect("every peer reachable")
+    };
+    assert_eq!(env_for("hvA"), "operator@10.99.0.12 operator@10.99.0.13");
+    // hvA runs locally, so its peers reach it by peer_target.
+    assert_eq!(env_for("hvB"), "operator@10.99.0.11 operator@10.99.0.13");
+    assert_eq!(env_for("hvC"), "operator@10.99.0.11 operator@10.99.0.12");
+}
+
+#[test]
+fn a_one_host_site_gets_an_empty_peer_list_not_a_skip() {
+    use substrate_core::exec::Host;
+    let cfg = fixture("site-one-host.yml");
+    let hosts: Vec<Host> = cfg
+        .hypervisors
+        .iter()
+        .map(|(n, hv)| Host::from_config(n, hv))
+        .collect();
+    let peers = substrate_core::updates::peers_of(&hosts, &hosts[0]);
+    assert!(peers.is_empty());
+    assert_eq!(
+        substrate_core::updates::peer_hosts_value(&hosts[0], &peers).unwrap(),
+        ""
+    );
+    let files =
+        substrate_core::updates::plan(&repo(), &cfg, &hosts[0], &peers, "fake: kubeconfig", None)
+            .expect("a one-host site still gets its update units");
     let env = files
         .iter()
         .find(|f| f.remote.ends_with("update.env"))
         .map(|f| String::from_utf8_lossy(&f.data).into_owned())
-        .expect("an env file is planned");
-    assert!(
-        env.contains("10.99.0.12") && env.contains("10.99.0.13"),
-        "both peers must be named:\n{env}"
-    );
+        .expect("env planned");
+    assert!(env.starts_with("PEER_HOSTS=\n"), "{env}");
 }

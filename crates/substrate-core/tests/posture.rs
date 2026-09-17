@@ -1014,3 +1014,57 @@ fn a_mix_reports_each_port_on_its_own_merits() {
         "the summary counts only the port that actually verified"
     );
 }
+
+// ──────────────────────────────────────────── peers are a list (ADR-199)
+
+#[test]
+fn the_same_port_probed_from_two_peers_is_still_one_port() {
+    // With N peers every port is asked N times; the summary counts PORTS,
+    // and says how many sources only when there is more than one.
+    let from_second_peer = |p: FirewallProbe| FirewallProbe {
+        denied_label: "brad@10.0.0.13".into(),
+        ..p
+    };
+    let ingest = || FirewallProbe {
+        port: 9428,
+        what: "log ingest".into(),
+        ..fw(Some(false), Some(true))
+    };
+    let probes = vec![
+        fw(Some(false), Some(true)),
+        ingest(),
+        from_second_peer(fw(Some(false), Some(true))),
+        from_second_peer(ingest()),
+    ];
+    let mut r = Report::default();
+    check_firewall_restrictions(Some(&probes), &mut r);
+    assert!(r.failures.is_empty());
+    assert_eq!(
+        r.notes,
+        vec!["firewall: 2 port(s) refuse non-allow-listed sources, asked from 2 peers"]
+    );
+}
+
+#[test]
+fn one_peer_keeps_the_summary_text_unchanged() {
+    let probes = vec![fw(Some(false), Some(true))];
+    let mut r = Report::default();
+    check_firewall_restrictions(Some(&probes), &mut r);
+    assert_eq!(
+        r.notes,
+        vec!["firewall: 1 port(s) refuse non-allow-listed sources"]
+    );
+}
+
+#[test]
+fn no_peers_is_information_not_an_invariant() {
+    use substrate_core::posture::note_no_peers;
+    let mut r = Report::default();
+    note_no_peers(&mut r);
+    assert!(r.notes.is_empty() && r.failures.is_empty());
+    assert_eq!(r.info.len(), 1);
+    // And the published document never counts it.
+    let doc = substrate_core::status::Document::from_report(&r, "2026-09-16T00:00:00Z", "0.2.6");
+    assert_eq!((doc.invariants, doc.held), (0, 0));
+    assert!(doc.lines.is_empty());
+}

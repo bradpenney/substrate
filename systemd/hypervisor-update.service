@@ -31,8 +31,8 @@ Type=oneshot
 # Faults still exit 1 and still page: dnf failing, the peer being unreachable,
 # a stale local lock, or the cluster being unreachable to verify at all.
 SuccessExitStatus=75
-# PEER_HOST and KUBECONFIG_PATH come from here; written per-host by
-# deploy-updates.sh since each hypervisor's peer is the other one.
+# PEER_HOSTS and KUBECONFIG_PATH come from here; written per-host by
+# deploy-updates: every OTHER hypervisor in site.yml (empty on a one-host site).
 EnvironmentFile=/etc/homelab/update.env
 ExecStart=/usr/local/bin/hypervisor-update.sh
 # Updates + drain + guest shutdown grace can legitimately take a while, and the

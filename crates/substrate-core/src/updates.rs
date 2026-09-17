@@ -205,10 +205,20 @@ pub fn apply(host: &Host, files: &[PlannedFile], installer: &str) -> Result<()> 
 
 /// Every OTHER hypervisor, in name order — the hosts a reboot must be
 /// interlocked with and a posture run must probe. Zero of them is a one-host
-/// site (ADR-199); two or more is N. `deploy_all` still pairs each host with
-/// the first of these (bug-173) until the plan carries the list.
+/// site (ADR-199); two or more is N. It is a list because at three hosts a
+/// pairwise interlock let two of them reboot together (bug-173).
 pub fn peers_of<'a>(hosts: &'a [Host], host: &Host) -> Vec<&'a Host> {
     hosts.iter().filter(|h| h.name != host.name).collect()
+}
+
+/// The `PEER_HOSTS=` value for one host: every peer's reachable address,
+/// space-separated, in name order; empty on a one-host site.
+pub fn peer_hosts_value(host: &Host, peers: &[&Host]) -> Result<String> {
+    Ok(peers
+        .iter()
+        .map(|p| peer_ssh_target(host, p))
+        .collect::<Result<Vec<_>>>()?
+        .join(" "))
 }
 
 /// SSH target string the HOST will use to reach its PEER. Not just the peer's
@@ -270,7 +280,7 @@ pub fn plan(
     repo: &Path,
     cfg: &SiteConfig,
     host: &Host,
-    peer: &Host,
+    peers: &[&Host],
     kubeconfig: &str,
     topic: Option<&str>,
 ) -> Result<Vec<PlannedFile>> {
@@ -278,8 +288,8 @@ pub fn plan(
         std::fs::read(repo.join(p)).with_context(|| format!("reading {p}"))
     };
     let env = format!(
-        "PEER_HOST={}\nKUBECONFIG_PATH=/etc/homelab/kubeconfig\nSSH_USER={}\n",
-        peer_ssh_target(host, peer)?,
+        "PEER_HOSTS={}\nKUBECONFIG_PATH=/etc/homelab/kubeconfig\nSSH_USER={}\n",
+        peer_hosts_value(host, peers)?,
         cfg.admin_user
     );
     let mut files = vec![
@@ -353,15 +363,18 @@ pub fn deploy_all(repo: &Path, cfg: &SiteConfig, dry_run: bool) -> Result<()> {
         .map(|(n, hv)| Host::from_config(n, hv))
         .collect();
     for host in &hosts {
-        let Some(peer) = hosts.iter().find(|h| h.name != host.name) else {
-            println!(
-                "[{}] SKIP: no peer hypervisor — the reboot safety gate needs one",
-                host.name
-            );
-            continue;
-        };
-        println!("=== {} (peer: {}) ===", host.name, peer.name);
-        let files = plan(repo, cfg, host, peer, &kubeconfig, topic.as_deref())?;
+        let peers = peers_of(&hosts, host);
+        let names: Vec<&str> = peers.iter().map(|p| p.name.as_str()).collect();
+        println!(
+            "=== {} (peers: {}) ===",
+            host.name,
+            if names.is_empty() {
+                "none — one-host site".to_string()
+            } else {
+                names.join(", ")
+            }
+        );
+        let files = plan(repo, cfg, host, &peers, &kubeconfig, topic.as_deref())?;
         if topic.is_none() {
             println!(
                 "[{}] WARNING: no NTFY_TOPIC found (env or ~/homelab/.env).",

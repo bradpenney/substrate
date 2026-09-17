@@ -258,8 +258,12 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
         .unwrap_or(0);
     check_no_standing_grant(jit.as_ref(), now, &mut r);
     check_failed_units(&gather_systemd(), &mut r);
-    check_selinux(&gather_selinux(repo), &mut r);
-    check_peer_units(&gather_peer_units(repo), &mut r);
+    let peers = peer_targets(repo);
+    if peers.is_empty() {
+        substrate_core::posture::note_no_peers(&mut r);
+    }
+    check_selinux(&gather_selinux(&peers), &mut r);
+    check_peer_units(&gather_peer_units(&peers), &mut r);
     check_origin_lock(&gather_origin(repo), &mut r);
     if let Some(o) = &ocirepo {
         check_source_verified(o, &mut r);
@@ -267,6 +271,9 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     let fw = gather_firewall(repo);
     check_firewall_restrictions(fw.as_deref(), &mut r);
 
+    for i in &r.info {
+        println!("  [ -- ] {i}");
+    }
     for n in &r.notes {
         println!("  [ok  ] {n}");
     }
@@ -542,25 +549,28 @@ fn gather_systemd() -> substrate_core::posture::SystemdState {
 /// its way to being public. site.yml is gitignored precisely so addresses live
 /// in exactly one place; a "convenient" default quietly undid that.
 ///
-/// Returns an empty string when the peer cannot be determined, which
-/// `gather_selinux` reports as "unreachable, not checked" rather than
-/// inventing a host to blame.
-fn peer_target(repo: &std::path::Path) -> String {
-    // An empty POSTURE_PEER is treated as unset, matching the Python's
-    // `os.environ.get(...) or _peer_target()` — an exported-but-blank variable
-    // must fall through to the config, not silently disable the peer check.
+/// Every OTHER hypervisor's reachable address, in name order — empty on a
+/// one-host site, which `posture_check` reports as information rather than
+/// inventing a host to blame. `POSTURE_PEER` (one address) overrides the
+/// config for a hand run against a specific host; an exported-but-blank
+/// variable falls through, matching the Python's
+/// `os.environ.get(...) or _peer_target()`.
+///
+/// A list, not "the peer": at three hosts the first-other-host-by-name rule
+/// left one host probed by nobody (bug-173).
+fn peer_targets(repo: &std::path::Path) -> Vec<String> {
     if let Some(p) = std::env::var("POSTURE_PEER").ok().filter(|p| !p.is_empty()) {
-        return p;
+        return vec![p];
     }
     let me = hostname();
     let Ok(cfg) = substrate_core::load(repo) else {
-        return String::new();
+        return Vec::new();
     };
     cfg.hypervisors
         .iter()
-        .find(|(name, _)| **name != me)
-        .and_then(|(_, h)| h.peer_target.clone().or_else(|| h.ssh_target.clone()))
-        .unwrap_or_default()
+        .filter(|(name, _)| **name != me)
+        .filter_map(|(_, h)| h.peer_target.clone().or_else(|| h.ssh_target.clone()))
+        .collect()
 }
 
 fn hostname() -> String {
@@ -575,7 +585,7 @@ fn hostname() -> String {
 /// The same one-liner runs locally and over ssh so the two hosts are asked
 /// EXACTLY the same question — a probe that differs per host cannot support a
 /// comparison between them.
-fn gather_selinux(repo: &std::path::Path) -> Vec<substrate_core::posture::SelinuxProbe> {
+fn gather_selinux(peers: &[String]) -> Vec<substrate_core::posture::SelinuxProbe> {
     use substrate_core::posture::SelinuxProbe;
 
     // getenforce, then the count of permissive DOMAINS. The mode alone is not
@@ -599,18 +609,17 @@ fn gather_selinux(repo: &std::path::Path) -> Vec<substrate_core::posture::Selinu
         output: capture(local),
     }];
 
-    let peer = peer_target(repo);
-    if !peer.is_empty() {
+    for peer in peers {
         // The label is the ADDRESS without any user@ prefix, matching the
         // Python — the finding names a host, not a login.
-        let label = peer.rsplit('@').next().unwrap_or(&peer).to_string();
+        let label = peer.rsplit('@').next().unwrap_or(peer).to_string();
         let mut ssh = std::process::Command::new("ssh");
         ssh.args([
             "-o",
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=8",
-            &peer,
+            peer,
             SCRIPT,
         ]);
         probes.push(SelinuxProbe {
@@ -621,39 +630,36 @@ fn gather_selinux(repo: &std::path::Path) -> Vec<substrate_core::posture::Selinu
     probes
 }
 
-/// Ask the peer about the units this host watches on its behalf.
-fn gather_peer_units(repo: &std::path::Path) -> Vec<substrate_core::posture::PeerUnitState> {
+/// Ask every peer about the units this host watches on its behalf. One entry
+/// per (peer, unit); no peers, no entries.
+fn gather_peer_units(peers: &[String]) -> Vec<substrate_core::posture::PeerUnitState> {
     use substrate_core::posture::{PEER_UNITS, PeerUnitState};
 
-    let peer = peer_target(repo);
-    let label = peer.rsplit('@').next().unwrap_or(&peer).to_string();
-    PEER_UNITS
+    peers
         .iter()
-        .map(|unit| {
-            // An empty peer target yields None, which the check reports as
-            // "unreachable, not checked" — the honest answer when there is no
-            // peer configured to ask.
-            let state = (!peer.is_empty())
-                .then(|| {
-                    std::process::Command::new("ssh")
-                        .args([
-                            "-o",
-                            "BatchMode=yes",
-                            "-o",
-                            "ConnectTimeout=8",
-                            &peer,
-                            &format!("systemctl is-failed {unit}"),
-                        ])
-                        .output()
-                        .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                })
-                .flatten();
-            PeerUnitState {
-                label: label.clone(),
-                unit: (*unit).to_string(),
-                state,
-            }
+        .flat_map(|peer| {
+            let label = peer.rsplit('@').next().unwrap_or(peer).to_string();
+            PEER_UNITS.iter().map(move |unit| {
+                // A failed ssh yields None, which the check reports as
+                // "unreachable, not checked" — a note, not a finding.
+                let state = std::process::Command::new("ssh")
+                    .args([
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "ConnectTimeout=8",
+                        peer,
+                        &format!("systemctl is-failed {unit}"),
+                    ])
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+                PeerUnitState {
+                    label: label.clone(),
+                    unit: (*unit).to_string(),
+                    state,
+                }
+            })
         })
         .collect()
 }
@@ -738,7 +744,7 @@ fn gather_firewall(repo: &std::path::Path) -> Option<Vec<substrate_core::posture
     use substrate_core::posture::FirewallProbe;
 
     let cfg = substrate_core::load(repo).ok()?;
-    let peer = peer_target(repo);
+    let peers = peer_targets(repo);
     let me = hostname();
     // This hypervisor's own LAN address, as its peers reach it — the target of
     // every probe below.
@@ -749,17 +755,29 @@ fn gather_firewall(repo: &std::path::Path) -> Option<Vec<substrate_core::posture
         .map(|t| t.rsplit('@').next().unwrap_or_default().to_string())
         .unwrap_or_default();
     let first_node = cfg.nodes.values().next().map(|n| n.ip.clone())?;
-    if local.is_empty() || peer.is_empty() {
+    if local.is_empty() || peers.is_empty() {
         return None;
     }
     let a_node = format!("{}@{}", cfg.admin_user, first_node);
 
-    // port, what it is, who MUST reach it, who MUST NOT
-    let matrix: [(u16, &str, &str, &str); 3] = [
-        (9100, "node_exporter", &peer, &a_node),
-        (9428, "log ingest", &a_node, &peer),
-        (8428, "metrics write + query + delete", &a_node, &peer),
-    ];
+    // port, what it is, who MUST reach it, who MUST NOT — asked from EVERY
+    // peer, because an allow-list that admits the first peer by name and
+    // leaks to the third is exactly the hole a pairwise probe cannot see.
+    let matrix: Vec<(u16, &str, &str, &str)> = peers
+        .iter()
+        .flat_map(|peer| {
+            [
+                (9100, "node_exporter", peer.as_str(), a_node.as_str()),
+                (9428, "log ingest", a_node.as_str(), peer.as_str()),
+                (
+                    8428,
+                    "metrics write + query + delete",
+                    a_node.as_str(),
+                    peer.as_str(),
+                ),
+            ]
+        })
+        .collect();
 
     Some(
         matrix
