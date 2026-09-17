@@ -535,10 +535,11 @@ pub struct SelinuxProbe {
 pub fn check_selinux(probes: &[SelinuxProbe], r: &mut Report) {
     for p in probes {
         let Some(out) = p.output.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-            // A note, not a failure. An unreachable host is not evidence the
-            // control is broken — but it is also not evidence it holds, and
-            // saying "not checked" keeps those apart.
-            r.note(format!("selinux: {} unreachable, not checked", p.label));
+            // Information, not a failure and NOT a held invariant. An
+            // unreachable host is not evidence the control is broken — but it
+            // is also not evidence it holds, and a line that was never
+            // asserted must not raise the number that holds (bug-174).
+            r.info(format!("selinux: {} unreachable, not checked", p.label));
             continue;
         };
         let fields: Vec<&str> = out.split_whitespace().collect();
@@ -602,7 +603,8 @@ pub fn check_peer_units(states: &[PeerUnitState], r: &mut Report) {
             "failed" => r.fail(format!("peer {}: {} is FAILED", s.label, s.unit)),
             // Unreachable is worth knowing, but it is not a security finding --
             // do not fail the whole check because a host is briefly rebooting.
-            "" => r.note(format!(
+            // Nor is it an invariant that held (bug-174).
+            "" => r.info(format!(
                 "peer {}: unreachable, {} not checked",
                 s.label, s.unit
             )),
@@ -645,7 +647,9 @@ pub struct OriginProbe {
 /// ranges (ADR-070) and a stale list fails closed.
 pub fn check_origin_lock(p: &OriginProbe, r: &mut Report) {
     if !p.hostname_configured {
-        r.note("origin lock: no public_hostname configured, check skipped");
+        // Not configured is not asserted: a site with no public hostname has
+        // no origin to lock, and the count must say so by leaving it out.
+        r.info("origin lock: no public_hostname configured, not asserted");
         return;
     }
     let Some(edge) = p.edge.as_deref() else {
@@ -662,7 +666,7 @@ pub fn check_origin_lock(p: &OriginProbe, r: &mut Report) {
         r.note(format!("public site: 200 through Cloudflare (edge {edge})"));
     }
     let Some(direct) = p.direct.as_deref() else {
-        r.note("origin lock: no origin_ip configured, bypass check skipped");
+        r.info("origin lock: no origin_ip configured, bypass not asserted");
         return;
     };
     if direct == "200" {
@@ -772,7 +776,9 @@ pub struct FirewallProbe {
 /// `probes` is None when the site config lacks what the matrix needs.
 pub fn check_firewall_restrictions(probes: Option<&[FirewallProbe]>, r: &mut Report) {
     let Some(probes) = probes else {
-        r.note("firewall: site config incomplete, not checked");
+        // No peer to probe from, or no local address to probe: nothing was
+        // asserted, so nothing is counted.
+        r.info("firewall: no peer or local address configured, not asserted");
         return;
     };
     let mut checked = 0usize;
@@ -780,7 +786,7 @@ pub fn check_firewall_restrictions(probes: Option<&[FirewallProbe]>, r: &mut Rep
     for p in probes {
         match p.leaked {
             None => {
-                r.note(format!(
+                r.info(format!(
                     "firewall: {} not checked ({} unreachable)",
                     p.port, p.denied_label
                 ));

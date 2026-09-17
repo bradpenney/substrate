@@ -223,7 +223,18 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     let vapbs = get(&["get", "validatingadmissionpolicybinding"]);
     let flux = get(&["get", "kustomization", "-n", "flux-system"]);
     let ocirepo = get(&["get", "ocirepository", "flux-system", "-n", "flux-system"]);
-    let esecrets = get(&["get", "externalsecret", "-A"]);
+    // Only where a secrets manager is configured: without one there are no
+    // ExternalSecrets to be Ready, and asking kubectl for a CRD that is not
+    // installed would file a tooling failure as a security finding.
+    let secrets_configured = substrate_core::load(repo)
+        .map(|c| c.external_secrets.host.is_some())
+        .unwrap_or(true);
+    let esecrets = if secrets_configured {
+        get(&["get", "externalsecret", "-A"])
+    } else {
+        r.info("credentials: no external secrets manager configured, not asserted");
+        None
+    };
 
     if let Some(ns) = &namespaces {
         check_pod_security(ns, &mut r);

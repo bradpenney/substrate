@@ -582,15 +582,17 @@ fn enforcing_with_a_permissive_DOMAIN_is_still_a_failure() {
 }
 
 #[test]
-fn an_unreachable_host_is_a_NOTE_saying_it_was_not_checked() {
+fn an_unreachable_host_is_INFORMATION_saying_it_was_not_checked() {
     // Unreachable is not evidence the control is broken — but it is not
-    // evidence it holds either, and the wording keeps those apart. Reporting it
-    // as a failure would page on a transient ssh blip.
+    // evidence it holds either. Reporting it as a failure would page on a
+    // transient ssh blip; reporting it as a note would COUNT it as held
+    // (bug-174). It is neither.
     let mut r = Report::default();
     check_selinux(&[probe("192.168.2.101", None)], &mut r);
     assert!(r.failures.is_empty());
+    assert!(r.notes.is_empty(), "nothing was asserted: {:?}", r.notes);
     assert_eq!(
-        r.notes,
+        r.info,
         vec!["selinux: 192.168.2.101 unreachable, not checked"]
     );
 }
@@ -603,7 +605,8 @@ fn empty_output_counts_as_unreachable_not_as_a_mode_of_question_mark() {
     let mut r = Report::default();
     check_selinux(&[probe("peer", Some("   \n"))], &mut r);
     assert!(r.failures.is_empty());
-    assert_eq!(r.notes, vec!["selinux: peer unreachable, not checked"]);
+    assert!(r.notes.is_empty());
+    assert_eq!(r.info, vec!["selinux: peer unreachable, not checked"]);
 }
 
 #[test]
@@ -656,14 +659,16 @@ fn a_failed_peer_unit_is_a_failure() {
 }
 
 #[test]
-fn an_unreachable_peer_is_a_note_not_a_failure() {
+fn an_unreachable_peer_is_information_not_a_failure_and_not_held() {
     // Do not fail the whole check because a host is briefly rebooting — which
-    // is a state the nightly maintenance puts it in ON PURPOSE.
+    // is a state the nightly maintenance puts it in ON PURPOSE. And do not
+    // count it either (bug-174).
     let mut r = Report::default();
     check_peer_units(&[peer(None)], &mut r);
     assert!(r.failures.is_empty());
+    assert!(r.notes.is_empty());
     assert_eq!(
-        r.notes,
+        r.info,
         vec!["peer 192.168.2.101: unreachable, hypervisor-update.service not checked"]
     );
 }
@@ -672,8 +677,8 @@ fn an_unreachable_peer_is_a_note_not_a_failure() {
 fn an_empty_answer_is_treated_as_unreachable_not_as_healthy() {
     let mut r = Report::default();
     check_peer_units(&[peer(Some("  \n"))], &mut r);
-    assert!(r.failures.is_empty());
-    assert!(r.notes[0].contains("unreachable"), "got {:?}", r.notes);
+    assert!(r.failures.is_empty() && r.notes.is_empty());
+    assert!(r.info[0].contains("unreachable"), "got {:?}", r.info);
 }
 
 #[test]
@@ -750,17 +755,18 @@ fn the_public_site_not_returning_200_is_a_failure() {
 }
 
 #[test]
-fn an_unconfigured_hostname_SKIPS_rather_than_failing() {
-    // A repo cloned without a site.yml must not report a broken origin lock —
-    // that is a configuration absence, not a security finding, and conflating
-    // them would make the check useless to anyone else.
+fn an_unconfigured_hostname_is_NOT_ASSERTED_rather_than_failing_or_holding() {
+    // A site without a public hostname must not report a broken origin lock —
+    // that is a configuration absence, not a security finding. Nor may it
+    // report a held one: a stranger's "N of N" must count only what was
+    // asserted (ADR-199).
     let p = OriginProbe::default();
     let mut r = Report::default();
     check_origin_lock(&p, &mut r);
-    assert!(r.failures.is_empty());
+    assert!(r.failures.is_empty() && r.notes.is_empty());
     assert_eq!(
-        r.notes,
-        vec!["origin lock: no public_hostname configured, check skipped"]
+        r.info,
+        vec!["origin lock: no public_hostname configured, not asserted"]
     );
 }
 
@@ -775,7 +781,15 @@ fn a_configured_hostname_with_no_origin_still_checks_the_public_side() {
     let mut r = Report::default();
     check_origin_lock(&p, &mut r);
     assert!(r.failures.is_empty());
-    assert_eq!(r.notes.len(), 2, "the public 200 AND the skip note");
+    assert_eq!(
+        r.notes.len(),
+        1,
+        "the public 200 is the only thing asserted"
+    );
+    assert_eq!(
+        r.info,
+        vec!["origin lock: no origin_ip configured, bypass not asserted"]
+    );
 }
 
 #[test]
@@ -968,10 +982,14 @@ fn an_INCONCLUSIVE_probe_is_never_counted_as_a_pass() {
     let mut r = Report::default();
     check_firewall_restrictions(Some(&[fw(None, None)]), &mut r);
     assert!(r.failures.is_empty());
+    assert!(
+        r.notes.is_empty(),
+        "crucially NOT a 'ports refuse' summary: {:?}",
+        r.notes
+    );
     assert_eq!(
-        r.notes,
-        vec!["firewall: 9100 not checked (brad@10.0.0.9 unreachable)"],
-        "and crucially NOT a 'ports refuse' summary"
+        r.info,
+        vec!["firewall: 9100 not checked (brad@10.0.0.9 unreachable)"]
     );
 }
 
@@ -985,13 +1003,13 @@ fn an_unprobed_permitted_side_does_not_manufacture_a_failure() {
 }
 
 #[test]
-fn incomplete_site_config_skips_rather_than_failing() {
+fn incomplete_site_config_is_not_asserted_rather_than_failing_or_holding() {
     let mut r = Report::default();
     check_firewall_restrictions(None, &mut r);
-    assert!(r.failures.is_empty());
+    assert!(r.failures.is_empty() && r.notes.is_empty());
     assert_eq!(
-        r.notes,
-        vec!["firewall: site config incomplete, not checked"]
+        r.info,
+        vec!["firewall: no peer or local address configured, not asserted"]
     );
 }
 
@@ -1067,4 +1085,27 @@ fn no_peers_is_information_not_an_invariant() {
     let doc = substrate_core::status::Document::from_report(&r, "2026-09-16T00:00:00Z", "0.2.6");
     assert_eq!((doc.invariants, doc.held), (0, 0));
     assert!(doc.lines.is_empty());
+}
+
+#[test]
+fn a_one_host_site_counts_only_what_it_asserted() {
+    // ADR-199 item 3: a stranger's strip must read "N of N" for the N things
+    // that were actually asserted — never padded by hosts that could not be
+    // reached, checks that were not configured, or peers that do not exist.
+    use substrate_core::posture::{OriginProbe, note_no_peers};
+    let mut r = Report::default();
+    note_no_peers(&mut r);
+    check_selinux(&[probe("this host", Some("Enforcing\n0\n"))], &mut r);
+    check_peer_units(&[], &mut r);
+    check_origin_lock(&OriginProbe::default(), &mut r);
+    check_firewall_restrictions(None, &mut r);
+    assert!(r.failures.is_empty());
+    assert_eq!(
+        r.notes,
+        vec!["selinux: this host enforcing, no permissive domains"]
+    );
+    assert_eq!(r.info.len(), 3, "{:?}", r.info);
+    let doc = substrate_core::status::Document::from_report(&r, "2026-09-16T00:00:00Z", "0.2.6");
+    assert_eq!((doc.invariants, doc.held), (1, 1));
+    assert_eq!(doc.lines.len(), 1);
 }

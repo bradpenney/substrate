@@ -181,6 +181,12 @@ as **stale**, and there is no default number that looks real. Private
 addresses are redacted before the document leaves the host. A broken publish
 is itself a watched unit, so it becomes a finding on the next run.
 
+The count is the number of invariants **asserted**. A peer that could not be
+reached, a check with nothing configured to check, a site with no peers at
+all — each is printed as `[ -- ]` information, never counted as held and
+never published. "15 of 15" on this estate and "9 of 9" on a one-host site
+are both true for the same reason.
+
 ```
 substrate deploy-posture            # preview: the seven files each hypervisor gets
 substrate deploy-posture --apply    # units, config and env template on every hypervisor, one sudo each
