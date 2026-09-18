@@ -50,6 +50,15 @@ jobs:
           set -euo pipefail
           cargo build --release --target x86_64-unknown-linux-musl
           ./check-static-binary.sh target/x86_64-unknown-linux-musl/release/substrate
+      - name: Every deploy plans against the fixture site
+        # v0.2.7 shipped a deploy-posture that could not plan at all (bug-178):
+        # the preview that would have shown it was never run. Now it always is.
+        # deploy-updates is absent only because its preview still reaches for
+        # a kubeconfig over ssh (bug-179).
+        run: |
+          for c in deploy-posture deploy-observability; do
+            ./target/release/substrate "$c" --repo tests/fixtures
+          done
       - name: Test — the renderer reproduces every golden
         # The acceptance criterion for Wave 0 of the port. Rust-native: no
         # Python in the loop, because `cargo test` has to stand on its own once

@@ -65,6 +65,8 @@ api_hardening:
 posture:
   public_hostname: hello.example.invalid
   origin_ip: 203.0.113.1
+  status_account_id: 0123456789abcdef0123456789abcdef
+  status_kv_namespace_id: fedcba9876543210fedcba9876543210
 
 libvirt:
   iso_pool: isos

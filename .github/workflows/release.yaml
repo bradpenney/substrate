@@ -112,6 +112,15 @@ jobs:
         run: cargo build --release --target "$TARGET"
       - name: Tests, same profile and target, so the dependency graph compiles once
         run: cargo test --release --target "$TARGET"
+      - name: Every deploy plans against the fixture site
+        # v0.2.7 shipped a deploy-posture that could not plan at all (bug-178):
+        # the preview that would have shown it was never run. Now it always is.
+        # deploy-updates is absent only because its preview still reaches for
+        # a kubeconfig over ssh (bug-179).
+        run: |
+          for c in deploy-posture deploy-observability; do
+            "./target/$TARGET/release/substrate" "$c" --repo tests/fixtures
+          done
       - name: The binary is static and knows its version
         run: |
           ./check-static-binary.sh "target/$TARGET/release/substrate"

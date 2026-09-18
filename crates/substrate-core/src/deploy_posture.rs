@@ -110,7 +110,12 @@ pub fn plan(repo: &Path, cfg: &SiteConfig, index: usize) -> Result<Vec<PlannedFi
             owner: Some(cfg.admin_user.clone()),
         },
         PlannedFile {
-            data: read("versions.yml")?,
+            // Configuration, not payload: the pins a host checks against are
+            // the site's, read from `--repo` like site.yml (v0.2.7 read this
+            // from the payload and refused to deploy: versions.yml is not,
+            // and must never be, a shipped file — bug-178).
+            data: std::fs::read(repo.join("versions.yml"))
+                .with_context(|| format!("reading {}", repo.join("versions.yml").display()))?,
             remote: "etc/substrate/versions.yml".into(),
             mode: 0o644,
             owner: None,
@@ -282,6 +287,49 @@ mod tests {
                 "{unit} depends on a repository checkout"
             );
         }
+    }
+
+    /// The plan takes exactly two files from `--repo` — site.yml and
+    /// versions.yml — and takes them from there, not from the payload. A
+    /// modified versions.yml in the repo must be what reaches the host.
+    #[test]
+    fn configuration_comes_from_the_repo_and_units_from_the_payload() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::copy(fixtures.join("site.yml"), repo.path().join("site.yml")).unwrap();
+        let pins = format!(
+            "{}\n# edited in this repo, not in any release\n",
+            std::fs::read_to_string(fixtures.join("versions.yml")).unwrap()
+        );
+        std::fs::write(repo.path().join("versions.yml"), &pins).unwrap();
+        let cfg = crate::load(repo.path()).unwrap();
+
+        let files = plan(repo.path(), &cfg, 0).unwrap();
+        let by_remote = |r: &str| {
+            files
+                .iter()
+                .find(|f| f.remote == r)
+                .unwrap_or_else(|| panic!("{r} not planned"))
+        };
+        assert_eq!(
+            by_remote("etc/substrate/versions.yml").data,
+            pins.as_bytes(),
+            "versions.yml must come from --repo"
+        );
+        assert_eq!(
+            by_remote("etc/substrate/site.yml").data,
+            std::fs::read(fixtures.join("site.yml")).unwrap()
+        );
+        let from_repo: Vec<&str> = files
+            .iter()
+            .filter(|f| f.remote.starts_with("etc/substrate/") && f.remote.ends_with(".yml"))
+            .map(|f| f.remote.as_str())
+            .collect();
+        assert_eq!(
+            from_repo,
+            ["etc/substrate/site.yml", "etc/substrate/versions.yml"],
+            "only the two configuration files are read from --repo"
+        );
     }
 
     #[test]
