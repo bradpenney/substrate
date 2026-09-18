@@ -90,7 +90,7 @@ is running is not a check that it works.**
 | `tests/golden/` | goldens and CPython-generated corpora the Rust must reproduce |
 | `archive/python/` | the reference implementation the Rust was proven against, plus the corpus generators (ADR-183) |
 | `versions.yml` | every external artifact, pinned and checksummed |
-| `systemd/`, `*.sh` | what runs on the hypervisors: nightly maintenance and host-tier observability — staged by `substrate deploy-*`, never pulled from git (the auto-roll units are present but disabled: they pulled from git, which the rule above forbids) |
+| `systemd/`, `*.sh` | what runs on the hypervisors: nightly maintenance, posture, host-tier observability — **embedded in the released binary** (`payload.rs`, ADR-200) and staged by `substrate deploy-*`; a host never receives a file the signed artifact did not carry, and `--repo` supplies only `site.yml` and `versions.yml` (the auto-roll units are present but disabled: they pulled from git, which the rule above forbids) |
 | `install.sh` | the only way a `substrate` binary reaches a host: a named release, verified by checksum and signing identity |
 | `.github/workflows/release.yaml` | a published release becomes a signed, attested static binary (see Releases) |
 | `observability-host/` | Grafana dashboards and provisioning for the host-tier stack |

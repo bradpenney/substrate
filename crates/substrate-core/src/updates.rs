@@ -284,9 +284,10 @@ pub fn plan(
     kubeconfig: &str,
     topic: Option<&str>,
 ) -> Result<Vec<PlannedFile>> {
-    let read = |p: &str| -> Result<Vec<u8>> {
-        std::fs::read(repo.join(p)).with_context(|| format!("reading {p}"))
-    };
+    // The payload is the release's, never the checkout's (ADR-200); `repo`
+    // is only where site.yml lives.
+    let _ = repo;
+    let read = |p: &str| -> Result<Vec<u8>> { Ok(crate::payload::bytes(p)?.to_vec()) };
     let env = format!(
         "PEER_HOSTS={}\nKUBECONFIG_PATH=/etc/homelab/kubeconfig\nSSH_USER={}\n",
         peer_hosts_value(host, peers)?,

@@ -175,7 +175,8 @@ pub fn grafana_ini(repo: &Path, cfg: &SiteConfig) -> Result<String> {
             "site.yml: observability.hostname is required — Grafana needs it for root_url, and without it login fails in a way that looks like a proxy fault."
         );
     }
-    let template = std::fs::read_to_string(repo.join("observability-host/grafana.ini.template"))?;
+    let _ = repo;
+    let template = crate::payload::text("observability-host/grafana.ini.template")?;
     Ok(template
         .replace("__HOSTNAME__", hostname)
         .replace(
@@ -188,8 +189,8 @@ pub fn grafana_ini(repo: &Path, cfg: &SiteConfig) -> Result<String> {
 /// The edge route for Grafana. Kept here so the route and the service it
 /// points at are one decision.
 pub fn traefik_route(repo: &Path, cfg: &SiteConfig) -> Result<String> {
-    let template =
-        std::fs::read_to_string(repo.join("observability-host/traefik/observe.yml.template"))?;
+    let _ = repo;
+    let template = crate::payload::text("observability-host/traefik/observe.yml.template")?;
     Ok(template
         .replace(
             "__HOSTNAME__",
@@ -214,13 +215,12 @@ pub fn files_for(
     host: &str,
     topic: Option<&str>,
 ) -> Result<Vec<PlannedFile>> {
+    // Every byte below is the release's (ADR-200); `repo` is read only for
+    // versions.yml and site.yml.
     let unit = |name: &str| -> Result<Vec<u8>> {
-        std::fs::read(repo.join("systemd/observability").join(name))
-            .with_context(|| format!("reading systemd/observability/{name}"))
+        Ok(crate::payload::bytes(&format!("systemd/observability/{name}"))?.to_vec())
     };
-    let file = |p: &str| -> Result<Vec<u8>> {
-        std::fs::read(repo.join(p)).with_context(|| format!("reading {p}"))
-    };
+    let file = |p: &str| -> Result<Vec<u8>> { Ok(crate::payload::bytes(p)?.to_vec()) };
     let mut payload = vec![
         pf(
             unit("node-exporter.service")?,
@@ -292,15 +292,10 @@ pub fn files_for(
                 0o640,
             ));
         }
-        let mut boards: Vec<_> = std::fs::read_dir(repo.join("observability-host/dashboards"))?
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .collect();
-        boards.sort();
-        for board in boards {
-            let name = board.file_name().unwrap().to_string_lossy().into_owned();
+        for board in crate::payload::under("observability-host/dashboards") {
+            let name = board.path.rsplit('/').next().unwrap_or(board.path);
             payload.push(pf(
-                std::fs::read(&board)?,
+                board.bytes,
                 &format!("var/lib/grafana/dashboards/{name}"),
                 0o644,
             ));

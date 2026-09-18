@@ -75,6 +75,14 @@ jobs:
       - uses: firestoned/github-actions/rust/cache-cargo@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # The shipped scripts are part of the artifact (ADR-200: embedded in
+      # the binary), so the release lints them exactly as the test workflow
+      # does. v0.2.6 was cut green while its commit's `test` run was red on
+      # SC2086 — two verdicts for one commit, never again.
+      - name: Lint every shipped script
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt \
+            koalaman/shellcheck:v0.11.0 -S style *.sh
 
   audit:
     name: RustSec advisories

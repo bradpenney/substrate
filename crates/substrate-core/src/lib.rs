@@ -17,6 +17,7 @@ pub mod jit_ops;
 pub mod libvirt;
 pub mod longhorn;
 pub mod observability;
+pub mod payload;
 pub mod posture;
 pub mod provision;
 pub mod render;

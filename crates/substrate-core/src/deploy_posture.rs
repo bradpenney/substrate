@@ -97,9 +97,9 @@ pub fn env_template(cfg: &SiteConfig) -> Result<String> {
 /// The file plan for one hypervisor. `index` is its position among the
 /// hypervisors by name, which decides its timer slot.
 pub fn plan(repo: &Path, cfg: &SiteConfig, index: usize) -> Result<Vec<PlannedFile>> {
-    let read = |p: &str| -> Result<Vec<u8>> {
-        std::fs::read(repo.join(p)).with_context(|| format!("reading {p}"))
-    };
+    // Unit templates come from the release payload (ADR-200); `repo` supplies
+    // the two configuration files and nothing else.
+    let read = |p: &str| -> Result<Vec<u8>> { Ok(crate::payload::bytes(p)?.to_vec()) };
     let site_path = crate::site_file(repo);
     let mut files = vec![
         PlannedFile {
@@ -270,10 +270,9 @@ mod tests {
 
     #[test]
     fn every_shipped_unit_template_renders_clean() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         for unit in UNITS {
-            let t = std::fs::read_to_string(repo.join("systemd").join(unit)).unwrap();
-            let out = render_unit(&t, "operator", "scoped", "07:30").unwrap();
+            let t = crate::payload::text(&format!("systemd/{unit}")).unwrap();
+            let out = render_unit(t, "operator", "scoped", "07:30").unwrap();
             assert!(
                 !out.contains("/home/"),
                 "{unit} depends on a home directory"
@@ -287,9 +286,8 @@ mod tests {
 
     #[test]
     fn the_service_reads_its_config_from_etc_and_records_the_run() {
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let t = std::fs::read_to_string(repo.join("systemd/posture-check.service")).unwrap();
-        let out = render_unit(&t, "operator", "scoped", "07:30").unwrap();
+        let t = crate::payload::text("systemd/posture-check.service").unwrap();
+        let out = render_unit(t, "operator", "scoped", "07:30").unwrap();
         assert!(out.contains("--repo /etc/substrate"));
         assert!(out.contains("--record /var/lib/substrate/posture.json"));
         assert!(out.contains("OnSuccess=publish-status.service"));

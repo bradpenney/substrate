@@ -27,6 +27,14 @@ const BUILD: &str = concat!(
 /// with commits after the tag, a `-dirty` suffix, or no git at all is a
 /// development build, and the commands that change the fleet refuse it
 /// (ADR-192): the fleet runs artifacts, not working trees.
+/// Said at the top of every deploy: the files that follow are this build's,
+/// embedded at release time (ADR-200) — never the checkout's.
+fn announce_payload() {
+    println!(
+        "payload: substrate {BUILD} — every file below is this release's, not the checkout's (ADR-200)"
+    );
+}
+
 fn build_is_released() -> bool {
     let stamp = env!("SUBSTRATE_BUILD");
     stamp.starts_with('v')
@@ -1241,6 +1249,7 @@ fn deploy_updates(repo: &std::path::Path, args: DeployUpdatesArgs) -> Result<()>
     if args.apply {
         refuse_if_unreleased("substrate deploy-updates --apply");
     }
+    announce_payload();
     let cfg = substrate_core::load(repo)?;
     if let Err(e) = substrate_core::updates::deploy_all(repo, &cfg, !args.apply) {
         eprintln!("ERROR: {e}");
@@ -1261,6 +1270,7 @@ fn deploy_posture(repo: &std::path::Path, args: DeployPostureArgs) -> Result<()>
     if args.apply {
         refuse_if_unreleased("substrate deploy-posture --apply");
     }
+    announce_payload();
     let cfg = substrate_core::load(repo)?;
     if let Err(e) = substrate_core::deploy_posture::deploy_all(repo, &cfg, !args.apply) {
         eprintln!("ERROR: {e}");
@@ -1292,6 +1302,7 @@ fn deploy_observability(repo: &std::path::Path, args: DeployObservabilityArgs) -
     if args.apply {
         refuse_if_unreleased("substrate deploy-observability --apply");
     }
+    announce_payload();
     let cfg = substrate_core::load(repo)?;
     if let Some(h) = &cfg.observability.host
         && !cfg.hypervisors.contains_key(h)

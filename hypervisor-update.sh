@@ -170,7 +170,7 @@ if [[ -n "$not_ready" ]]; then
     # being told about it every time is not.
     exit "$DEFERRED"
 fi
-log "gates passed: $(echo $PEER_HOSTS | wc -w) peer(s) healthy, all $(echo "$nodes" | wc -l) cluster nodes Ready"
+log "gates passed: $(echo "$PEER_HOSTS" | wc -w) peer(s) healthy, all $(echo "$nodes" | wc -l) cluster nodes Ready"
 
 # ------------------------------------------------------- backup interlock ---
 
