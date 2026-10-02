@@ -8,6 +8,12 @@ STAMP=/usr/local/lib/substrate-observability
 install -d -m 0755 "$STAMP" /etc/victoria-metrics /etc/substrate
 tar -xzpf "$HERE/payload.tar.gz" -C /
 
+# Which components actually had a new artefact installed by this run. The
+# restart pass near the end needs it: a replaced BINARY is invisible to every
+# check that compares files to the repository, because the file it compares is
+# correct (see "THE BINARY CHANGED" below).
+CHANGED_BINARIES=""
+
 # Fetch, VERIFY, then install. A download that fails its checksum is deleted
 # rather than left on disk, so a later run cannot pick up a bad artefact.
 install_binary() {
@@ -27,6 +33,7 @@ install_binary() {
     tar -xzf "$tmp/pkg.tar.gz" -C "$tmp" "$member"
     install -m 0755 "$tmp/$member" "/usr/local/bin/$as"
     printf '%s' "$version" > "$STAMP/$name"
+    CHANGED_BINARIES="$CHANGED_BINARIES $name=/usr/local/bin/$as"
 }
 
 # Grafana ships a 455 MB directory tree (bin/, conf/, public/), not one binary,
@@ -72,6 +79,7 @@ install_tree() {
     fi
 
     printf '%s' "$version" > "$STAMP/$name"
+    CHANGED_BINARIES="$CHANGED_BINARIES $name=$dest"
 }
 
 # A Grafana PLUGIN tree — the third shape, after a lone binary and a program
@@ -389,6 +397,64 @@ restart_if_config_changed grafana.service /etc/grafana/provisioning
 # same "unknown type" it reported before the install, so the deploy looks like it
 # did nothing — the third layer to show this shape, after the unit files above
 # and the vmagent ConfigMap in the cluster (ADR-116).
+# THE BINARY CHANGED — the same defect, one layer UNDER the unit file.
+#
+# The loop above watches unit FILES and restart_if_config_changed watches
+# startup-only CONFIG. Neither sees a replaced EXECUTABLE: install_binary writes
+# a new /usr/local/bin/victoria-metrics-prod while the unit file and every
+# config file stay byte-identical, so nothing above has anything to compare and
+# the running process keeps serving the old code indefinitely.
+#
+# Found 2026-10-02 (bug-198). deploy-observability printed "fetching
+# victoria-metrics-prod v1.153.0", then "victoria-metrics: active", then "host
+# matches what was deployed" — and :8428/metrics still reported v1.150.0. All
+# three lines were true and all three were about the file. Both bumps were
+# SECURITY releases, so what this actually left running was a patched binary on
+# disk and an unpatched process answering requests.
+#
+# `enable --now` cannot cover this: it starts a stopped unit and does nothing
+# whatsoever to a running one.
+#
+# The test is the one the unit loop already asks, one level down: is this
+# process older than the artefact it is executing? That question answers the
+# fresh-install case for free — a unit `enable --now` has just started is NEWER
+# than the binary it started from, so it is left alone instead of being bounced
+# seconds after coming up.
+unit_for_component() {
+    case "$1" in
+        node_exporter)    echo node-exporter.service ;;
+        victoria_metrics) echo victoria-metrics.service ;;
+        victoria_logs)    echo victoria-logs.service ;;
+        # The plugin is deliberately absent: PLUGIN_INSTALLED below owns it, and
+        # its message says why a plugin needs grafana.service rather than a unit
+        # of its own.
+        grafana)          echo grafana.service ;;
+        *)                echo "" ;;
+    esac
+}
+
+for entry in $CHANGED_BINARIES; do
+    comp=${entry%%=*}
+    path=${entry#*=}
+    unit=$(unit_for_component "$comp")
+    [ -n "$unit" ] || continue
+    [ -e "$path" ] || continue
+    # Already bounced for a changed unit file; restarting twice buys nothing and
+    # costs another gap in the metrics store.
+    case " $RESTARTED " in *" $unit "*) continue ;; esac
+    # Stopped units stay stopped, for the same reason as the loop above: a unit
+    # the operator shut down deliberately is not the deploy's to start.
+    systemctl is-active --quiet "$unit" || continue
+
+    started=$(systemctl show "$unit" -p ActiveEnterTimestamp --value)
+    started_epoch=$(date -d "$started" +%s 2>/dev/null || echo 0)
+    if [ "$(stat -c %Y "$path")" -gt "$started_epoch" ]; then
+        echo "  process is older than its binary, restarting: $unit"
+        systemctl try-restart "$unit" || echo "    WARNING: $unit failed to restart"
+        RESTARTED="$RESTARTED $unit"
+    fi
+done
+
 if [ "$PLUGIN_INSTALLED" -eq 1 ]; then
     case " $RESTARTED " in
         *" grafana.service "*)
@@ -407,6 +473,20 @@ if [ "$PLUGIN_INSTALLED" -eq 1 ]; then
             ;;
     esac
 fi
+
+# What the PROCESS is running, asked of the process itself.
+#
+# `systemctl is-active` reports "active" without saying which binary, which is
+# how bug-198 passed its own verification: the deploy printed "active" three
+# times while three stale processes served. Both stores expose their build on
+# /metrics, so ask them. Best effort by design — a store that is still starting
+# up must not fail the deploy, it must say it could not be read.
+running_version() {
+    local url=$1 v
+    v=$(curl -fsS --max-time 3 "$url" 2>/dev/null \
+        | grep -m1 -o 'short_version="[^"]*"' | cut -d'"' -f2) || true
+    if [ -n "$v" ]; then echo "$v"; else echo "unreadable"; fi
+}
 
 echo "  node-exporter:   $(systemctl is-active node-exporter.service) / $(systemctl is-enabled node-exporter.service)"
 echo "  OnFailure:       $(systemctl show -p OnFailure --value node-exporter.service)"

@@ -20,6 +20,7 @@
 #![allow(non_snake_case)]
 
 use serde_json::json;
+use substrate_core::config::BackupExpectation;
 use substrate_core::posture::*;
 
 // ───────────────────────────────────────────────────────── pod security
@@ -1108,4 +1109,171 @@ fn a_one_host_site_counts_only_what_it_asserted() {
     let doc = substrate_core::status::Document::from_report(&r, "2026-09-16T00:00:00Z", "0.2.6");
     assert_eq!((doc.invariants, doc.held), (1, 1));
     assert_eq!(doc.lines.len(), 1);
+}
+
+// ───────────────────────────────────────────────────────── backup freshness
+
+/// `2026-10-02T03:19:00Z` as seconds since the epoch, computed independently of
+/// the parser under test so a wrong parser cannot agree with a wrong expectation.
+const OCT_2_0319Z: i64 = 1_790_911_140;
+
+fn backup(namespace: &str, cronjob: &str, max_age_hours: u32) -> BackupExpectation {
+    BackupExpectation {
+        namespace: namespace.into(),
+        cronjob: cronjob.into(),
+        max_age_hours,
+    }
+}
+
+fn one_cronjob(namespace: &str, name: &str, last_success: Option<&str>) -> serde_json::Value {
+    let mut status = json!({"lastScheduleTime": "2026-10-02T03:19:00Z"});
+    if let Some(t) = last_success {
+        status["lastSuccessfulTime"] = json!(t);
+    }
+    json!({"items": [{"metadata": {"name": name, "namespace": namespace}, "status": status}]})
+}
+
+#[test]
+fn a_backup_that_succeeded_within_the_window_holds() {
+    let cj = one_cronjob("etcd-backup", "etcd-snapshot", Some("2026-10-02T03:19:00Z"));
+    let mut r = Report::default();
+    // Eight hours later.
+    check_backups_fresh(
+        &cj,
+        &[backup("etcd-backup", "etcd-snapshot", 26)],
+        OCT_2_0319Z + 8 * 3600,
+        &mut r,
+    );
+    assert_eq!(
+        r.notes,
+        ["backup etcd-backup/etcd-snapshot: last success 8.0h ago, within 26h"]
+    );
+    assert!(r.failures.is_empty());
+}
+
+#[test]
+fn a_backup_past_its_window_fails() {
+    let cj = one_cronjob("donetick", "donetick-backup", Some("2026-10-02T03:19:00Z"));
+    let mut r = Report::default();
+    check_backups_fresh(
+        &cj,
+        &[backup("donetick", "donetick-backup", 26)],
+        OCT_2_0319Z + 27 * 3600,
+        &mut r,
+    );
+    assert_eq!(
+        r.failures,
+        ["backup donetick/donetick-backup: last success 27.0h ago, over the 26h limit"]
+    );
+    assert!(
+        r.notes.is_empty(),
+        "a stale backup must not also be counted"
+    );
+}
+
+/// The failure the check exists for: a CronJob that fires nightly and fails
+/// nightly keeps a fresh `lastScheduleTime` forever. Both RWO backup CronJobs
+/// ran for weeks in exactly this state without ever having worked.
+#[test]
+fn a_backup_that_has_only_ever_been_SCHEDULED_fails() {
+    let cj = one_cronjob("wanderer", "wanderer-backup", None);
+    let mut r = Report::default();
+    check_backups_fresh(
+        &cj,
+        &[backup("wanderer", "wanderer-backup", 26)],
+        OCT_2_0319Z,
+        &mut r,
+    );
+    assert_eq!(
+        r.failures,
+        ["backup wanderer/wanderer-backup: has never recorded a successful run"]
+    );
+}
+
+/// Deleting a backup must not be a way to stop being asked about it.
+#[test]
+fn a_declared_backup_missing_from_the_cluster_FAILS_rather_than_being_skipped() {
+    let cj = one_cronjob("etcd-backup", "etcd-snapshot", Some("2026-10-02T03:19:00Z"));
+    let mut r = Report::default();
+    check_backups_fresh(
+        &cj,
+        &[backup("donetick", "donetick-backup", 26)],
+        OCT_2_0319Z,
+        &mut r,
+    );
+    assert_eq!(
+        r.failures,
+        ["backup donetick/donetick-backup: declared but no such CronJob in the cluster"]
+    );
+    assert!(r.notes.is_empty());
+}
+
+/// Same CronJob name in a different namespace is a different backup.
+#[test]
+fn the_namespace_is_part_of_the_identity() {
+    let cj = one_cronjob("staging", "etcd-snapshot", Some("2026-10-02T03:19:00Z"));
+    let mut r = Report::default();
+    check_backups_fresh(
+        &cj,
+        &[backup("etcd-backup", "etcd-snapshot", 26)],
+        OCT_2_0319Z,
+        &mut r,
+    );
+    assert_eq!(
+        r.failures,
+        ["backup etcd-backup/etcd-snapshot: declared but no such CronJob in the cluster"]
+    );
+}
+
+#[test]
+fn an_unparsable_timestamp_is_reported_rather_than_treated_as_fresh() {
+    let cj = one_cronjob("etcd-backup", "etcd-snapshot", Some("last Tuesday"));
+    let mut r = Report::default();
+    check_backups_fresh(
+        &cj,
+        &[backup("etcd-backup", "etcd-snapshot", 26)],
+        OCT_2_0319Z,
+        &mut r,
+    );
+    assert_eq!(
+        r.failures,
+        [
+            "backup etcd-backup/etcd-snapshot: lastSuccessfulTime \"last Tuesday\" is not a timestamp"
+        ]
+    );
+}
+
+/// ADR-199: a line that cannot fail must never raise the number that holds.
+#[test]
+fn declaring_no_backups_is_information_not_an_invariant() {
+    let mut r = Report::default();
+    check_backups_fresh(&serde_json::Value::Null, &[], 0, &mut r);
+    assert_eq!(r.info, ["backups: none declared, not asserted"]);
+    assert!(
+        r.notes.is_empty(),
+        "nothing was proved, so nothing is counted"
+    );
+    assert!(r.failures.is_empty());
+}
+
+#[test]
+fn each_declared_backup_is_counted_on_its_own_merits() {
+    let cj = json!({"items": [
+        {"metadata": {"name": "etcd-snapshot", "namespace": "etcd-backup"},
+         "status": {"lastSuccessfulTime": "2026-10-02T03:19:00Z"}},
+        {"metadata": {"name": "donetick-backup", "namespace": "donetick"},
+         "status": {"lastSuccessfulTime": "2026-09-30T03:19:00Z"}},
+    ]});
+    let mut r = Report::default();
+    check_backups_fresh(
+        &cj,
+        &[
+            backup("etcd-backup", "etcd-snapshot", 26),
+            backup("donetick", "donetick-backup", 26),
+        ],
+        OCT_2_0319Z + 3600,
+        &mut r,
+    );
+    assert_eq!(r.notes.len(), 1, "the fresh one holds");
+    assert_eq!(r.failures.len(), 1, "the two-day-old one does not");
 }

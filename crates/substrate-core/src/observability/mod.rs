@@ -402,8 +402,8 @@ pub fn render_installer(
         .replace(
             "__VERIFY_STORE__",
             if wants_store {
-                "echo \"  victoria-metrics: $(systemctl is-active victoria-metrics.service)\"\n\
-                 echo \"  victoria-logs:    $(systemctl is-active victoria-logs.service)\"\n\
+                "echo \"  victoria-metrics: $(systemctl is-active victoria-metrics.service) running $(running_version http://127.0.0.1:8428/metrics)\"\n\
+                 echo \"  victoria-logs:    $(systemctl is-active victoria-logs.service) running $(running_version http://127.0.0.1:9428/metrics)\"\n\
                  if [ ! -e /etc/grafana/grafana.env ]; then\n\
                  \x20 echo \"  grafana:          NOT CONFIGURED — /etc/grafana/grafana.env is missing (GitHub OAuth secret)\"\n\
                  else\n\

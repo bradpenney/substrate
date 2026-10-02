@@ -67,6 +67,16 @@ posture:
   origin_ip: 203.0.113.1
   status_account_id: 0123456789abcdef0123456789abcdef
   status_kv_namespace_id: fedcba9876543210fedcba9876543210
+  # The backups whose freshness is an invariant (ADR-202). 26 rather than 24: a
+  # daily schedule has to fire, the job has to run, and posture-check runs on its
+  # own schedule, so 24 would flap on ordinary timing.
+  backups:
+    - namespace: etcd-backup
+      cronjob: etcd-snapshot
+      max_age_hours: 26
+    - namespace: example
+      cronjob: example-backup
+      max_age_hours: 26
 
 libvirt:
   iso_pool: isos

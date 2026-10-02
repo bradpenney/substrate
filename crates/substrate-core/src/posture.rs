@@ -831,3 +831,107 @@ pub fn check_firewall_restrictions(probes: Option<&[FirewallProbe]>, r: &mut Rep
         ));
     }
 }
+
+/// Every declared backup succeeded recently enough to still be an assurance.
+///
+/// THE GAP THIS CLOSES (ADR-202). Fifteen invariants were re-asserted nightly and
+/// not one of them was "the backups ran". The platform's whole claim is that a
+/// node is rebuilt rather than repaired, and a rebuild restores from a backup, so
+/// the backup was the single load-bearing thing nothing checked. A restore drill
+/// passing in September says the mechanism worked once; it says nothing about
+/// whether last night produced a file.
+///
+/// Reads `status.lastSuccessfulTime` on the CronJob, which is the completion of
+/// the last job that SUCCEEDED. Deliberately not `lastScheduleTime`: a CronJob
+/// that fires every night and fails every night keeps a fresh
+/// `lastScheduleTime` forever, which is precisely the silent failure worth
+/// catching — and is how both RWO backup CronJobs ran for weeks without ever
+/// having worked.
+///
+/// A declared backup that is ABSENT from the cluster fails rather than being
+/// skipped. Deleting a backup must not be a way to stop being asked about it.
+pub fn check_backups_fresh(
+    cronjobs: &Value,
+    declared: &[crate::config::BackupExpectation],
+    now_unix: i64,
+    r: &mut Report,
+) {
+    if declared.is_empty() {
+        // Uncounted, per ADR-199: a site that declares no backups has not
+        // thereby proved anything, so this must never raise the number that
+        // holds.
+        r.info("backups: none declared, not asserted");
+        return;
+    }
+    for want in declared {
+        let found = items(cronjobs).iter().find(|c| {
+            name_of(c) == want.cronjob
+                && c.pointer("/metadata/namespace").and_then(Value::as_str)
+                    == Some(want.namespace.as_str())
+        });
+        let label = format!("{}/{}", want.namespace, want.cronjob);
+        let Some(cj) = found else {
+            r.fail(format!(
+                "backup {label}: declared but no such CronJob in the cluster"
+            ));
+            continue;
+        };
+        let Some(last) = cj
+            .pointer("/status/lastSuccessfulTime")
+            .and_then(Value::as_str)
+        else {
+            r.fail(format!(
+                "backup {label}: has never recorded a successful run"
+            ));
+            continue;
+        };
+        let Some(at) = parse_rfc3339_unix(last) else {
+            r.fail(format!(
+                "backup {label}: lastSuccessfulTime {last:?} is not a timestamp"
+            ));
+            continue;
+        };
+        let age_h = (now_unix - at) as f64 / 3600.0;
+        if age_h > want.max_age_hours as f64 {
+            r.fail(format!(
+                "backup {label}: last success {age_h:.1}h ago, over the {}h limit",
+                want.max_age_hours
+            ));
+        } else {
+            r.note(format!(
+                "backup {label}: last success {age_h:.1}h ago, within {}h",
+                want.max_age_hours
+            ));
+        }
+    }
+}
+
+/// Seconds since the epoch for an RFC 3339 instant in UTC, as Kubernetes writes
+/// them (`2026-10-02T03:19:00Z`).
+///
+/// Hand-rolled rather than pulling in a date crate: the only shape that ever
+/// reaches it is a Kubernetes timestamp, which is always UTC and always this
+/// layout. Anything else returns None and the caller files a failure, so a
+/// surprise format is reported rather than silently treated as fresh.
+fn parse_rfc3339_unix(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || *b.last()? != b'Z' {
+        return None;
+    }
+    let num = |a: usize, z: usize| s.get(a..z)?.parse::<i64>().ok();
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, sec) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Days from the epoch by the civil-from-days algorithm, which needs no
+    // table and no leap-year special case at the call site.
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + sec)
+}

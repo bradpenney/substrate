@@ -193,6 +193,35 @@ pub struct PostureConfig {
     pub status_account_id: Option<String>,
     #[serde(default)]
     pub status_kv_namespace_id: Option<String>,
+    /// The backups whose freshness is an invariant (ADR-202).
+    ///
+    /// DECLARED, not discovered. A check that walked every CronJob and asserted
+    /// the ones that look like backups would go quiet the moment a backup was
+    /// renamed or deleted — the two failures most worth catching. Naming them
+    /// here means a backup that disappears from the cluster is a FAILURE rather
+    /// than one fewer thing to assert.
+    ///
+    /// Empty is legitimate and says so in the output: a site with no declared
+    /// backups is not a site whose backups are known to be fine.
+    #[serde(default)]
+    pub backups: Vec<BackupExpectation>,
+}
+
+/// One backup that must have succeeded recently.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupExpectation {
+    /// The CronJob's namespace.
+    pub namespace: String,
+    /// The CronJob's name.
+    pub cronjob: String,
+    /// How old the last SUCCESS may be before this stops holding.
+    ///
+    /// A daily backup wants more than 24: the schedule has to fire, the job has
+    /// to run, and the check runs on its own schedule, so 24 would flap on
+    /// ordinary timing. What it must not be is large enough to sleep through a
+    /// backup that has stopped running entirely.
+    pub max_age_hours: u32,
 }
 
 fn default_posture_context() -> String {

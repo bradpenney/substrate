@@ -201,12 +201,23 @@ fn main() -> Result<()> {
 /// `[ok  ]` padding and the stdout/stderr split are all reproduced rather than
 /// improved, because the differential harness compares this text against the
 /// Python's.
+/// Seconds since the epoch, or 0 if the clock is before it.
+///
+/// Zero makes every age look enormous, so a broken clock produces failures
+/// rather than a reassuring pass.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     use substrate_core::posture::{
-        Report, check_admission_policies, check_cluster_admin, check_credentials,
-        check_default_deny, check_failed_units, check_firewall_restrictions, check_flux,
-        check_no_standing_grant, check_origin_lock, check_peer_units, check_pod_security,
-        check_selinux, check_source_verified,
+        Report, check_admission_policies, check_backups_fresh, check_cluster_admin,
+        check_credentials, check_default_deny, check_failed_units, check_firewall_restrictions,
+        check_flux, check_no_standing_grant, check_origin_lock, check_peer_units,
+        check_pod_security, check_selinux, check_source_verified,
     };
 
     let context = std::env::var("POSTURE_CONTEXT").unwrap_or_else(|_| "brad".into());
@@ -231,6 +242,17 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     let vapbs = get(&["get", "validatingadmissionpolicybinding"]);
     let flux = get(&["get", "kustomization", "-n", "flux-system"]);
     let ocirepo = get(&["get", "ocirepository", "flux-system", "-n", "flux-system"]);
+    // Only worth a query where the site declares backups: asking for every
+    // CronJob on a site that declares none would spend a round trip to say
+    // nothing. The empty case is reported by the check itself.
+    let declared_backups = substrate_core::load(repo)
+        .map(|c| c.posture.backups.clone())
+        .unwrap_or_default();
+    let cronjobs = if declared_backups.is_empty() {
+        None
+    } else {
+        get(&["get", "cronjobs", "-A"])
+    };
     // Only where a secrets manager is configured: without one there are no
     // ExternalSecrets to be Ready, and asking kubectl for a CRD that is not
     // installed would file a tooling failure as a security finding.
@@ -262,6 +284,15 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     if let Some(e) = &esecrets {
         check_credentials(e, &mut r);
     }
+    match &cronjobs {
+        Some(cj) => check_backups_fresh(cj, &declared_backups, unix_now(), &mut r),
+        // Declared backups whose query failed already filed that failure through
+        // `get`; an empty declaration still has to say it asserted nothing.
+        None if declared_backups.is_empty() => {
+            check_backups_fresh(&serde_json::Value::Null, &[], 0, &mut r)
+        }
+        None => {}
+    }
     // Queried on its own, NOT through `get`. kubectl exits non-zero when the
     // binding does not exist, and that is the healthy, ordinary state — routing
     // it through the shared helper would record a kubectl failure every time
@@ -271,11 +302,7 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
         &["get", "clusterrolebinding", "jit-platform-admin"],
     )
     .ok();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    check_no_standing_grant(jit.as_ref(), now, &mut r);
+    check_no_standing_grant(jit.as_ref(), unix_now(), &mut r);
     check_failed_units(&gather_systemd(), &mut r);
     let peers = peer_targets(repo);
     if peers.is_empty() {
