@@ -352,11 +352,20 @@ pub fn plan(
     Ok(files)
 }
 
+/// What the dry run plans in place of the kubeconfig. The preview must not
+/// need the fleet (bug-179): a plan that reaches for a node over ssh cannot
+/// run in CI, and is not a preview of anything a reader can check.
+pub const KUBECONFIG_AT_APPLY: &str = "# fetched from the bootstrap node at --apply\n";
+
 /// Deploy to every hypervisor, fetching the kubeconfig ONCE so both machines
 /// get byte-identical credentials — two fetches could straddle a cluster
 /// change. Returns Ok(()) after printing per-host results; errors propagate.
 pub fn deploy_all(repo: &Path, cfg: &SiteConfig, dry_run: bool) -> Result<()> {
-    let kubeconfig = fetch_kubeconfig(cfg)?;
+    let kubeconfig = if dry_run {
+        KUBECONFIG_AT_APPLY.to_string()
+    } else {
+        fetch_kubeconfig(cfg)?
+    };
     let topic = ntfy_topic();
     let hosts: Vec<Host> = cfg
         .hypervisors
@@ -395,6 +404,13 @@ pub fn deploy_all(repo: &Path, cfg: &SiteConfig, dry_run: bool) -> Result<()> {
                 files.len()
             );
             for f in &files {
+                if f.remote == "etc/homelab/kubeconfig" {
+                    println!(
+                        "[{}]   /{}  ({:>4o}, fetched from the bootstrap node at --apply)",
+                        host.name, f.remote, f.mode
+                    );
+                    continue;
+                }
                 println!(
                     "[{}]   /{}  ({:>4o}, {} bytes)",
                     host.name,
@@ -408,6 +424,10 @@ pub fn deploy_all(repo: &Path, cfg: &SiteConfig, dry_run: bool) -> Result<()> {
                 host.name, cfg.host_tools.cosign.version
             );
             continue;
+        }
+        // The placeholder is for the preview only; a host must never receive it.
+        if kubeconfig == KUBECONFIG_AT_APPLY {
+            bail!("refusing to apply: the kubeconfig was not fetched (bug-179 guard)");
         }
         apply(host, &files, &installer(cfg))?;
         println!("[{}] deployed", host.name);

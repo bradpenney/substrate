@@ -1215,7 +1215,8 @@ impl<'a> Gate<'a> {
             .all_vms()
             .map(|(_, v)| v.static_ip.clone())
             .collect();
-        if let Err(e) = provision::refresh_client_access(admin, &self.bootstrap_ip, &ips) {
+        let hosts: Vec<Host> = self.fleet.hosts.iter().map(|(h, _)| h.clone()).collect();
+        if let Err(e) = provision::refresh_client_access(admin, &self.bootstrap_ip, &ips, &hosts) {
             println!("  (client access refresh failed: {e})");
         }
         true

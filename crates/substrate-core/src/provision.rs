@@ -1178,38 +1178,82 @@ pub fn merge_break_glass(existing: &str, admin: &str) -> Result<String> {
 /// as it is; a rebuild's dead certs are re-minted by `client-cert`, which
 /// overwrites its own entries. `current-context` is only set when the file
 /// has none, or names a context that no longer exists.
-pub fn refresh_client_access(
-    admin_user: &str,
-    bootstrap_ip: &str,
-    node_ips: &[String],
-) -> Result<()> {
-    println!("=== refreshing client access (known_hosts + kubeconfig) ===");
-    let home = std::env::var("HOME").unwrap_or_default();
-
+/// The known_hosts lines for these nodes, as `ssh-keyscan` sees them from
+/// here. One scan, from one vantage, then the same lines go to every host —
+/// so every hypervisor trusts the same key, rather than each one accepting
+/// whatever it is shown first.
+pub fn scan_host_keys(node_ips: &[String]) -> Vec<String> {
+    let mut lines = Vec::new();
     for ip in node_ips {
-        let _ = std::process::Command::new("ssh-keygen")
-            .args(["-R", ip])
-            .output();
         if let Ok(scan) = std::process::Command::new("ssh-keyscan")
             .args(["-t", "ed25519", ip])
             .output()
         {
             let text = String::from_utf8_lossy(&scan.stdout);
-            if scan.status.success() && !text.trim().is_empty() {
-                let dir = std::path::Path::new(&home).join(".ssh");
-                let _ = std::fs::create_dir_all(&dir);
-                if let Ok(mut fh) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(dir.join("known_hosts"))
-                {
-                    use std::io::Write;
-                    let _ = fh.write_all(text.as_bytes());
-                }
+            if scan.status.success() {
+                lines.extend(
+                    text.lines()
+                        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                        .map(str::to_string),
+                );
             }
         }
     }
-    println!("  known_hosts refreshed for {} nodes", node_ips.len());
+    lines
+}
+
+/// The command that replaces these nodes' entries in the calling user's
+/// `~/.ssh/known_hosts` with the lines on stdin. Argv, not a shell string:
+/// the addresses are positional parameters, never interpolated.
+pub fn known_hosts_argv(node_ips: &[String]) -> Vec<String> {
+    let mut argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "umask 077; mkdir -p ~/.ssh; for ip in \"$@\"; do ssh-keygen -R \"$ip\" >/dev/null 2>&1; done; cat >> ~/.ssh/known_hosts".to_string(),
+        "known_hosts".to_string(),
+    ];
+    argv.extend(node_ips.iter().cloned());
+    argv
+}
+
+/// Install the scanned lines on one host — the local one or a peer over ssh.
+pub fn install_host_keys(host: &Host, node_ips: &[String], lines: &[String]) -> Result<()> {
+    let input = lines.join("\n") + "\n";
+    crate::exec::run_checked(host, &known_hosts_argv(node_ips), Some(&input))?;
+    Ok(())
+}
+
+pub fn refresh_client_access(
+    admin_user: &str,
+    bootstrap_ip: &str,
+    node_ips: &[String],
+    hosts: &[Host],
+) -> Result<()> {
+    println!("=== refreshing client access (known_hosts + kubeconfig) ===");
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // A rebuilt node has a new host key; every hypervisor that probes it
+    // must learn that key, not only the one this ran from. Until v0.2.9 only
+    // the local known_hosts was refreshed, and the peer's nightly check lost
+    // its vantage on every rebuilt node — silently, as an info line (bug-177).
+    let lines = scan_host_keys(node_ips);
+    if lines.is_empty() {
+        println!(
+            "  WARNING: ssh-keyscan returned nothing for {} nodes — known_hosts left alone",
+            node_ips.len()
+        );
+    } else {
+        for host in hosts {
+            match install_host_keys(host, node_ips, &lines) {
+                Ok(()) => println!(
+                    "  known_hosts on {}: {} nodes refreshed",
+                    host.name,
+                    node_ips.len()
+                ),
+                Err(e) => println!("  WARNING: known_hosts on {} not refreshed: {e}", host.name),
+            }
+        }
+    }
 
     let out = node_ssh(admin_user, bootstrap_ip, 10, "sudo k0s kubeconfig admin")?;
     // Validate before overwriting: clobbering a working kubeconfig with an
@@ -1435,6 +1479,7 @@ pub fn provision_fleet(cfg: &SiteConfig, ssh_key: &str) -> Result<()> {
     // with.
     let expected: Vec<String> = fleet.all_vms().map(|(_, v)| v.name.clone()).collect();
     let all_ips: Vec<String> = fleet.all_vms().map(|(_, v)| v.static_ip.clone()).collect();
+    let hosts: Vec<Host> = fleet.hosts.iter().map(|(h, _)| h.clone()).collect();
 
     let joining: Vec<(&Host, &Vm)> = fleet.all_vms().filter(|(_, v)| !v.bootstrap).collect();
     if joining.is_empty() {
@@ -1447,7 +1492,7 @@ pub fn provision_fleet(cfg: &SiteConfig, ssh_key: &str) -> Result<()> {
             SSH_WAIT_INTERVAL,
         )?;
         enforce_autopilot_pod_security(admin, &bootstrap_vm.static_ip)?;
-        return refresh_client_access(admin, &bootstrap_vm.static_ip, &all_ips);
+        return refresh_client_access(admin, &bootstrap_vm.static_ip, &all_ips, &hosts);
     }
 
     // Phase 2: one token per joining node, minted fresh from the running
@@ -1498,11 +1543,29 @@ pub fn provision_fleet(cfg: &SiteConfig, ssh_key: &str) -> Result<()> {
     // Phase 4: leave the OPERATOR'S environment working too. A rebuild that
     // produces a healthy cluster you cannot talk to is not reproducible in any
     // useful sense.
-    refresh_client_access(admin, &bootstrap_vm.static_ip, &all_ips)
+    refresh_client_access(admin, &bootstrap_vm.static_ip, &all_ips, &hosts)
 }
 
 #[cfg(test)]
 mod tests {
+    /// The addresses are positional parameters to `sh -c`, never part of the
+    /// script text: an address that looked like shell would still be data.
+    #[test]
+    fn known_hosts_argv_keeps_addresses_out_of_the_script() {
+        let ips = vec!["10.99.0.20".to_string(), "10.99.0.21; rm -rf /".to_string()];
+        let argv = super::known_hosts_argv(&ips);
+        assert_eq!(&argv[..2], ["sh", "-c"]);
+        assert!(
+            !argv[2].contains("10.99"),
+            "script text must not carry an address: {}",
+            argv[2]
+        );
+        assert!(argv[2].contains("ssh-keygen -R \"$ip\""));
+        assert!(argv[2].contains("cat >> ~/.ssh/known_hosts"));
+        assert_eq!(argv[3], "known_hosts", "$0 for the -c script");
+        assert_eq!(&argv[4..], ips.as_slice());
+    }
+
     use super::*;
 
     fn vm(name: &str, hv: &str, bootstrap: bool) -> Vm {

@@ -52,11 +52,11 @@ jobs:
           ./check-static-binary.sh target/x86_64-unknown-linux-musl/release/substrate
       - name: Every deploy plans against the fixture site
         # v0.2.7 shipped a deploy-posture that could not plan at all (bug-178):
-        # the preview that would have shown it was never run. Now it always is.
-        # deploy-updates is absent only because its preview still reaches for
-        # a kubeconfig over ssh (bug-179).
+        # the preview that would have shown it was never run. Now it always is,
+        # for all three — deploy-updates plans without the fleet since v0.2.9
+        # (bug-179).
         run: |
-          for c in deploy-posture deploy-observability; do
+          for c in deploy-posture deploy-updates deploy-observability; do
             ./target/release/substrate "$c" --repo tests/fixtures
           done
       - name: Test — the renderer reproduces every golden

@@ -9,8 +9,8 @@
 # tag only says what was *asked* for.
 
 flux_operator:
-  version: v0.60.0
-  sha256: ef5f7c2ae52810d886f6bccc66a0fed3b436f3a7797e79a59c0443f191ddd02e
+  version: v0.61.0
+  sha256: 550ebc8eec5fae00e55336cf5403a60846c51174095df3d8ca541b48481662af
   # Where the pinned asset comes from. {version} is substituted.
   url: https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/{version}/install.yaml
 
@@ -58,16 +58,16 @@ observability:
     install_as: node_exporter
 
   victoria_metrics:
-    version: v1.150.0
+    version: v1.153.0
     url: https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/{version}/victoria-metrics-linux-amd64-{version}.tar.gz
-    sha256: 22bfe77be3de1ad03f214a005129312536d77ed4e293b66c186df417ee40a61d
+    sha256: 1b495bde563825cf83dc7c0425a9d8fa03e7214858e0949f9177efc6bb1f8bfc
     member: victoria-metrics-prod
     install_as: victoria-metrics-prod
 
   victoria_logs:
-    version: v1.52.0
+    version: v1.53.0
     url: https://github.com/VictoriaMetrics/VictoriaLogs/releases/download/{version}/victoria-logs-linux-amd64-{version}.tar.gz
-    sha256: d14f585144b8d6813f15e11f0041f487e15e10e5f5e5a31be0311367e93d3494
+    sha256: 55feba89713cafa952673f91b8b38e7701bb0290989263da671b47a0de16edd3
     member: victoria-logs-prod
     install_as: victoria-logs-prod
 
@@ -95,15 +95,15 @@ observability:
     install_to: /var/lib/grafana/plugins/victoriametrics-logs-datasource
 
   grafana:
-    version: v13.2.0
+    version: v13.2.3
     # NOT a GitHub release asset — Grafana publishes the tarball and its
     # checksum at dl.grafana.com, so that is where both come from. The version
     # appears twice because the tag carries a `v` and the filename does not.
-    url: https://dl.grafana.com/oss/release/grafana-13.2.0.linux-amd64.tar.gz
-    sha256: 4669384cdb0bb5b4a3f804927e57490d17f4cc47258cd1698fc124e99ee58265
+    url: https://dl.grafana.com/oss/release/grafana-13.2.3.linux-amd64.tar.gz
+    sha256: 6107ad27016296aac38e0d7ffa8753ab540b5541ad27e94790f771289d733235
     # A TREE, not a single binary (455 MB: bin/, conf/, public/). Installed by
     # the install_tree path, not install_binary — see ADR-102.
-    tree_root: grafana-13.2.0
+    tree_root: grafana-13.2.3
     install_to: /usr/local/share/grafana
 
 # cosign on every hypervisor: what install.sh verifies a substrate release
