@@ -188,6 +188,10 @@ impl<'a> Gate<'a> {
             ("critical workloads spread", self.check_critical_pairs()),
             ("hypervisor labels match site.yml", self.check_node_labels()),
             (
+                "storage zone labels match site.yml",
+                self.check_zone_labels(),
+            ),
+            (
                 "fleet survives losing a hypervisor",
                 self.check_fleet_survivability(),
             ),
@@ -712,6 +716,38 @@ impl<'a> Gate<'a> {
              (ADR-144), but kubelet applies --node-labels only when it CREATES\n  \
              the Node object — a node that merely rebooted needs:\n    \
              kubectl label node <node> {HYPERVISOR_LABEL}=<hypervisor>"
+        );
+        false
+    }
+
+    /// Every node carries its hypervisor as `topology.kubernetes.io/zone`, the
+    /// only key Longhorn reads a zone from (bug-200).
+    ///
+    /// A separate check from the hypervisor label rather than a second key in
+    /// it: the two fail for different reasons and are fixed by different people.
+    /// A node missing this one still schedules every pod correctly — the spread
+    /// constraints use the custom label — and loses only the guarantee that its
+    /// volumes span both machines. That failure is silent everywhere else, which
+    /// is why it gets its own line here.
+    fn check_zone_labels(&self) -> bool {
+        println!("--- storage zone labels ---");
+        let Some(payload) = self.pods_and_nodes("nodes") else {
+            return false;
+        };
+        let node_hypervisor = self.node_to_hypervisor();
+        let failures = node_label_failures(&payload, &node_hypervisor, crate::render::ZONE_LABEL);
+        if failures.is_empty() {
+            println!("  every node's storage zone is its hypervisor");
+            return true;
+        }
+        for line in failures {
+            println!("  {line}");
+        }
+        println!(
+            "  rendered at node build since v0.2.11; kubelet applies it only when it\n  \
+             CREATES the Node object, so a node built before then needs, once:\n    \
+             kubectl label node <node> {}=<hypervisor>",
+            crate::render::ZONE_LABEL
         );
         false
     }

@@ -1277,3 +1277,137 @@ fn each_declared_backup_is_counted_on_its_own_merits() {
     assert_eq!(r.notes.len(), 1, "the fresh one holds");
     assert_eq!(r.failures.len(), 1, "the two-day-old one does not");
 }
+
+// ───────────────────────────────────────────────── storage spans hypervisors
+
+fn hv_nodes() -> serde_json::Value {
+    let node = |n: &str, hv: &str| json!({"metadata": {"name": n, "labels": {"invariant-platform.io/hypervisor": hv}}});
+    json!({"items": [node("a1", "hvA"), node("a2", "hvA"), node("b1", "hvB")]})
+}
+
+fn vol(name: &str, ns: &str, pvc: &str) -> serde_json::Value {
+    json!({"metadata": {"name": name}, "status": {"kubernetesStatus": {"namespace": ns, "pvcName": pvc}}})
+}
+
+fn rep(volume: &str, node: &str, state: &str, failed_at: &str) -> serde_json::Value {
+    json!({"spec": {"volumeName": volume, "nodeID": node, "failedAt": failed_at}, "status": {"currentState": state}})
+}
+
+#[test]
+fn every_volume_spanning_every_hypervisor_is_one_line() {
+    let volumes = json!({"items": [vol("pvc-1", "app", "data"), vol("pvc-2", "app", "cache")]});
+    let replicas = json!({"items": [
+        rep("pvc-1", "a1", "running", ""), rep("pvc-1", "a2", "running", ""), rep("pvc-1", "b1", "running", ""),
+        rep("pvc-2", "a1", "running", ""), rep("pvc-2", "b1", "running", ""),
+    ]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    assert_eq!(
+        r.notes,
+        ["storage: 2 volume(s), each with a replica on every hypervisor (2)"]
+    );
+    assert!(r.failures.is_empty());
+}
+
+/// bug-200, as found: three replicas, three different NODES, one machine.
+/// Per-node anti-affinity is satisfied and the volume is still one failure away
+/// from gone.
+#[test]
+fn three_replicas_on_three_nodes_of_ONE_hypervisor_fails() {
+    let volumes = json!({"items": [vol("pvc-1", "wanderer", "garmin-sync-state")]});
+    let replicas = json!({"items": [
+        rep("pvc-1", "a1", "running", ""), rep("pvc-1", "a2", "running", ""),
+    ]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    assert_eq!(
+        r.failures,
+        [
+            "storage wanderer/garmin-sync-state: replicas on 1 of 2 hypervisors — losing one machine could lose this volume"
+        ]
+    );
+    assert!(
+        r.notes.is_empty(),
+        "one short volume withholds the line for all of them"
+    );
+}
+
+/// A detached volume's replicas are STOPPED, and its data is still on that disk.
+#[test]
+fn a_stopped_replica_still_counts() {
+    let volumes = json!({"items": [vol("pvc-1", "app", "data")]});
+    let replicas =
+        json!({"items": [rep("pvc-1", "a1", "stopped", ""), rep("pvc-1", "b1", "stopped", "")]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    assert!(r.failures.is_empty(), "{:?}", r.failures);
+    assert_eq!(r.notes.len(), 1);
+}
+
+#[test]
+fn a_FAILED_replica_does_not_count() {
+    let volumes = json!({"items": [vol("pvc-1", "app", "data")]});
+    let replicas = json!({"items": [
+        rep("pvc-1", "a1", "running", ""), rep("pvc-1", "b1", "error", "2026-10-23T03:00:00Z"),
+    ]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    assert_eq!(
+        r.failures.len(),
+        1,
+        "the only copy on the second machine has failed"
+    );
+}
+
+/// A replica left behind on a node that no longer exists is not a copy anyone
+/// can read.
+#[test]
+fn a_replica_on_a_node_the_cluster_no_longer_has_does_not_count() {
+    let volumes = json!({"items": [vol("pvc-1", "app", "data")]});
+    let replicas =
+        json!({"items": [rep("pvc-1", "a1", "running", ""), rep("pvc-1", "gone", "running", "")]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    assert_eq!(r.failures.len(), 1);
+}
+
+#[test]
+fn a_volume_without_a_claim_is_named_by_its_own_name() {
+    let volumes = json!({"items": [{"metadata": {"name": "pvc-orphan"}, "status": {}}]});
+    let replicas = json!({"items": [rep("pvc-orphan", "a1", "running", "")]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    assert!(
+        r.failures[0].starts_with("storage pvc-orphan: "),
+        "{:?}",
+        r.failures
+    );
+}
+
+/// ADR-199: one machine has no second failure domain to assert.
+#[test]
+fn one_hypervisor_is_information_not_an_invariant() {
+    let nodes = json!({"items": [{"metadata": {"name": "a1", "labels": {"invariant-platform.io/hypervisor": "hvA"}}}]});
+    let volumes = json!({"items": [vol("pvc-1", "app", "data")]});
+    let replicas = json!({"items": [rep("pvc-1", "a1", "running", "")]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &nodes, &mut r);
+    assert_eq!(
+        r.info,
+        ["storage spread: fewer than two hypervisors, not asserted"]
+    );
+    assert!(r.notes.is_empty() && r.failures.is_empty());
+}
+
+#[test]
+fn no_volumes_is_information_not_an_invariant() {
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(
+        &json!({"items": []}),
+        &json!({"items": []}),
+        &hv_nodes(),
+        &mut r,
+    );
+    assert_eq!(r.info, ["storage spread: no volumes, not asserted"]);
+    assert!(r.notes.is_empty());
+}

@@ -33,14 +33,31 @@ use std::collections::BTreeMap;
 /// a rebuild but never on a reboot; a node that joined before this existed
 /// needs a one-time `kubectl label node`.
 ///
-/// A custom domain on purpose: NodeRestriction refuses to let a kubelet
-/// self-assign `*.kubernetes.io/` labels, so `topology.kubernetes.io/zone`
-/// would leave the node silently unlabelled.
+/// A custom domain, which is what the cluster's own spread constraints key on.
 ///
 /// Kept as a constant in one place per implementation because the pending
 /// platform rename has to change it in lockstep with substrate_config and with
 /// every already-labelled node.
 pub const HYPERVISOR_LABEL: &str = "invariant-platform.io/hypervisor";
+
+/// The SAME failure domain, under the one key Longhorn reads (bug-200).
+///
+/// Longhorn derives a node's zone only from `topology.kubernetes.io/zone`, and
+/// its replica zone anti-affinity is meaningless without it: with no zone on any
+/// node, all five sit in one empty zone and replicas are placed by free disk
+/// alone. That is how every replica of every volume ended up on server1 while a
+/// comment in the Longhorn settings promised they would not.
+///
+/// This label was left out on the belief that NodeRestriction stops a
+/// kubelet self-assigning `*.kubernetes.io/` labels. It does not, for this one:
+/// `topology.kubernetes.io/zone` is on the kubelet allow list
+/// (`kubeletLabels` in staging/src/k8s.io/kubelet/pkg/apis/well_known_labels.go,
+/// checked at v1.36.4). The belief was never tested; the label was simply never
+/// written.
+///
+/// Its value is the hypervisor's name, identical to `HYPERVISOR_LABEL`'s, so the
+/// two keys cannot describe different domains.
+pub const ZONE_LABEL: &str = "topology.kubernetes.io/zone";
 
 /// One k0s node, as the renderer needs it.
 ///
@@ -78,7 +95,14 @@ pub fn cloud_config(cfg: &SiteConfig, vm: &Vm, join_token: Option<&str>, ssh_key
     // --token-file pushes below, because the Python and Jinja renderers emit it
     // in exactly that position and all three are compared against the same
     // goldens. Moving this line is a silent divergence.
-    args.push(format!("--labels={HYPERVISOR_LABEL}={}", vm.hypervisor));
+    //
+    // One --labels flag carrying both keys, not two flags: both name the same
+    // failure domain, and a reader of the rendered config should see them as
+    // one statement rather than two that could be edited apart.
+    args.push(format!(
+        "--labels={HYPERVISOR_LABEL}={hv},{ZONE_LABEL}={hv}",
+        hv = vm.hypervisor
+    ));
 
     let storage_gb = vm.storage_disk_gb.unwrap_or(cfg.defaults.storage_disk_gb);
 

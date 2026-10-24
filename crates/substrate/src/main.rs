@@ -217,7 +217,7 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
         Report, check_admission_policies, check_backups_fresh, check_cluster_admin,
         check_credentials, check_default_deny, check_failed_units, check_firewall_restrictions,
         check_flux, check_no_standing_grant, check_origin_lock, check_peer_units,
-        check_pod_security, check_selinux, check_source_verified,
+        check_pod_security, check_replicas_span_hypervisors, check_selinux, check_source_verified,
     };
 
     let context = std::env::var("POSTURE_CONTEXT").unwrap_or_else(|_| "brad".into());
@@ -242,6 +242,11 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     let vapbs = get(&["get", "validatingadmissionpolicybinding"]);
     let flux = get(&["get", "kustomization", "-n", "flux-system"]);
     let ocirepo = get(&["get", "ocirepository", "flux-system", "-n", "flux-system"]);
+    // Where every volume's replicas sit, and which machine each node is on
+    // (bug-200). Three reads, all within what the scoped identity may see.
+    let lh_nodes = get(&["get", "nodes"]);
+    let lh_volumes = get(&["get", "volumes.longhorn.io", "-n", "longhorn-system"]);
+    let lh_replicas = get(&["get", "replicas.longhorn.io", "-n", "longhorn-system"]);
     // Only worth a query where the site declares backups: asking for every
     // CronJob on a site that declares none would spend a round trip to say
     // nothing. The empty case is reported by the check itself.
@@ -283,6 +288,9 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     }
     if let Some(e) = &esecrets {
         check_credentials(e, &mut r);
+    }
+    if let (Some(v), Some(rep), Some(n)) = (&lh_volumes, &lh_replicas, &lh_nodes) {
+        check_replicas_span_hypervisors(v, rep, n, &mut r);
     }
     match &cronjobs {
         Some(cj) => check_backups_fresh(cj, &declared_backups, unix_now(), &mut r),

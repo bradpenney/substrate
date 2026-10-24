@@ -935,3 +935,100 @@ fn parse_rfc3339_unix(s: &str) -> Option<i64> {
     let days = era * 146_097 + doe - 719_468;
     Some(days * 86_400 + h * 3600 + mi * 60 + sec)
 }
+
+/// Every volume keeps a usable replica on every hypervisor.
+///
+/// THE CLAIM THIS REPLACES (bug-200). The Longhorn settings said storage
+/// "survives losing server1 as long as a replica landed on server2 — which the
+/// anti-affinity makes the default behaviour". Nothing checked it, and on
+/// 2026-10-23 every replica of every volume was on server1: anti-affinity was
+/// per NODE, no node carried the zone label Longhorn reads, and Longhorn placed
+/// replicas by free disk. Losing one machine would have lost all of it. The
+/// claim was true only in a comment.
+///
+/// Asserted on OUTCOME, not on configuration: which hypervisor each replica's
+/// node sits on, via the label the cluster's own spread constraints use. A
+/// correct zone label with replicas still piled on one machine fails here; so
+/// would a future setting that looks right and is not.
+///
+/// A replica counts if it has a node and has not failed. A STOPPED replica of a
+/// detached volume counts — its data is on that disk, which is the whole
+/// question. One line when every volume holds; one finding per volume that does
+/// not, naming the volume and how many machines its replicas reach, never the
+/// machines themselves (nothing published names one).
+///
+/// A one-hypervisor site has no second failure domain to assert, and a site with
+/// no volumes has nothing to place: both are information, never counted
+/// (ADR-199).
+pub fn check_replicas_span_hypervisors(
+    volumes: &Value,
+    replicas: &Value,
+    nodes: &Value,
+    r: &mut Report,
+) {
+    use std::collections::{BTreeMap, BTreeSet};
+    let node_hv: BTreeMap<&str, &str> = items(nodes)
+        .iter()
+        .filter_map(|n| {
+            let hv = n
+                .pointer("/metadata/labels")
+                .and_then(|l| l.get(crate::render::HYPERVISOR_LABEL))
+                .and_then(Value::as_str)?;
+            Some((name_of(n), hv))
+        })
+        .collect();
+    let all: BTreeSet<&str> = node_hv.values().copied().collect();
+    if all.len() < 2 {
+        r.info("storage spread: fewer than two hypervisors, not asserted");
+        return;
+    }
+    let mut vols: Vec<&Value> = items(volumes).iter().collect();
+    if vols.is_empty() {
+        r.info("storage spread: no volumes, not asserted");
+        return;
+    }
+    vols.sort_by_key(|v| name_of(v));
+
+    let (mut held, mut short) = (0, 0);
+    for v in vols {
+        let vol = name_of(v);
+        let label = match (
+            v.pointer("/status/kubernetesStatus/namespace")
+                .and_then(Value::as_str),
+            v.pointer("/status/kubernetesStatus/pvcName")
+                .and_then(Value::as_str),
+        ) {
+            (Some(ns), Some(pvc)) if !ns.is_empty() && !pvc.is_empty() => format!("{ns}/{pvc}"),
+            _ => vol.to_string(),
+        };
+        let reached: BTreeSet<&str> = items(replicas)
+            .iter()
+            .filter(|rep| rep.pointer("/spec/volumeName").and_then(Value::as_str) == Some(vol))
+            .filter(|rep| {
+                rep.pointer("/spec/failedAt")
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+            })
+            .filter_map(|rep| rep.pointer("/spec/nodeID").and_then(Value::as_str))
+            .filter_map(|node| node_hv.get(node).copied())
+            .collect();
+        if reached.len() == all.len() {
+            held += 1;
+        } else {
+            short += 1;
+            r.fail(format!(
+                "storage {label}: replicas on {} of {} hypervisors — losing one machine could lose this volume",
+                reached.len(),
+                all.len()
+            ));
+        }
+    }
+    // The invariant is "EVERY volume", so one short volume withholds the line
+    // rather than leaving a note that is true of the others.
+    if short == 0 {
+        r.note(format!(
+            "storage: {held} volume(s), each with a replica on every hypervisor ({})",
+            all.len()
+        ));
+    }
+}
