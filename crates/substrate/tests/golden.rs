@@ -58,7 +58,7 @@ fn golden_dir() -> PathBuf {
 fn archetypes() -> Vec<Archetype> {
     let text = std::fs::read_to_string(golden_dir().join("archetypes.yaml"))
         .expect("archetypes.yaml is readable");
-    serde_yaml_ng::from_str(&text).expect("archetypes.yaml parses")
+    substrate_core::yaml::from_str(&text).expect("archetypes.yaml parses")
 }
 
 /// The site config to render an archetype against.
@@ -73,19 +73,20 @@ fn site_file(archetype: &Archetype, tmp: &tempfile::TempDir) -> PathBuf {
         return fixture;
     }
     let text = std::fs::read_to_string(&fixture).expect("fixture is readable");
-    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).expect("fixture parses");
+    let mut value: substrate_core::yaml::Value =
+        substrate_core::yaml::from_str(&text).expect("fixture parses");
     value
         .get_mut("flux")
-        .and_then(|f| f.as_mapping_mut())
+        .and_then(|f| f.as_object_mut())
         .expect("fixture has a flux mapping")
         .insert(
-            serde_yaml_ng::Value::from("ghcr_token"),
-            serde_yaml_ng::Value::from("fake-ghcr-token"),
+            "ghcr_token".into(),
+            substrate_core::yaml::Value::from("fake-ghcr-token"),
         );
     let path = tmp.path().join("site.yml");
     std::fs::write(
         &path,
-        serde_yaml_ng::to_string(&value).expect("re-serialises"),
+        substrate_core::yaml::to_string(&value).expect("re-serialises"),
     )
     .expect("temp site.yml is writable");
     path

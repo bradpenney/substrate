@@ -9,6 +9,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Daily, for the audit job: a new advisory arrives without any code changing.
+  # RUSTSEC-2024-0449 was assigned on 2026-10-12, ten days after v0.2.10 built
+  # clean, and nothing here noticed until v0.2.11's release build refused it.
+  schedule:
+    - cron: "17 9 * * *"
 
 # Actions are pinned to a COMMIT SHA, not a tag. A tag is mutable: whoever can
 # push to the action's repository can move `v7` to different code, and every
@@ -24,6 +29,25 @@ permissions:
   contents: read
 
 jobs:
+  # The same gate the release runs, run BEFORE a release exists.
+  #
+  # It used to run only in release.yaml, which fires on a PUBLISHED GitHub
+  # Release — so the first sign of a denied advisory was a release with no
+  # assets, which is how v0.2.11 first shipped (2026-10-23). Same action, same
+  # pinned sha, same cargo-audit version as release.yaml, so the two cannot
+  # disagree about what passes.
+  audit:
+    name: RustSec advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: firestoned/github-actions/rust/security-scan@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        with:
+          cargo-audit-version: "0.22.0"
+          upload-artifact-name: cargo-audit-report-test
+
   rust:
     name: rust
     runs-on: ubuntu-latest

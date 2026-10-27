@@ -18,8 +18,8 @@ pub mod alerts;
 use crate::config::SiteConfig;
 use crate::exec::{Host, run, shell_quote};
 use crate::updates::{self, PlannedFile};
+use crate::yaml::{self, Value};
 use anyhow::{Context, Result, bail};
-use serde_yaml_ng::Value;
 use std::path::Path;
 
 /// The docker bridge gateway. Grafana binds this and nothing else, so it is
@@ -96,7 +96,7 @@ fn host_address(cfg: &SiteConfig, host: &str) -> String {
 fn versions(repo: &Path) -> Result<Value> {
     let text =
         std::fs::read_to_string(repo.join("versions.yml")).context("reading versions.yml")?;
-    let v: Value = serde_yaml_ng::from_str(&text)?;
+    let v: Value = yaml::from_str(&text)?;
     v.get("observability")
         .cloned()
         .context("versions.yml: missing observability")

@@ -11,7 +11,7 @@
 //! safety net, it is a permanently-green panel. `for` is a deliberate part of
 //! each rule: a target that blips for one interval is noise.
 
-use serde_yaml_ng::{Mapping, Value};
+use crate::yaml::{self, Mapping, Value};
 
 pub struct Rule {
     pub uid: &'static str,
@@ -157,9 +157,9 @@ fn s(v: &str) -> Value {
 fn map(pairs: Vec<(&str, Value)>) -> Value {
     let mut m = Mapping::new();
     for (k, v) in pairs {
-        m.insert(s(k), v);
+        m.insert(k.to_string(), v);
     }
-    Value::Mapping(m)
+    Value::Object(m)
 }
 
 fn num(v: f64) -> Value {
@@ -168,7 +168,10 @@ fn num(v: f64) -> Value {
     if v.fract() == 0.0 && v.abs() < 1e15 {
         Value::Number((v as i64).into())
     } else {
-        Value::Number(v.into())
+        // A threshold is a finite number by construction; a NaN would be a bug
+        // in ALERT_RULES, and writing it as null makes Grafana refuse the rule
+        // loudly rather than evaluate it wrongly.
+        serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number)
     }
 }
 
@@ -196,7 +199,7 @@ pub fn alert_rules_document() -> Value {
                 ),
                 (
                     "data",
-                    Value::Sequence(vec![
+                    Value::Array(vec![
                         map(vec![
                             ("refId", s("A")),
                             (
@@ -237,11 +240,11 @@ pub fn alert_rules_document() -> Value {
                                     ("expression", s("B")),
                                     (
                                         "conditions",
-                                        Value::Sequence(vec![map(vec![(
+                                        Value::Array(vec![map(vec![(
                                             "evaluator",
                                             map(vec![
                                                 ("type", s(r.op)),
-                                                ("params", Value::Sequence(vec![num(r.threshold)])),
+                                                ("params", Value::Array(vec![num(r.threshold)])),
                                             ]),
                                         )])]),
                                     ),
@@ -257,12 +260,12 @@ pub fn alert_rules_document() -> Value {
         ("apiVersion", num(1.0)),
         (
             "groups",
-            Value::Sequence(vec![map(vec![
+            Value::Array(vec![map(vec![
                 ("orgId", num(1.0)),
                 ("name", s("fleet")),
                 ("folder", s("Alerts")),
                 ("interval", s("1m")),
-                ("rules", Value::Sequence(rules)),
+                ("rules", Value::Array(rules)),
             ])]),
         ),
     ])
@@ -348,7 +351,7 @@ pub fn alert_rules() -> String {
     format!(
         "{header}{}",
         fold_like_pyyaml(
-            &serde_yaml_ng::to_string(&alert_rules_document()).unwrap_or_default(),
+            &yaml::to_string(&alert_rules_document()).unwrap_or_default(),
             100
         )
     )
@@ -383,12 +386,12 @@ pub fn contact_points_document(topic: &str) -> Value {
         ("apiVersion", num(1.0)),
         (
             "contactPoints",
-            Value::Sequence(vec![map(vec![
+            Value::Array(vec![map(vec![
                 ("orgId", num(1.0)),
                 ("name", s("ntfy")),
                 (
                     "receivers",
-                    Value::Sequence(vec![map(vec![
+                    Value::Array(vec![map(vec![
                         ("uid", s("ntfy")),
                         ("type", s("webhook")),
                         (
@@ -410,12 +413,12 @@ pub fn contact_points_document(topic: &str) -> Value {
         ),
         (
             "policies",
-            Value::Sequence(vec![map(vec![
+            Value::Array(vec![map(vec![
                 ("orgId", num(1.0)),
                 ("receiver", s("ntfy")),
                 // Group by rule: five nodes crossing one threshold is one
                 // notification naming five.
-                ("group_by", Value::Sequence(vec![s("alertname")])),
+                ("group_by", Value::Array(vec![s("alertname")])),
                 ("group_wait", s("30s")),
                 ("group_interval", s("5m")),
                 // A permanently-failing condition must not page indefinitely.
@@ -431,7 +434,7 @@ pub fn contact_points(topic: &str) -> String {
     format!(
         "{header}{}",
         fold_like_pyyaml(
-            &serde_yaml_ng::to_string(&contact_points_document(topic)).unwrap_or_default(),
+            &yaml::to_string(&contact_points_document(topic)).unwrap_or_default(),
             100
         )
     )

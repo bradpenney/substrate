@@ -28,9 +28,10 @@ fn repo() -> std::path::PathBuf {
 fn fixture() -> (std::path::PathBuf, SiteConfig) {
     let repo = repo();
     let text = std::fs::read_to_string(repo.join("tests/fixtures/site.yml")).expect("fixture");
-    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).expect("fixture parses");
+    let mut value: substrate_core::yaml::Value =
+        substrate_core::yaml::from_str(&text).expect("fixture parses");
     substrate_core::versions::merge(&repo, &mut value).expect("versions merge");
-    let cfg: SiteConfig = serde_yaml_ng::from_value(value).expect("matches the schema");
+    let cfg: SiteConfig = substrate_core::yaml::from_value(value).expect("matches the schema");
     (repo, cfg)
 }
 

@@ -107,7 +107,10 @@ pub fn key_and_csr(user: &str, groups: &[String]) -> Result<(String, String)> {
     use std::str::FromStr as _;
 
     // EC P-256: smaller and faster than RSA, universally supported by client-go.
-    let secret = p256::SecretKey::random(&mut rand_core::OsRng);
+    // The system's secure RNG via getrandom (elliptic-curve 0.14's `Generate`).
+    // An RNG failure is an error the caller sees, not a panic.
+    let secret = <p256::SecretKey as p256::elliptic_curve::Generate>::try_generate()
+        .map_err(|e| anyhow::anyhow!("the system RNG failed while generating the key: {e}"))?;
     let key_pem = secret
         .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?
         .to_string();
@@ -143,7 +146,9 @@ pub fn key_and_csr(user: &str, groups: &[String]) -> Result<(String, String)> {
         attributes: Default::default(),
     };
     let tbs = info.to_der()?;
-    let sig: p256::ecdsa::DerSignature = signature::Signer::sign(&signer, &tbs);
+    // The `signature` trait as p256 re-exports it, so the two can never be on
+    // different major versions again.
+    let sig: p256::ecdsa::DerSignature = p256::ecdsa::signature::Signer::sign(&signer, &tbs);
     let csr = x509_cert::request::CertReq {
         info,
         algorithm: <p256::ecdsa::SigningKey as x509_cert::spki::DynSignatureAlgorithmIdentifier>::signature_algorithm_identifier(&signer)?,
@@ -365,13 +370,14 @@ mod tests {
             subject, "O=ops\\, with comma,O=platform,CN=brad",
             "{subject}"
         );
+        // `iter_rdn` / `iter` walk the stored SEQUENCE in order — what `.0` did
+        // before x509-cert 0.3 made the field private.
         let first = parsed
             .info
             .subject
-            .0
-            .first()
+            .iter_rdn()
+            .next()
             .unwrap()
-            .0
             .iter()
             .next()
             .unwrap();
@@ -383,9 +389,7 @@ mod tests {
         let os = parsed
             .info
             .subject
-            .0
             .iter()
-            .flat_map(|rdn| rdn.0.iter())
             .filter(|atv| atv.oid == x509_cert::der::oid::db::rfc4519::O)
             .count();
         assert_eq!(os, 2, "one O per group — the thing the first draft lost");

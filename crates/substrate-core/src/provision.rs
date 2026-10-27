@@ -1069,13 +1069,13 @@ use crate::client_cert::BREAK_GLASS_CONTEXT;
 /// without a cluster. Every other entry in `existing` is kept as it is —
 /// that is the whole point (see `refresh_client_access`).
 pub fn merge_break_glass(existing: &str, admin: &str) -> Result<String> {
-    use serde_yaml_ng::{Mapping, Value};
+    use crate::yaml::{self, Mapping, Value};
 
-    let admin: Value = serde_yaml_ng::from_str(admin).context("admin kubeconfig is not yaml")?;
+    let admin: Value = yaml::from_str(admin).context("admin kubeconfig is not yaml")?;
     let first = |key: &str, inner: &str| -> Result<Value> {
         admin
             .get(key)
-            .and_then(Value::as_sequence)
+            .and_then(Value::as_array)
             .and_then(|s| s.first())
             .and_then(|e| e.get(inner))
             .cloned()
@@ -1085,28 +1085,26 @@ pub fn merge_break_glass(existing: &str, admin: &str) -> Result<String> {
     let user = first("users", "user")?;
 
     let mut doc: Value = if existing.trim().is_empty() {
-        Value::Mapping(Mapping::new())
+        Value::Object(Mapping::new())
     } else {
-        serde_yaml_ng::from_str(existing).context("existing kubeconfig is not yaml")?
+        yaml::from_str(existing).context("existing kubeconfig is not yaml")?
     };
     let map = doc
-        .as_mapping_mut()
+        .as_object_mut()
         .context("existing kubeconfig is not a mapping")?;
-    map.entry(Value::from("apiVersion"))
-        .or_insert_with(|| Value::from("v1"));
-    map.entry(Value::from("kind"))
-        .or_insert_with(|| Value::from("Config"));
+    map.entry("apiVersion").or_insert_with(|| Value::from("v1"));
+    map.entry("kind").or_insert_with(|| Value::from("Config"));
 
     // Replace the entry named break-glass in a named list, or append it.
     let mut upsert = |list: &str, inner: &str, body: Value| -> Result<()> {
         let mut entry = Mapping::new();
-        entry.insert(Value::from("name"), Value::from(BREAK_GLASS_CONTEXT));
-        entry.insert(Value::from(inner), body);
-        let entry = Value::Mapping(entry);
+        entry.insert("name".into(), Value::from(BREAK_GLASS_CONTEXT));
+        entry.insert(inner.to_string(), body);
+        let entry = Value::Object(entry);
         let seq = map
-            .entry(Value::from(list))
-            .or_insert_with(|| Value::Sequence(Vec::new()))
-            .as_sequence_mut()
+            .entry(list)
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
             .with_context(|| format!("kubeconfig: {list} is not a list"))?;
         match seq
             .iter_mut()
@@ -1120,9 +1118,9 @@ pub fn merge_break_glass(existing: &str, admin: &str) -> Result<String> {
     upsert("clusters", "cluster", cluster)?;
     upsert("users", "user", user)?;
     let mut ctx = Mapping::new();
-    ctx.insert(Value::from("cluster"), Value::from(BREAK_GLASS_CONTEXT));
-    ctx.insert(Value::from("user"), Value::from(BREAK_GLASS_CONTEXT));
-    upsert("contexts", "context", Value::Mapping(ctx))?;
+    ctx.insert("cluster".into(), Value::from(BREAK_GLASS_CONTEXT));
+    ctx.insert("user".into(), Value::from(BREAK_GLASS_CONTEXT));
+    upsert("contexts", "context", Value::Object(ctx))?;
 
     // Leave the operator where they were, unless "where they were" no longer
     // exists — a first-ever kubeconfig, or a context someone deleted.
@@ -1131,7 +1129,7 @@ pub fn merge_break_glass(existing: &str, admin: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(|cur| {
             map.get("contexts")
-                .and_then(Value::as_sequence)
+                .and_then(Value::as_array)
                 .map(|s| {
                     s.iter()
                         .any(|e| e.get("name").and_then(Value::as_str) == Some(cur))
@@ -1140,13 +1138,10 @@ pub fn merge_break_glass(existing: &str, admin: &str) -> Result<String> {
         })
         .unwrap_or(false);
     if !current_exists {
-        map.insert(
-            Value::from("current-context"),
-            Value::from(BREAK_GLASS_CONTEXT),
-        );
+        map.insert("current-context".into(), Value::from(BREAK_GLASS_CONTEXT));
     }
 
-    serde_yaml_ng::to_string(&doc).context("kubeconfig re-serialises")
+    yaml::to_string(&doc).context("kubeconfig re-serialises")
 }
 
 /// Make the OPERATOR'S OWN tooling work again after a rebuild.
@@ -1694,9 +1689,9 @@ contexts:
 current-context: brad
 ";
 
-    fn names(doc: &serde_yaml_ng::Value, list: &str) -> Vec<String> {
+    fn names(doc: &crate::yaml::Value, list: &str) -> Vec<String> {
         doc[list]
-            .as_sequence()
+            .as_array()
             .unwrap()
             .iter()
             .map(|e| e["name"].as_str().unwrap().to_string())
@@ -1708,7 +1703,7 @@ current-context: brad
         // bug-165: the roll used to write the admin kubeconfig OVER this file,
         // and posture-check's `--context brad` failed every query next morning.
         let merged = merge_break_glass(SCOPED, ADMIN).unwrap();
-        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&merged).unwrap();
+        let doc: crate::yaml::Value = crate::yaml::from_str(&merged).unwrap();
 
         assert_eq!(names(&doc, "contexts"), ["brad", "break-glass"]);
         assert_eq!(names(&doc, "users"), ["brad", "break-glass"]);
@@ -1733,7 +1728,7 @@ current-context: brad
     #[test]
     fn a_missing_kubeconfig_becomes_break_glass_only() {
         let merged = merge_break_glass("", ADMIN).unwrap();
-        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&merged).unwrap();
+        let doc: crate::yaml::Value = crate::yaml::from_str(&merged).unwrap();
         assert_eq!(names(&doc, "contexts"), ["break-glass"]);
         assert_eq!(doc["current-context"].as_str(), Some("break-glass"));
         assert_eq!(doc["kind"].as_str(), Some("Config"));
@@ -1743,7 +1738,7 @@ current-context: brad
     fn a_current_context_that_no_longer_exists_falls_back_to_break_glass() {
         let orphaned = SCOPED.replace("current-context: brad", "current-context: gone");
         let merged = merge_break_glass(&orphaned, ADMIN).unwrap();
-        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(&merged).unwrap();
+        let doc: crate::yaml::Value = crate::yaml::from_str(&merged).unwrap();
         assert_eq!(doc["current-context"].as_str(), Some("break-glass"));
     }
 

@@ -15,21 +15,27 @@ use substrate_core::config::SiteConfig;
 /// Starting from a KNOWN-GOOD config is the point: a hand-built minimal config
 /// would drift from the real schema, and a rule could then pass here while
 /// being unreachable in practice.
-fn fixture_with(edit: impl FnOnce(&mut serde_yaml_ng::Value)) -> SiteConfig {
+fn fixture_with(edit: impl FnOnce(&mut substrate_core::yaml::Value)) -> SiteConfig {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let text = std::fs::read_to_string(repo.join("tests/fixtures/site.yml")).expect("fixture");
-    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).expect("fixture parses");
+    let mut value: substrate_core::yaml::Value =
+        substrate_core::yaml::from_str(&text).expect("fixture parses");
     substrate_core::versions::merge(&repo, &mut value).expect("versions merge");
     edit(&mut value);
-    serde_yaml_ng::from_value(value).expect("still matches the schema")
+    substrate_core::yaml::from_value(value).expect("still matches the schema")
 }
 
-fn set(value: &mut serde_yaml_ng::Value, section: &str, key: &str, to: serde_yaml_ng::Value) {
+fn set(
+    value: &mut substrate_core::yaml::Value,
+    section: &str,
+    key: &str,
+    to: substrate_core::yaml::Value,
+) {
     value
         .get_mut(section)
-        .and_then(|s| s.as_mapping_mut())
+        .and_then(|s| s.as_object_mut())
         .expect("section is a mapping")
-        .insert(serde_yaml_ng::Value::from(key), to);
+        .insert(key.to_string(), to);
 }
 
 #[test]
@@ -44,7 +50,14 @@ fn a_missing_cosign_subject_is_refused() {
     // `provider: cosign` alone accepts ANY valid Sigstore signature, including
     // one an attacker produced with their own GitHub account. Rendering without
     // a subject pin is a downgrade that looks like success (ADR-094).
-    let cfg = fixture_with(|v| set(v, "flux", "cosign_subject", serde_yaml_ng::Value::Null));
+    let cfg = fixture_with(|v| {
+        set(
+            v,
+            "flux",
+            "cosign_subject",
+            substrate_core::yaml::Value::Null,
+        )
+    });
     let err = substrate_core::validate(&cfg).expect_err("must refuse");
     assert!(err.to_string().contains("cosign_subject"), "{err}");
 }
@@ -53,7 +66,14 @@ fn a_missing_cosign_subject_is_refused() {
 fn an_empty_cosign_subject_is_refused_too() {
     // Present-but-blank is the more likely mistake: a key left in place while
     // its value was cut. It must not read as "configured".
-    let cfg = fixture_with(|v| set(v, "flux", "cosign_subject", serde_yaml_ng::Value::from("")));
+    let cfg = fixture_with(|v| {
+        set(
+            v,
+            "flux",
+            "cosign_subject",
+            substrate_core::yaml::Value::from(""),
+        )
+    });
     assert!(substrate_core::validate(&cfg).is_err());
 }
 
@@ -65,12 +85,12 @@ fn a_node_sitting_on_the_control_plane_vip_is_refused() {
     let cfg = fixture_with(|v| {
         let vip = v["control_plane"]["vip"].clone();
         v.get_mut("nodes")
-            .and_then(|n| n.as_mapping_mut())
+            .and_then(|n| n.as_object_mut())
             .expect("nodes")
-            .get_mut(serde_yaml_ng::Value::from("b-vm2"))
-            .and_then(|n| n.as_mapping_mut())
+            .get_mut("b-vm2")
+            .and_then(|n| n.as_object_mut())
             .expect("b-vm2")
-            .insert(serde_yaml_ng::Value::from("ip"), vip);
+            .insert("ip".into(), vip);
     });
     let err = substrate_core::validate(&cfg).expect_err("must refuse");
     assert!(err.to_string().contains("also assigned to node"), "{err}");
@@ -83,15 +103,12 @@ fn a_local_hypervisor_without_a_peer_target_is_refused() {
     // check needs exactly that. Catch it here rather than at 03:00.
     let cfg = fixture_with(|v| {
         v.get_mut("hypervisors")
-            .and_then(|h| h.as_mapping_mut())
+            .and_then(|h| h.as_object_mut())
             .expect("hypervisors")
-            .get_mut(serde_yaml_ng::Value::from("hvA"))
-            .and_then(|h| h.as_mapping_mut())
+            .get_mut("hvA")
+            .and_then(|h| h.as_object_mut())
             .expect("hvA")
-            .insert(
-                serde_yaml_ng::Value::from("peer_target"),
-                serde_yaml_ng::Value::Null,
-            );
+            .insert("peer_target".into(), substrate_core::yaml::Value::Null);
     });
     let err = substrate_core::validate(&cfg).expect_err("must refuse");
     assert!(err.to_string().contains("peer_target"), "{err}");
@@ -103,29 +120,23 @@ fn exactly_one_bootstrap_node_is_required() {
     // it is the cluster — and both runs report success.
     let two = fixture_with(|v| {
         v.get_mut("nodes")
-            .and_then(|n| n.as_mapping_mut())
+            .and_then(|n| n.as_object_mut())
             .expect("nodes")
-            .get_mut(serde_yaml_ng::Value::from("b-vm2"))
-            .and_then(|n| n.as_mapping_mut())
+            .get_mut("b-vm2")
+            .and_then(|n| n.as_object_mut())
             .expect("b-vm2")
-            .insert(
-                serde_yaml_ng::Value::from("bootstrap"),
-                serde_yaml_ng::Value::from(true),
-            );
+            .insert("bootstrap".into(), substrate_core::yaml::Value::from(true));
     });
     assert!(substrate_core::validate(&two).is_err());
 
     let none = fixture_with(|v| {
         v.get_mut("nodes")
-            .and_then(|n| n.as_mapping_mut())
+            .and_then(|n| n.as_object_mut())
             .expect("nodes")
-            .get_mut(serde_yaml_ng::Value::from("b-vm1"))
-            .and_then(|n| n.as_mapping_mut())
+            .get_mut("b-vm1")
+            .and_then(|n| n.as_object_mut())
             .expect("b-vm1")
-            .insert(
-                serde_yaml_ng::Value::from("bootstrap"),
-                serde_yaml_ng::Value::from(false),
-            );
+            .insert("bootstrap".into(), substrate_core::yaml::Value::from(false));
     });
     assert!(substrate_core::validate(&none).is_err());
 }
@@ -137,16 +148,17 @@ fn an_unknown_key_is_an_error_not_a_shrug() {
     // class of failure kubeconform was added to catch on the manifests side.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let text = std::fs::read_to_string(repo.join("tests/fixtures/site.yml")).expect("fixture");
-    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).expect("parses");
+    let mut value: substrate_core::yaml::Value =
+        substrate_core::yaml::from_str(&text).expect("parses");
     substrate_core::versions::merge(&repo, &mut value).expect("versions merge");
     set(
         &mut value,
         "network",
         "gatway",
-        serde_yaml_ng::Value::from("10.99.0.1"),
+        substrate_core::yaml::Value::from("10.99.0.1"),
     );
 
-    let parsed: Result<SiteConfig, _> = serde_yaml_ng::from_value(value);
+    let parsed: Result<SiteConfig, _> = substrate_core::yaml::from_value(value);
     let err = parsed.expect_err("a misspelled key must not parse");
     assert!(err.to_string().contains("gatway"), "{err}");
 }
@@ -157,6 +169,7 @@ fn duplicate_keys_are_refused() {
     // carried storage_disk_gb twice on three nodes (ADR-095). serde refuses,
     // and siteconfig.py now does too — the two implementations must agree on
     // what a VALID config is, not only on how to render a valid one.
-    let parsed: Result<serde_yaml_ng::Value, _> = serde_yaml_ng::from_str("a:\n  x: 1\n  x: 2\n");
+    let parsed: Result<substrate_core::yaml::Value, _> =
+        substrate_core::yaml::from_str("a:\n  x: 1\n  x: 2\n");
     assert!(parsed.is_err(), "duplicate keys must not parse");
 }

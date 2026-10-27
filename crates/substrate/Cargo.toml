@@ -22,5 +22,5 @@ tempfile = "3"
 
 [dev-dependencies]
 serde.workspace = true
-serde_yaml_ng.workspace = true
+serde-saphyr.workspace = true
 tempfile = "3"

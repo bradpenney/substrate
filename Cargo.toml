@@ -14,11 +14,20 @@ rust-version = "1.98"
 license = "MIT"
 
 [workspace.dependencies]
-# serde_yaml is unmaintained (archived 2024). serde_yaml_ng is the maintained
-# fork with the same API. Naming the reason here because "why not serde_yaml"
-# is the first question a reader will have.
 serde = { version = "1", features = ["derive"] }
-serde_yaml_ng = "0.10"
+# YAML through serde-saphyr: a YAML parser written in SAFE Rust.
+#
+# Not serde_yaml (archived 2024), and no longer serde_yaml_ng: both sit on
+# unsafe-libyaml, a c2rust machine translation of libyaml's C into unsafe Rust
+# whose repository was archived in 2024, so bugs found in it are never fixed.
+# RUSTSEC-2024-0449 records that, and v0.2.11's first release build stopped at
+# the advisory gate on it (2026-10-23). The answer to an unmaintained parser of
+# untrusted-ish input is to stop depending on it, not to ignore the advisory.
+#
+# serde-saphyr has no YAML Value type of its own: untyped YAML is held as
+# serde_json::Value. Every YAML call goes through substrate-core's `yaml`
+# module, so this choice is made in exactly one place.
+serde-saphyr = "2"
 serde_json = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }

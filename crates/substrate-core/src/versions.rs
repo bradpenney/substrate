@@ -4,8 +4,8 @@
 //! choice, not a site-specific one, and `site.yml` is gitignored — a pin living
 //! there would be invisible to the update bots in `.github/workflows`.
 
+use crate::yaml::{self, Mapping, Value};
 use anyhow::{Context, Result};
-use serde_yaml_ng::Value;
 use std::path::Path;
 
 /// Merge `versions.yml` into a raw `site.yml` value, in place.
@@ -21,8 +21,8 @@ pub fn merge(repo_root: &Path, site: &mut Value) -> Result<()> {
             path.display()
         )
     })?;
-    let versions: Value = serde_yaml_ng::from_str(&text)
-        .with_context(|| format!("{} is not valid yaml", path.display()))?;
+    let versions: Value =
+        yaml::from_str(&text).with_context(|| format!("{} is not valid yaml", path.display()))?;
 
     let get = |section: &str, key: &str| -> Result<String> {
         versions
@@ -36,10 +36,10 @@ pub fn merge(repo_root: &Path, site: &mut Value) -> Result<()> {
     let operator_version = get("flux_operator", "version")?;
     let operator_url = get("flux_operator", "url")?.replace("{version}", &operator_version);
 
-    let map = site.as_mapping_mut().context("site.yml is not a mapping")?;
+    let map = site.as_object_mut().context("site.yml is not a mapping")?;
 
     map.insert(
-        Value::from("kairos"),
+        "kairos".into(),
         versions
             .get("kairos")
             .cloned()
@@ -47,38 +47,35 @@ pub fn merge(repo_root: &Path, site: &mut Value) -> Result<()> {
     );
 
     let flux = map
-        .entry(Value::from("flux"))
-        .or_insert_with(|| Value::Mapping(Default::default()))
-        .as_mapping_mut()
+        .entry("flux")
+        .or_insert_with(|| Value::Object(Mapping::new()))
+        .as_object_mut()
         .context("site.yml: flux is not a mapping")?;
 
+    flux.insert("operator_version".into(), Value::from(operator_version));
     flux.insert(
-        Value::from("operator_version"),
-        Value::from(operator_version),
-    );
-    flux.insert(
-        Value::from("operator_sha256"),
+        "operator_sha256".into(),
         Value::from(get("flux_operator", "sha256")?),
     );
-    flux.insert(Value::from("operator_url"), Value::from(operator_url));
+    flux.insert("operator_url".into(), Value::from(operator_url));
     flux.insert(
-        Value::from("distribution_version"),
+        "distribution_version".into(),
         Value::from(get("flux_distribution", "version")?),
     );
 
     // Host tools, pinned the same way. `{version}` in the URL is substituted
     // here so the installer receives a literal address it can only fetch.
     let cosign_version = get("cosign", "version")?;
-    let mut cosign = serde_yaml_ng::Mapping::new();
-    cosign.insert(Value::from("version"), Value::from(cosign_version.clone()));
-    cosign.insert(Value::from("sha256"), Value::from(get("cosign", "sha256")?));
+    let mut cosign = Mapping::new();
+    cosign.insert("version".into(), Value::from(cosign_version.clone()));
+    cosign.insert("sha256".into(), Value::from(get("cosign", "sha256")?));
     cosign.insert(
-        Value::from("url"),
+        "url".into(),
         Value::from(get("cosign", "url")?.replace("{version}", &cosign_version)),
     );
-    let mut tools = serde_yaml_ng::Mapping::new();
-    tools.insert(Value::from("cosign"), Value::Mapping(cosign));
-    map.insert(Value::from("host_tools"), Value::Mapping(tools));
+    let mut tools = Mapping::new();
+    tools.insert("cosign".into(), Value::Object(cosign));
+    map.insert("host_tools".into(), Value::Object(tools));
 
     Ok(())
 }

@@ -17,10 +17,11 @@ fn repo() -> PathBuf {
 
 fn fixture(name: &str) -> SiteConfig {
     let text = std::fs::read_to_string(repo().join("tests/fixtures").join(name)).expect("fixture");
-    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).expect("parses");
+    let mut value: substrate_core::yaml::Value =
+        substrate_core::yaml::from_str(&text).expect("parses");
     substrate_core::versions::merge(&repo().join("tests/fixtures"), &mut value)
         .expect("frozen versions merge");
-    serde_yaml_ng::from_value(value).expect("matches the schema")
+    substrate_core::yaml::from_value(value).expect("matches the schema")
 }
 
 // ------------------------------------------------------------ one host ---

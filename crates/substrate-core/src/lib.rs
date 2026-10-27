@@ -26,6 +26,7 @@ pub mod status;
 pub mod updates;
 pub mod versions;
 pub mod wipe;
+pub mod yaml;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -52,12 +53,12 @@ pub fn load(repo_root: &Path) -> Result<config::SiteConfig> {
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("no site configuration at {}", path.display()))?;
 
-    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)
-        .with_context(|| format!("{} is not valid yaml", path.display()))?;
+    let mut value: yaml::Value =
+        yaml::from_str(&text).with_context(|| format!("{} is not valid yaml", path.display()))?;
 
     versions::merge(repo_root, &mut value)?;
 
-    let cfg: config::SiteConfig = serde_yaml_ng::from_value(value)
+    let cfg: config::SiteConfig = yaml::from_value(value)
         .with_context(|| format!("{} does not match the expected schema", path.display()))?;
 
     validate(&cfg)?;
