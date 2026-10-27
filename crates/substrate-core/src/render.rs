@@ -80,13 +80,58 @@ pub struct Vm {
     pub storage_disk_gb: Option<u32>,
 }
 
+/// The public keys every node authorizes (bug-210).
+///
+/// The keys declared under `hypervisors.<name>.ssh_public_key`, in name order,
+/// de-duplicated. A site that declares none keeps the old behaviour — the key
+/// of whoever is running the command — so an existing site.yml still works.
+///
+/// If keys ARE declared, the runner's own key must be one of them, or this
+/// refuses: a roll from a host whose key the new node would not trust builds a
+/// node it can then never reach. Callers check this BEFORE destroying anything.
+pub fn authorized_keys(cfg: &SiteConfig, runner_key: &str) -> anyhow::Result<Vec<String>> {
+    let declared: Vec<String> = cfg
+        .hypervisors
+        .values()
+        .filter_map(|h| h.ssh_public_key.as_deref())
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .collect();
+    if declared.is_empty() {
+        return Ok(vec![runner_key.trim().to_string()]);
+    }
+    // Compare on type + key material: the trailing comment ("brad@server1")
+    // is a label, not part of the key.
+    let material = |k: &str| k.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+    let runner = material(runner_key);
+    if !declared.iter().any(|k| material(k) == runner) {
+        anyhow::bail!(
+            "this host's ssh key is not among the keys site.yml declares under \
+             hypervisors.<name>.ssh_public_key, so a node built now would not \
+             trust the host building it. Declare it there first."
+        );
+    }
+    let mut keys: Vec<String> = Vec::new();
+    for k in declared {
+        if !keys.iter().any(|seen| material(seen) == material(&k)) {
+            keys.push(k);
+        }
+    }
+    Ok(keys)
+}
+
 /// Render the cloud-config for `vm`.
 ///
 /// `join_token` is `None` for the bootstrap controller, which comes up alone.
 /// `ssh_key` is passed in rather than read from the environment here: the key
 /// lands in the output, and a renderer that reaches for ambient state is not a
 /// pure function of its inputs — which is the property the goldens rely on.
-pub fn cloud_config(cfg: &SiteConfig, vm: &Vm, join_token: Option<&str>, ssh_key: &str) -> String {
+pub fn cloud_config(
+    cfg: &SiteConfig,
+    vm: &Vm,
+    join_token: Option<&str>,
+    ssh_keys: &[String],
+) -> String {
     let mut args: Vec<String> = cfg.k0s.args.clone();
 
     // --- failure-domain label (ADR-139 follow-up) ---
@@ -539,8 +584,11 @@ pub fn cloud_config(cfg: &SiteConfig, vm: &Vm, join_token: Option<&str>, ssh_key
     out.push_str(&vm.name);
     out.push_str("\nusers:\n- name: ");
     out.push_str(&cfg.admin_user);
-    out.push_str("\n  groups:\n    - admin\n  ssh_authorized_keys:\n    - ");
-    out.push_str(ssh_key);
+    out.push_str("\n  groups:\n    - admin\n  ssh_authorized_keys:");
+    for key in ssh_keys {
+        out.push_str("\n    - ");
+        out.push_str(key);
+    }
     out.push_str(
         r#"
 install:

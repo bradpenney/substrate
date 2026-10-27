@@ -34,6 +34,9 @@ macro_rules! ship {
 
 /// Every file a planner may deploy, keyed by repository path.
 pub const FILES: &[Shipped] = &[
+    // install-fleet: the same verified installer, carried in the signed binary
+    // instead of fetched from raw GitHub on the host that has no checkout.
+    ship!("install.sh"),
     // deploy-updates (nightly maintenance on every hypervisor)
     ship!("hypervisor-update.sh"),
     ship!("hypervisor-uncordon.sh"),

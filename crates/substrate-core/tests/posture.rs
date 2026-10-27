@@ -994,13 +994,22 @@ fn an_INCONCLUSIVE_probe_is_never_counted_as_a_pass() {
     );
 }
 
+/// permitted == None is "not probed": not a failure — and, since bug-211, not a
+/// pass either. This test used to assert it COUNTED (`notes.len() == 1`), which
+/// is how server2 published "2 port(s) refuse non-allow-listed sources" for two
+/// ports it does not even serve, with the allowed side never reached. A refusal
+/// proves nothing about an allow-list until the allowed source is seen to
+/// connect; until then the port is information, uncounted (ADR-199).
 #[test]
-fn an_unprobed_permitted_side_does_not_manufacture_a_failure() {
-    // permitted == None is "not probed", distinct from Some(false).
+fn an_unprobed_permitted_side_is_information_not_a_pass_or_a_failure() {
     let mut r = Report::default();
     check_firewall_restrictions(Some(&[fw(Some(false), None)]), &mut r);
-    assert!(r.failures.is_empty());
-    assert_eq!(r.notes.len(), 1);
+    assert!(r.failures.is_empty(), "not probed is not a failure");
+    assert!(
+        r.notes.is_empty(),
+        "not probed is not a pass either (bug-211)"
+    );
+    assert_eq!(r.info.len(), 1, "{:?}", r.info);
 }
 
 #[test]
@@ -1290,7 +1299,19 @@ fn vol(name: &str, ns: &str, pvc: &str) -> serde_json::Value {
 }
 
 fn rep(volume: &str, node: &str, state: &str, failed_at: &str) -> serde_json::Value {
-    json!({"spec": {"volumeName": volume, "nodeID": node, "failedAt": failed_at}, "status": {"currentState": state}})
+    json!({"spec": {"volumeName": volume, "nodeID": node, "failedAt": failed_at,
+                    "diskID": format!("uuid-{node}"), "healthyAt": "2026-10-24T01:00:00Z"},
+           "status": {"currentState": state}})
+}
+
+/// Longhorn's view: every node in `hv_nodes()` Ready, one Ready disk `uuid-<node>`.
+fn lh() -> serde_json::Value {
+    let n = |name: &str| {
+        json!({"metadata": {"name": name}, "status": {
+        "conditions": [{"type": "Ready", "status": "True", "lastTransitionTime": "2026-10-24T00:00:00Z"}],
+        "diskStatus": {"d": {"diskUUID": format!("uuid-{name}"), "conditions": [{"type": "Ready", "status": "True"}]}}}})
+    };
+    json!({"items": [n("a1"), n("a2"), n("b1")]})
 }
 
 #[test]
@@ -1301,7 +1322,7 @@ fn every_volume_spanning_every_hypervisor_is_one_line() {
         rep("pvc-2", "a1", "running", ""), rep("pvc-2", "b1", "running", ""),
     ]});
     let mut r = Report::default();
-    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
     assert_eq!(
         r.notes,
         ["storage: 2 volume(s), each with a replica on every hypervisor (2)"]
@@ -1319,7 +1340,7 @@ fn three_replicas_on_three_nodes_of_ONE_hypervisor_fails() {
         rep("pvc-1", "a1", "running", ""), rep("pvc-1", "a2", "running", ""),
     ]});
     let mut r = Report::default();
-    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
     assert_eq!(
         r.failures,
         [
@@ -1339,7 +1360,7 @@ fn a_stopped_replica_still_counts() {
     let replicas =
         json!({"items": [rep("pvc-1", "a1", "stopped", ""), rep("pvc-1", "b1", "stopped", "")]});
     let mut r = Report::default();
-    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
     assert!(r.failures.is_empty(), "{:?}", r.failures);
     assert_eq!(r.notes.len(), 1);
 }
@@ -1351,7 +1372,7 @@ fn a_FAILED_replica_does_not_count() {
         rep("pvc-1", "a1", "running", ""), rep("pvc-1", "b1", "error", "2026-10-23T03:00:00Z"),
     ]});
     let mut r = Report::default();
-    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
     assert_eq!(
         r.failures.len(),
         1,
@@ -1367,7 +1388,7 @@ fn a_replica_on_a_node_the_cluster_no_longer_has_does_not_count() {
     let replicas =
         json!({"items": [rep("pvc-1", "a1", "running", ""), rep("pvc-1", "gone", "running", "")]});
     let mut r = Report::default();
-    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
     assert_eq!(r.failures.len(), 1);
 }
 
@@ -1376,7 +1397,7 @@ fn a_volume_without_a_claim_is_named_by_its_own_name() {
     let volumes = json!({"items": [{"metadata": {"name": "pvc-orphan"}, "status": {}}]});
     let replicas = json!({"items": [rep("pvc-orphan", "a1", "running", "")]});
     let mut r = Report::default();
-    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &mut r);
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
     assert!(
         r.failures[0].starts_with("storage pvc-orphan: "),
         "{:?}",
@@ -1391,7 +1412,7 @@ fn one_hypervisor_is_information_not_an_invariant() {
     let volumes = json!({"items": [vol("pvc-1", "app", "data")]});
     let replicas = json!({"items": [rep("pvc-1", "a1", "running", "")]});
     let mut r = Report::default();
-    check_replicas_span_hypervisors(&volumes, &replicas, &nodes, &mut r);
+    check_replicas_span_hypervisors(&volumes, &replicas, &nodes, &lh(), &mut r);
     assert_eq!(
         r.info,
         ["storage spread: fewer than two hypervisors, not asserted"]
@@ -1406,8 +1427,35 @@ fn no_volumes_is_information_not_an_invariant() {
         &json!({"items": []}),
         &json!({"items": []}),
         &hv_nodes(),
+        &lh(),
         &mut r,
     );
     assert_eq!(r.info, ["storage spread: no volumes, not asserted"]);
     assert!(r.notes.is_empty());
+}
+
+/// The night this line shipped: two volumes had a replica on the second
+/// machine that was still BUILDING. It is not a copy, so the volume does not
+/// yet span both hypervisors.
+#[test]
+fn a_replica_still_building_does_not_count_as_a_copy() {
+    let volumes = json!({"items": [vol("pvc-1", "donetick", "donetick-data")]});
+    let mut building = rep("pvc-1", "b1", "running", "");
+    building["spec"]["healthyAt"] = json!("");
+    let replicas = json!({"items": [rep("pvc-1", "a1", "running", ""), building]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
+    assert_eq!(r.failures.len(), 1, "{:?}", r);
+}
+
+/// A record on a disk that no longer exists is not a copy either (bug-201).
+#[test]
+fn a_replica_recorded_against_a_destroyed_disk_does_not_count() {
+    let volumes = json!({"items": [vol("pvc-1", "wanderer", "garmin-sync-state")]});
+    let mut stale = rep("pvc-1", "b1", "stopped", "");
+    stale["spec"]["diskID"] = json!("uuid-of-a-deleted-disk");
+    let replicas = json!({"items": [rep("pvc-1", "a1", "stopped", ""), stale]});
+    let mut r = Report::default();
+    check_replicas_span_hypervisors(&volumes, &replicas, &hv_nodes(), &lh(), &mut r);
+    assert_eq!(r.failures.len(), 1, "{:?}", r);
 }

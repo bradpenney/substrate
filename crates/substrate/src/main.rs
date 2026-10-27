@@ -57,6 +57,46 @@ fn refuse_if_unreleased(tool: &str) {
     std::process::exit(2);
 }
 
+/// Refuse a deploy unless every hypervisor runs THIS release (bug-209).
+///
+/// Called only for `--apply`, after `refuse_if_unreleased`: a dry run must
+/// still be able to show what it would do on a fleet that has drifted. Asks
+/// `/usr/local/bin/substrate --version` on each host — locally or over the same
+/// ssh the deploy is about to use — and a host that cannot answer is a refusal,
+/// because an unknown version is not a matching one.
+fn refuse_if_fleet_skewed(cfg: &substrate_core::config::SiteConfig, tool: &str) {
+    use substrate_core::exec::{Host, run};
+    let Some(ours) = substrate_core::fleet_version::release_tag(BUILD) else {
+        return; // refuse_if_unreleased already guarantees a tag; belt only
+    };
+    let reported: Vec<(String, Option<String>)> = cfg
+        .hypervisors
+        .iter()
+        .map(|(name, hv)| {
+            let host = Host::from_config(name, hv);
+            let line = run(&host, &["/usr/local/bin/substrate", "--version"], None)
+                .ok()
+                .filter(|o| o.ok())
+                .map(|o| o.stdout);
+            (name.clone(), line)
+        })
+        .collect();
+    let skew = substrate_core::fleet_version::skew(ours, &reported);
+    if skew.is_empty() {
+        return;
+    }
+    eprintln!("REFUSING {tool}: the fleet is not all on {ours}.");
+    for line in &skew {
+        eprintln!("  {line}");
+    }
+    eprintln!(
+        "A newer configuration can reach a binary too old to read it, which then reports\n\
+         a clean, smaller run (bug-208/209). Install {ours} on every host listed above,\n\
+         in order, never skipping a release, then deploy again."
+    );
+    std::process::exit(2);
+}
+
 #[derive(Parser)]
 #[command(
     name = "substrate",
@@ -110,6 +150,8 @@ enum Command {
     DeployResolver(DeployResolverArgs),
     /// Deploy the nightly hypervisor-update machinery to every hypervisor. See --apply.
     DeployUpdates(DeployUpdatesArgs),
+    /// Install a release on EVERY hypervisor, in order, never skipping one. WRITES — see --apply.
+    InstallFleet(InstallFleetArgs),
     /// Deploy posture-check + publish-status units to every hypervisor (ADR-196). See --apply.
     DeployPosture(DeployPostureArgs),
     /// Deploy the host-tier observability stack (VictoriaMetrics, VictoriaLogs, Grafana). See --apply.
@@ -188,6 +230,7 @@ fn main() -> Result<()> {
         Command::DeployCplb(args) => deploy_cplb(&cli.repo, args),
         Command::DeployResolver(args) => deploy_resolver(&cli.repo, args),
         Command::DeployUpdates(args) => deploy_updates(&cli.repo, args),
+        Command::InstallFleet(args) => install_fleet(&cli.repo, args),
         Command::DeployPosture(args) => deploy_posture(&cli.repo, args),
         Command::DeployObservability(args) => deploy_observability(&cli.repo, args),
         Command::Architecture(args) => architecture(args),
@@ -223,6 +266,28 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     let context = std::env::var("POSTURE_CONTEXT").unwrap_or_else(|_| "brad".into());
     let mut r = Report::default();
 
+    // ONE read of the site config, and an unreadable one is a FAILURE (bug-208).
+    //
+    // This used to be read five separate times — backups, secrets, peers,
+    // origin, firewall — and every one turned an error into "nothing
+    // configured". On 2026-10-26 server2's v0.2.8 could not parse a newer
+    // site.yml, and posture-check reported "one-host site", "no public_hostname
+    // configured", "no peer or local address configured", then published
+    // "10 of 10 invariants hold — no findings": eight checks gone, and the run
+    // said everything was fine. A config the check cannot read is not an EMPTY
+    // config. It is recorded here, it makes the run fail (so OnFailure pages and
+    // the site shows a finding), and every check that needs it is skipped UNDER
+    // that failure rather than each reporting itself as "not configured".
+    let cfg = match substrate_core::load(repo) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            r.fail(format!(
+                "site config unreadable — every check that needs it was skipped: {e:#}"
+            ));
+            None
+        }
+    };
+
     // Each query records its OWN failure and yields None, so a caller that
     // returns early has still reported something rather than passing silently.
     let mut get = |args: &[&str]| -> Option<serde_json::Value> {
@@ -247,10 +312,12 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     let lh_nodes = get(&["get", "nodes"]);
     let lh_volumes = get(&["get", "volumes.longhorn.io", "-n", "longhorn-system"]);
     let lh_replicas = get(&["get", "replicas.longhorn.io", "-n", "longhorn-system"]);
+    let lh_disks = get(&["get", "nodes.longhorn.io", "-n", "longhorn-system"]);
     // Only worth a query where the site declares backups: asking for every
     // CronJob on a site that declares none would spend a round trip to say
     // nothing. The empty case is reported by the check itself.
-    let declared_backups = substrate_core::load(repo)
+    let declared_backups = cfg
+        .as_ref()
         .map(|c| c.posture.backups.clone())
         .unwrap_or_default();
     let cronjobs = if declared_backups.is_empty() {
@@ -261,7 +328,8 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     // Only where a secrets manager is configured: without one there are no
     // ExternalSecrets to be Ready, and asking kubectl for a CRD that is not
     // installed would file a tooling failure as a security finding.
-    let secrets_configured = substrate_core::load(repo)
+    let secrets_configured = cfg
+        .as_ref()
         .map(|c| c.external_secrets.host.is_some())
         .unwrap_or(true);
     let esecrets = if secrets_configured {
@@ -289,14 +357,16 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     if let Some(e) = &esecrets {
         check_credentials(e, &mut r);
     }
-    if let (Some(v), Some(rep), Some(n)) = (&lh_volumes, &lh_replicas, &lh_nodes) {
-        check_replicas_span_hypervisors(v, rep, n, &mut r);
+    if let (Some(v), Some(rep), Some(n), Some(d)) =
+        (&lh_volumes, &lh_replicas, &lh_nodes, &lh_disks)
+    {
+        check_replicas_span_hypervisors(v, rep, n, d, &mut r);
     }
     match &cronjobs {
         Some(cj) => check_backups_fresh(cj, &declared_backups, unix_now(), &mut r),
         // Declared backups whose query failed already filed that failure through
         // `get`; an empty declaration still has to say it asserted nothing.
-        None if declared_backups.is_empty() => {
+        None if declared_backups.is_empty() && cfg.is_some() => {
             check_backups_fresh(&serde_json::Value::Null, &[], 0, &mut r)
         }
         None => {}
@@ -312,18 +382,23 @@ fn posture_check(repo: &std::path::Path, args: PostureCheckArgs) -> Result<()> {
     .ok();
     check_no_standing_grant(jit.as_ref(), unix_now(), &mut r);
     check_failed_units(&gather_systemd(), &mut r);
-    let peers = peer_targets(repo);
-    if peers.is_empty() {
-        substrate_core::posture::note_no_peers(&mut r);
-    }
-    check_selinux(&gather_selinux(&peers), &mut r);
-    check_peer_units(&gather_peer_units(&peers), &mut r);
-    check_origin_lock(&gather_origin(repo), &mut r);
     if let Some(o) = &ocirepo {
         check_source_verified(o, &mut r);
     }
-    let fw = gather_firewall(repo);
-    check_firewall_restrictions(fw.as_deref(), &mut r);
+    // Everything below reads the site config. Without one, the failure recorded
+    // at the top already says so; reporting each as "not configured" here is
+    // exactly the false reassurance bug-208 was.
+    if let Some(cfg) = &cfg {
+        let peers = peer_targets(cfg);
+        if peers.is_empty() {
+            substrate_core::posture::note_no_peers(&mut r);
+        }
+        check_selinux(&gather_selinux(&peers), &mut r);
+        check_peer_units(&gather_peer_units(&peers), &mut r);
+        check_origin_lock(&gather_origin(cfg), &mut r);
+        let fw = gather_firewall(cfg, &peers);
+        check_firewall_restrictions(fw.as_deref(), &mut r);
+    }
 
     for i in &r.info {
         println!("  [ -- ] {i}");
@@ -531,7 +606,8 @@ fn render(repo: &std::path::Path, args: RenderArgs) -> Result<()> {
         storage_disk_gb: args.storage_disk_gb,
     };
 
-    let out = substrate_core::render::cloud_config(&cfg, &vm, join_token.as_deref(), &ssh_key);
+    let keys = substrate_core::render::authorized_keys(&cfg, &ssh_key)?;
+    let out = substrate_core::render::cloud_config(&cfg, &vm, join_token.as_deref(), &keys);
     // Write the bytes as they are. `println!` would add a newline the renderer
     // already emitted and put every golden one byte out.
     std::io::stdout().write_all(out.as_bytes())?;
@@ -612,14 +688,11 @@ fn gather_systemd() -> substrate_core::posture::SystemdState {
 ///
 /// A list, not "the peer": at three hosts the first-other-host-by-name rule
 /// left one host probed by nobody (bug-173).
-fn peer_targets(repo: &std::path::Path) -> Vec<String> {
+fn peer_targets(cfg: &substrate_core::config::SiteConfig) -> Vec<String> {
     if let Some(p) = std::env::var("POSTURE_PEER").ok().filter(|p| !p.is_empty()) {
         return vec![p];
     }
     let me = hostname();
-    let Ok(cfg) = substrate_core::load(repo) else {
-        return Vec::new();
-    };
     cfg.hypervisors
         .iter()
         .filter(|(name, _)| **name != me)
@@ -724,13 +797,15 @@ fn gather_peer_units(peers: &[String]) -> Vec<substrate_core::posture::PeerUnitS
 /// will present a certificate for the wrong name; the status code is the answer
 /// being sought, not the TLS chain. `000` means the connection never completed,
 /// which is the DESIRED result for the bypass attempt.
-fn gather_origin(repo: &std::path::Path) -> substrate_core::posture::OriginProbe {
+fn gather_origin(cfg: &substrate_core::config::SiteConfig) -> substrate_core::posture::OriginProbe {
     use substrate_core::posture::OriginProbe;
 
-    let Ok(cfg) = substrate_core::load(repo) else {
-        return OriginProbe::default();
-    };
-    let Some(hostname) = cfg.posture.public_hostname.filter(|h| !h.is_empty()) else {
+    let Some(hostname) = cfg
+        .posture
+        .public_hostname
+        .clone()
+        .filter(|h| !h.is_empty())
+    else {
         return OriginProbe::default();
     };
 
@@ -755,6 +830,7 @@ fn gather_origin(repo: &std::path::Path) -> substrate_core::posture::OriginProbe
     let direct = cfg
         .posture
         .origin_ip
+        .clone()
         .filter(|ip| !ip.is_empty())
         .map(|ip| curl(&["--resolve", &format!("{hostname}:443:{ip}")]));
 
@@ -794,11 +870,12 @@ fn public_address(hostname: &str) -> Option<String> {
 ///
 /// Returns None when the site config lacks what the matrix needs, which the
 /// check reports as "not checked" rather than inventing a verdict.
-fn gather_firewall(repo: &std::path::Path) -> Option<Vec<substrate_core::posture::FirewallProbe>> {
+fn gather_firewall(
+    cfg: &substrate_core::config::SiteConfig,
+    peers: &[String],
+) -> Option<Vec<substrate_core::posture::FirewallProbe>> {
     use substrate_core::posture::FirewallProbe;
 
-    let cfg = substrate_core::load(repo).ok()?;
-    let peers = peer_targets(repo);
     let me = hostname();
     // This hypervisor's own LAN address, as its peers reach it — the target of
     // every probe below.
@@ -817,19 +894,27 @@ fn gather_firewall(repo: &std::path::Path) -> Option<Vec<substrate_core::posture
     // port, what it is, who MUST reach it, who MUST NOT — asked from EVERY
     // peer, because an allow-list that admits the first peer by name and
     // leaks to the third is exactly the hole a pairwise probe cannot see.
+    // The store's ports are probed only on the host that RUNS the store
+    // (bug-211). Every hypervisor used to probe all three, so a host without the
+    // store reported 9428 and 8428 as "refusing non-allow-listed sources" — which
+    // they did, because nothing listens there. A closed port with no service
+    // behind it is not a firewall decision, and counting it was a vacuous pass.
+    let runs_store =
+        substrate_core::observability::components_for(cfg, &me).contains(&"victoria_metrics");
     let matrix: Vec<(u16, &str, &str, &str)> = peers
         .iter()
         .flat_map(|peer| {
-            [
-                (9100, "node_exporter", peer.as_str(), a_node.as_str()),
-                (9428, "log ingest", a_node.as_str(), peer.as_str()),
-                (
+            let mut rows = vec![(9100, "node_exporter", peer.as_str(), a_node.as_str())];
+            if runs_store {
+                rows.push((9428, "log ingest", a_node.as_str(), peer.as_str()));
+                rows.push((
                     8428,
                     "metrics write + query + delete",
                     a_node.as_str(),
                     peer.as_str(),
-                ),
-            ]
+                ));
+            }
+            rows
         })
         .collect();
 
@@ -948,6 +1033,10 @@ fn provision(repo: &std::path::Path, args: ProvisionArgs) -> Result<()> {
     let ssh_key = ssh_public_key().context(
         "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
     )?;
+    // Before anything is destroyed: would a node built now trust this host?
+    // (bug-210 — a mismatch found at build time is found after the old node
+    // is already gone.)
+    substrate_core::render::authorized_keys(&cfg, &ssh_key)?;
     substrate_core::provision::provision_fleet(&cfg, &ssh_key)
 }
 
@@ -1003,6 +1092,10 @@ fn rebuild(repo: &std::path::Path, args: WipeArgs) -> Result<()> {
     let ssh_key = ssh_public_key().context(
         "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
     )?;
+    // Before anything is destroyed: would a node built now trust this host?
+    // (bug-210 — a mismatch found at build time is found after the old node
+    // is already gone.)
+    substrate_core::render::authorized_keys(&cfg, &ssh_key)?;
     substrate_core::wipe::wipe(&cfg, false);
     println!(
         "
@@ -1108,6 +1201,10 @@ DRY RUN — nothing was replaced. Add --yes to roll."
     let ssh_key = ssh_public_key().context(
         "no admin SSH key found. Set $HOMELAB_SSH_PUBLIC_KEY or create ~/.ssh/id_ed25519.pub",
     )?;
+    // Before anything is destroyed: would a node built now trust this host?
+    // (bug-210 — a mismatch found at build time is found after the old node
+    // is already gone.)
+    substrate_core::render::authorized_keys(&cfg, &ssh_key)?;
     exit_with(gate.roll(args.node.as_deref(), &ssh_key))
 }
 
@@ -1214,6 +1311,9 @@ fn deploy_cplb(repo: &std::path::Path, args: DeployCplbArgs) -> Result<()> {
         refuse_if_unreleased("substrate deploy-cplb --apply");
     }
     let cfg = substrate_core::load(repo)?;
+    if args.apply {
+        refuse_if_fleet_skewed(&cfg, "substrate deploy-cplb --apply");
+    }
     let cplb = substrate_core::cplb::Cplb::new(&cfg)?;
     if let Some(host) = args.show_install {
         if !cfg.hypervisors.contains_key(&host) {
@@ -1250,6 +1350,9 @@ fn deploy_resolver(repo: &std::path::Path, args: DeployResolverArgs) -> Result<(
         refuse_if_unreleased("substrate deploy-resolver --apply");
     }
     let cfg = substrate_core::load(repo)?;
+    if args.apply {
+        refuse_if_fleet_skewed(&cfg, "substrate deploy-resolver --apply");
+    }
     let r = substrate_core::resolver::Resolver::from_site(&cfg)?;
     if args.show_install {
         print!("{}", r.install_script());
@@ -1265,6 +1368,180 @@ fn deploy_resolver(repo: &std::path::Path, args: DeployResolverArgs) -> Result<(
         return Ok(());
     }
     exit_with(r.apply() == 0)
+}
+
+#[derive(clap::Args, Debug)]
+struct InstallFleetArgs {
+    /// The release to install, e.g. v0.2.12. Never "latest".
+    version: String,
+    /// Actually install (default: show each host's version and what it would install).
+    #[arg(long)]
+    apply: bool,
+}
+
+/// Install `version` on every hypervisor, through each release in between.
+///
+/// Read the module docs in `substrate_core::install_fleet` for why: install.sh
+/// installs where it runs, and server2 was missed twice. This runs the SAME
+/// verified installer on each host — carried in this signed binary — so every
+/// host still checks the checksum and the cosign identity itself. All of one
+/// host's installs run in ONE interactive session (`ssh -t`): sudo asks for a
+/// password once per host, and a captured prompt would look like a hang.
+fn install_fleet(repo: &std::path::Path, args: InstallFleetArgs) -> Result<()> {
+    use substrate_core::exec::{Host, run};
+    use substrate_core::fleet_version::release_tag;
+    use substrate_core::install_fleet::{install_path, parse_releases};
+
+    refuse_if_root("substrate install-fleet --apply");
+    let cfg = substrate_core::load(repo)?;
+    let gh_repo = std::env::var("REPO").unwrap_or_else(|_| "bradpenney/substrate".into());
+
+    // What has been released, asked of GitHub from HERE. Each host still
+    // downloads and verifies its own copy; this only plans the order.
+    let api = std::process::Command::new("curl")
+        .args([
+            "-fsSL",
+            "--retry",
+            "3",
+            &format!("https://api.github.com/repos/{gh_repo}/releases?per_page=100"),
+        ])
+        .output()
+        .context("curl is required to list releases")?;
+    if !api.status.success() {
+        anyhow::bail!(
+            "could not list {gh_repo}'s releases: {}",
+            String::from_utf8_lossy(&api.stderr).trim()
+        );
+    }
+    let releases = parse_releases(
+        &serde_json::from_slice(&api.stdout).context("releases API did not return JSON")?,
+    );
+
+    let version_on = |host: &Host| -> Option<String> {
+        run(host, &["/usr/local/bin/substrate", "--version"], None)
+            .ok()
+            .filter(|o| o.ok())
+            .and_then(|o| release_tag(&o.stdout).map(str::to_string))
+    };
+
+    let hosts: Vec<Host> = cfg
+        .hypervisors
+        .iter()
+        .map(|(n, hv)| Host::from_config(n, hv))
+        .collect();
+    let mut plan: Vec<(&Host, Vec<String>)> = Vec::new();
+    let mut refused = false;
+    println!("=== install {} on every hypervisor ===", args.version);
+    for host in &hosts {
+        let current = version_on(host);
+        let shown = current.as_deref().unwrap_or("not installed");
+        match install_path(current.as_deref(), &args.version, &releases) {
+            Ok(path) if path.is_empty() => println!("  {:<10} {shown} — already there", host.name),
+            Ok(path) => {
+                println!(
+                    "  {:<10} {shown} → installs {}",
+                    host.name,
+                    path.join(", then ")
+                );
+                plan.push((host, path));
+            }
+            Err(e) => {
+                println!("  {:<10} {shown} — REFUSED: {e}", host.name);
+                refused = true;
+            }
+        }
+    }
+    if refused {
+        anyhow::bail!(
+            "not installing anywhere: a host above was refused, and a partial fleet is the failure this exists to prevent"
+        );
+    }
+    if plan.is_empty() {
+        println!("every hypervisor already runs {}", args.version);
+        return Ok(());
+    }
+    if !args.apply {
+        println!(
+            "\nDRY RUN — nothing installed. Add --apply to install, one sudo prompt per host."
+        );
+        return Ok(());
+    }
+    refuse_if_unreleased("substrate install-fleet --apply");
+
+    let installer = substrate_core::payload::bytes("install.sh")?;
+    for (host, path) in &plan {
+        println!("\n=== {} ===", host.name);
+        let mk = run(
+            host,
+            &["mktemp", "-d", "/tmp/substrate-install.XXXXXX"],
+            None,
+        )?;
+        let staging = mk.stdout.trim().to_string();
+        if !mk.ok() || staging.is_empty() {
+            anyhow::bail!("[{}] could not create a staging directory", host.name);
+        }
+        let result = (|| -> Result<()> {
+            substrate_core::updates::stage_bytes_pub(
+                host,
+                installer,
+                &format!("{staging}/install.sh"),
+            )?;
+            // One session, every release in order; `&&` stops at the first failure
+            // so a host is never left having skipped one.
+            let inner = path
+                .iter()
+                .map(|v| {
+                    format!(
+                        "(cd {s} && REPO={r} bash {s}/install.sh {v})",
+                        s = substrate_core::exec::shell_quote(&staging),
+                        r = substrate_core::exec::shell_quote(&gh_repo),
+                        v = substrate_core::exec::shell_quote(v)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" && ");
+            let status = match &host.ssh_target {
+                None => std::process::Command::new("bash")
+                    .args(["-c", &inner])
+                    .status()?,
+                Some(t) => std::process::Command::new("ssh")
+                    .args(["-t", t, &inner])
+                    .status()?,
+            };
+            if !status.success() {
+                anyhow::bail!(
+                    "[{}] install failed — the fleet is now MIXED; fix this host before deploying",
+                    host.name
+                );
+            }
+            Ok(())
+        })();
+        let _ = run(host, &["rm", "-rf", &staging], None);
+        result?;
+    }
+
+    // Ask every host, not the plan: the plan is what we INTENDED.
+    println!("\n=== every hypervisor, as it reports itself ===");
+    let mut mismatched = false;
+    for host in &hosts {
+        let now = version_on(host);
+        let ok = now.as_deref() == Some(args.version.as_str());
+        mismatched |= !ok;
+        println!(
+            "  {:<10} {} {}",
+            host.name,
+            now.as_deref().unwrap_or("unreadable"),
+            if ok { "✓" } else { "✗" }
+        );
+    }
+    if mismatched {
+        anyhow::bail!(
+            "not every hypervisor runs {} — the fleet is mixed",
+            args.version
+        );
+    }
+    println!("every hypervisor runs {}", args.version);
+    Ok(())
 }
 
 #[derive(clap::Args, Debug)]
@@ -1286,6 +1563,9 @@ fn deploy_updates(repo: &std::path::Path, args: DeployUpdatesArgs) -> Result<()>
     }
     announce_payload();
     let cfg = substrate_core::load(repo)?;
+    if args.apply {
+        refuse_if_fleet_skewed(&cfg, "substrate deploy-updates --apply");
+    }
     if let Err(e) = substrate_core::updates::deploy_all(repo, &cfg, !args.apply) {
         eprintln!("ERROR: {e}");
         std::process::exit(1);
@@ -1307,6 +1587,9 @@ fn deploy_posture(repo: &std::path::Path, args: DeployPostureArgs) -> Result<()>
     }
     announce_payload();
     let cfg = substrate_core::load(repo)?;
+    if args.apply {
+        refuse_if_fleet_skewed(&cfg, "substrate deploy-posture --apply");
+    }
     if let Err(e) = substrate_core::deploy_posture::deploy_all(repo, &cfg, !args.apply) {
         eprintln!("ERROR: {e}");
         std::process::exit(1);
@@ -1339,6 +1622,9 @@ fn deploy_observability(repo: &std::path::Path, args: DeployObservabilityArgs) -
     }
     announce_payload();
     let cfg = substrate_core::load(repo)?;
+    if args.apply {
+        refuse_if_fleet_skewed(&cfg, "substrate deploy-observability --apply");
+    }
     if let Some(h) = &cfg.observability.host
         && !cfg.hypervisors.contains_key(h)
     {

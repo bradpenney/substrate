@@ -265,7 +265,8 @@ pub fn build_seed_iso(
         vcpu: vm.vcpu,
         storage_disk_gb: vm.storage_disk_gb,
     };
-    let user_data = crate::render::cloud_config(cfg, &rvm, join_token, ssh_key);
+    let keys = crate::render::authorized_keys(cfg, ssh_key)?;
+    let user_data = crate::render::cloud_config(cfg, &rvm, join_token, &keys);
     crate::exec::write_file(host, &format!("/tmp/{}-user-data", vm.name), &user_data)?;
     crate::exec::write_file(host, &format!("/tmp/{}-meta-data", vm.name), "")?;
 
@@ -599,8 +600,49 @@ pub fn detach_dead_node_volumes(admin_user: &str, donor_host: &Host, donor_ip: &
     );
 }
 
+/// Delete the Longhorn Replica records left on a node the roll has destroyed
+/// (bug-201). Its storage disk went with it, so each record describes data that
+/// no longer exists — and for a detached volume, one that blocks attach.
+///
+/// Safe by construction: it runs only AFTER the roll's last-replica guard has
+/// proven every volume keeps a live copy elsewhere, and it names only replicas
+/// whose node is the one just destroyed.
+pub fn forget_dead_node_replicas(admin_user: &str, donor_host: &Host, donor_ip: &str, dead: &Vm) {
+    let Some(rs) = k0s_kubectl_json(
+        admin_user,
+        donor_ip,
+        "-n longhorn-system get replicas.longhorn.io",
+    ) else {
+        return;
+    };
+    let names = crate::longhorn::replicas_on_node(&rs, &dead.name);
+    if names.is_empty() {
+        return;
+    }
+    println!(
+        "[{}] forgetting {} Longhorn replica record(s) on {}...",
+        donor_host.name,
+        names.len(),
+        dead.name
+    );
+    let _ = k0s_kubectl(
+        admin_user,
+        donor_ip,
+        &format!(
+            "-n longhorn-system delete replicas.longhorn.io {} --wait=false",
+            names.join(" ")
+        ),
+    );
+}
+
 /// How long a re-added disk gets to come up Ready and Schedulable.
 pub const DISK_ADMIT_TIMEOUT: u64 = 120;
+
+/// How long Longhorn gets to judge a rejoined node's disk at all — to report
+/// it stale (then it is re-admitted) or Ready (then nothing is needed). On the
+/// 2026-10-23 roll the verdict arrived within about two minutes of the node
+/// going Ready; five gives that a wide margin before the roll halts.
+pub const DISK_VERDICT_TIMEOUT: u64 = 300;
 
 /// Re-admit a re-created node's Longhorn disk (bug-154), or confirm it needs
 /// nothing. Longhorn's node CR outlives the node and keeps the destroyed
@@ -619,15 +661,42 @@ pub fn readmit_longhorn_disk(
     use crate::longhorn;
     let cr = format!("-n longhorn-system nodes.longhorn.io {}", node.name);
     let get = |args: &str| k0s_kubectl_json(admin_user, donor_ip, &format!("get {cr}{args}"));
-    let Some(before) = get("") else {
+    let Some(first) = get("") else {
         // No Longhorn, or no record for this node: nothing to re-admit.
         return Ok(());
     };
-    let Some(stale) = longhorn::stale_disk(&before) else {
-        if longhorn::disk_admitted(&before) {
-            println!("    longhorn disk on {} already admitted", node.name);
+    // WAIT FOR A VERDICT (bug-202). The node CR is read right after the node
+    // rejoins, which is before longhorn-manager on it has looked at the new
+    // disk — so the first read is usually NEITHER stale NOR admitted. The
+    // first version took that silence for "nothing to do" and returned Ok,
+    // on every node of the 2026-10-23 roll; each disk then sat refused, and by
+    // the second node the volumes had nowhere left to rebuild. Not judged yet
+    // is not judged fine: poll until the disk is one or the other, and halt
+    // the roll if Longhorn never says.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(DISK_VERDICT_TIMEOUT);
+    let mut before = first;
+    let stale = loop {
+        if let Some(st) = longhorn::stale_disk(&before) {
+            break st;
         }
-        return Ok(());
+        // Admitted SINCE the node came back — a Ready left over from the
+        // destroyed disk would otherwise read as done (bug-202).
+        if longhorn::disk_admitted_since_return(&before) {
+            println!("    longhorn disk on {} already admitted", node.name);
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!(
+                "Longhorn gave no verdict on {}'s disk within {DISK_VERDICT_TIMEOUT}s \
+                 (neither stale nor admitted); a disk nobody has judged is not a disk \
+                 replicas can use",
+                node.name
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        if let Some(n) = get("") {
+            before = n;
+        }
     };
     println!(
         "[{}] re-admitting {}'s longhorn disk (stale record {}, reserved {})...",
@@ -1621,6 +1690,7 @@ mod tests {
             disk_pool: "vmpool".into(),
             pool_needs_nocow: false,
             failure_prone: false,
+            ssh_public_key: None,
         };
         let h = Host::from_config("hvA", &hv);
         assert_eq!(h.peer_target.as_deref(), Some("brad@host"));
@@ -1634,6 +1704,7 @@ mod tests {
             disk_pool: "vmpool".into(),
             pool_needs_nocow: false,
             failure_prone: false,
+            ssh_public_key: None,
         };
         let h = Host::from_config("hvA", &hv);
         assert_eq!(h.peer_target.as_deref(), Some("brad@via-peer"));

@@ -30,6 +30,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Everything the checks need to reach the cluster.
+/// How long a node gets to drain before the roll halts with it untouched
+/// (bug-203). Five minutes: every workload here is one small pod, and a drain
+/// that takes longer than this is stuck on something worth a human looking at.
+pub const DRAIN_TIMEOUT: u64 = 300;
+
+/// The fleet-wide roll lock's name (ADR-205).
+pub const ROLL_LOCK: &str = "substrate-roll-lock";
+
 pub struct Gate<'a> {
     pub cfg: &'a SiteConfig,
     pub fleet: Fleet,
@@ -1023,11 +1031,28 @@ impl<'a> Gate<'a> {
     }
 
     /// Volumes that would lose their last healthy replica with `node`
-    /// (bug-158). An empty answer when Longhorn is not installed.
-    fn volumes_orphaned_by(&self, node: &str) -> Vec<String> {
-        parse(&self.kubectl("-n longhorn-system get replicas.longhorn.io -o json"))
-            .map(|r| crate::longhorn::volumes_without_surviving_replica(&r, node))
-            .unwrap_or_default()
+    /// (bug-158, bug-201). An empty answer when Longhorn is not installed.
+    ///
+    /// FAILS CLOSED. The first version answered "nothing would be orphaned"
+    /// whenever the query failed, so a kubectl hiccup at the wrong moment was
+    /// indistinguishable from a clean bill of health — on the one check whose
+    /// whole job is to stop data loss. Now an unreadable answer is an `Err`,
+    /// and the caller refuses to destroy the node.
+    fn volumes_orphaned_by(&self, node: &str) -> Result<Vec<String>> {
+        let out = self.kubectl("-n longhorn-system get replicas.longhorn.io -o json");
+        if out
+            .stderr
+            .contains("the server doesn't have a resource type")
+        {
+            return Ok(vec![]); // no Longhorn: nothing to orphan
+        }
+        let replicas =
+            parse(&out).context("could not read Longhorn replicas, so cannot prove any survive")?;
+        let nodes = parse(&self.kubectl("-n longhorn-system get nodes.longhorn.io -o json"))
+            .context("could not read Longhorn's disks, so cannot prove any replica survives")?;
+        Ok(crate::longhorn::volumes_without_surviving_replica(
+            &replicas, &nodes, node,
+        ))
     }
 
     fn node_kubelet_version(&self, name: &str) -> Option<String> {
@@ -1042,7 +1067,79 @@ impl<'a> Gate<'a> {
     /// way to patch one is to replace it. Strictly one at a time: 5 nodes
     /// tolerate two down, but that leaves zero margin for a surprise inside
     /// the window. Cluster health is re-verified between every node.
+    /// Roll, holding the fleet-wide roll lock for the whole run (ADR-205).
+    ///
+    /// The lock is a ConfigMap in `kube-system`, created with `kubectl create`,
+    /// which is atomic: of two rolls started at once, exactly one gets it. It
+    /// lives in the CLUSTER, not on the host running the roll, because the roll
+    /// that must be stopped may have been started from the other hypervisor —
+    /// which is what happened on 2026-10-23 (bug-205): s2-vm1 was destroyed
+    /// while s1-vm3's roll was still waiting on Longhorn, and wanderer-db fell to
+    /// one copy.
+    ///
+    /// A roll that is killed leaves the lock behind. That is deliberate: the next
+    /// roll refuses and says how to clear it, because "a roll was interrupted"
+    /// is exactly the moment to look before destroying another node.
     pub fn roll(&self, target: Option<&str>, ssh_key: &str) -> bool {
+        let holder = format!(
+            "{}@{} {}",
+            std::env::var("USER").unwrap_or_default(),
+            std::process::Command::new("hostname")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default(),
+            target.unwrap_or("all nodes")
+        );
+        let since = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let take = self.kubectl(&format!(
+            "-n kube-system create configmap {ROLL_LOCK} --from-literal=holder={} --from-literal=since={since}",
+            crate::exec::shell_quote(&holder)
+        ));
+        if !take.ok() {
+            let held =
+                parse(&self.kubectl(&format!("-n kube-system get configmap {ROLL_LOCK} -o json")));
+            let who = held
+                .as_ref()
+                .and_then(|c| c.pointer("/data/holder"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let when = held
+                .as_ref()
+                .and_then(|c| c.pointer("/data/since"))
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            println!(
+                "REFUSING to roll: another roll holds the fleet lock ({who}, since unix {when})."
+            );
+            println!(
+                "  One roll at a time (ADR-205). If that roll is NOT running — it was killed —"
+            );
+            println!("  check every volume has a live copy, then clear the lock:");
+            println!(
+                "    kubectl --context break-glass -n kube-system delete configmap {ROLL_LOCK}"
+            );
+            if !take.stderr.contains("AlreadyExists") {
+                println!("  (the lock could not be taken: {})", take.stderr.trim());
+            }
+            return false;
+        }
+        let ok = self.roll_unlocked(target, ssh_key);
+        let release = self.kubectl(&format!(
+            "-n kube-system delete configmap {ROLL_LOCK} --ignore-not-found"
+        ));
+        if !release.ok() {
+            println!(
+                "WARNING: the roll lock was not released ({}); clear it before the next roll:\n    kubectl --context break-glass -n kube-system delete configmap {ROLL_LOCK}",
+                release.stderr.trim()
+            );
+        }
+        ok
+    }
+
+    fn roll_unlocked(&self, target: Option<&str>, ssh_key: &str) -> bool {
         let targets: Vec<(&Host, &Vm)> = self
             .all_vms()
             .into_iter()
@@ -1111,7 +1208,13 @@ impl<'a> Gate<'a> {
             // NEVER destroy a volume's last healthy replica (bug-158). Longhorn
             // rebuilds nothing for a detached volume, so across same-name
             // replacements one can erode to a single replica — on this node.
-            let doomed = self.volumes_orphaned_by(&vm.name);
+            let doomed = match self.volumes_orphaned_by(&vm.name) {
+                Ok(d) => d,
+                Err(e) => {
+                    println!("REFUSING to roll {}: {e:#}", vm.name);
+                    return false;
+                }
+            };
             if !doomed.is_empty() {
                 println!(
                     "REFUSING to roll {}: volume(s) with no healthy replica elsewhere: {}",
@@ -1122,6 +1225,42 @@ impl<'a> Gate<'a> {
                 println!("  replicas, then roll again. Destroying this node is data loss.");
                 return false;
             }
+            // DRAIN FIRST (bug-203). The roll used to power the VM off with its
+            // pods still running: donetick and PocketBase — SQLite both — were
+            // killed mid-write, and Kubernetes only rescheduled them once the
+            // Node object was deleted afterwards. Measured on 2026-10-23: about a
+            // minute per app per node, and nothing alerted. A drain lets them stop
+            // cleanly and start elsewhere while this node still answers. One pod
+            // on a single-writer volume still means a short gap; this makes it
+            // short and orderly rather than abrupt.
+            //
+            // A drain that does not finish halts the roll BEFORE anything is
+            // destroyed, and the node goes back into service. That is the safe
+            // way for this step to fail.
+            println!(
+                "[{}] draining {} before it is replaced...",
+                host.name, vm.name
+            );
+            let drained = self.kubectl(&format!(
+                "drain {} --ignore-daemonsets --delete-emptydir-data --timeout={DRAIN_TIMEOUT}s",
+                vm.name
+            ));
+            if !drained.ok() {
+                let _ = self.kubectl(&format!("uncordon {}", vm.name));
+                let why: Vec<&str> = drained.stderr.trim().lines().rev().take(3).collect();
+                println!(
+                    "ROLL HALTED: {} did not drain within {DRAIN_TIMEOUT}s",
+                    vm.name
+                );
+                for line in why.iter().rev() {
+                    println!("    {line}");
+                }
+                println!(
+                    "  Nothing was destroyed; {} is back in service (uncordoned).",
+                    vm.name
+                );
+                return false;
+            }
             provision::destroy_and_undefine(host, vm);
             // A destroyed node's etcd membership outlives it; the ghost costs
             // quorum on the NEXT replacement.
@@ -1130,6 +1269,9 @@ impl<'a> Gate<'a> {
             provision::forget_node(admin, donor_host, &donor_vm.static_ip, vm);
             // ...and its volumes, so they can (bug-170).
             provision::detach_dead_node_volumes(admin, donor_host, &donor_vm.static_ip, vm);
+            // ...and its replica records, which would otherwise block a
+            // detached volume from ever attaching again (bug-201).
+            provision::forget_dead_node_replicas(admin, donor_host, &donor_vm.static_ip, vm);
             let iso = format!(
                 "{}/{}-cloudinit.iso",
                 self.cfg.libvirt.iso_pool_path, vm.name
@@ -1220,6 +1362,26 @@ impl<'a> Gate<'a> {
                 println!("  quorum. That is data loss, not degradation.");
                 return false;
             }
+            // THE NEW DISK IS IN USE (bug-202). "Every volume healthy" can be
+            // true while this node's disk is refused: on 2026-10-23 s1-vm1
+            // passed because its volumes rebuilt onto server2 instead, and the
+            // next node then had nowhere to rebuild to. So assert the node's
+            // own disk, not just the volumes'.
+            let lh = parse(&self.kubectl(&format!(
+                "-n longhorn-system get nodes.longhorn.io {} -o json",
+                vm.name
+            )));
+            if let Some(n) = &lh
+                && !crate::longhorn::disk_admitted_since_return(n)
+            {
+                println!(
+                    "ROLL HALTED: {}'s Longhorn disk is not Ready and Schedulable",
+                    vm.name
+                );
+                println!("  Its volumes may look healthy only because other nodes had room;");
+                println!("  the next replacement would find less. Re-admit the disk first.");
+                return false;
+            }
             // ASSERT THE OUTCOME. "Healthy" is not "updated".
             if let Some(want) = expected_k0s_version(&self.cfg.kairos.iso_url) {
                 let got = self.node_kubelet_version(&vm.name);
@@ -1245,7 +1407,15 @@ impl<'a> Gate<'a> {
             }
             println!("    {} replaced and healthy\n", vm.name);
         }
-        println!("=== roll complete — every node rebuilt on the pinned image ===");
+        // Say what was actually done (bug-207): a `--node` run used to announce
+        // "every node rebuilt" after rebuilding one, which is the kind of
+        // overstatement that let a second roll start early (bug-205).
+        match target {
+            Some(t) => println!(
+                "=== {t} rebuilt on the pinned image — the other nodes were not touched ==="
+            ),
+            None => println!("=== roll complete — every node rebuilt on the pinned image ==="),
+        }
         let ips: Vec<String> = self
             .fleet
             .all_vms()

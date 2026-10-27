@@ -52,6 +52,15 @@ pub struct HypervisorConfig {
     /// has two disagreeing definitions of its own configuration.
     #[serde(default)]
     pub failure_prone: bool,
+    /// This hypervisor's operator public key — authorized on EVERY node (bug-210).
+    ///
+    /// Before this, a node trusted exactly one key: whichever machine ran the
+    /// roll that built it (`~/.ssh/id_ed25519.pub` there). After the 2026-10-23
+    /// roll ran on server1, server2 could not reach a single node, and its
+    /// posture firewall probe was silently skipped. Which hosts can manage the
+    /// nodes is now declared, not inherited from wherever the last roll ran.
+    #[serde(default)]
+    pub ssh_public_key: Option<String>,
 }
 
 fn default_disk_pool() -> String {

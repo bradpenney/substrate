@@ -173,3 +173,80 @@ fn duplicate_keys_are_refused() {
         substrate_core::yaml::from_str("a:\n  x: 1\n  x: 2\n");
     assert!(parsed.is_err(), "duplicate keys must not parse");
 }
+
+// ─────────────────────────────────────────── operator keys on every node (bug-210)
+
+const KEY_S1: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIserver1key brad@server1";
+const KEY_S2: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIserver2key brad@server2";
+
+fn declare_keys(v: &mut substrate_core::yaml::Value, a: Option<&str>, b: Option<&str>) {
+    for (hv, key) in [("hvA", a), ("hvB", b)] {
+        if let Some(k) = key {
+            v["hypervisors"][hv]["ssh_public_key"] = substrate_core::yaml::Value::from(k);
+        }
+    }
+}
+
+/// A site that declares no keys keeps the old behaviour exactly.
+#[test]
+fn with_no_keys_declared_the_runners_key_is_the_set() {
+    let cfg = fixture_with(|_| {});
+    assert_eq!(
+        substrate_core::render::authorized_keys(&cfg, KEY_S1).unwrap(),
+        vec![KEY_S1.to_string()]
+    );
+}
+
+/// The bug-210 fix: a roll from server1 authorizes server2's key too.
+#[test]
+fn every_declared_key_is_authorized_whoever_runs_the_roll() {
+    let cfg = fixture_with(|v| declare_keys(v, Some(KEY_S1), Some(KEY_S2)));
+    let keys = substrate_core::render::authorized_keys(&cfg, KEY_S1).unwrap();
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&KEY_S2.to_string()), "{keys:?}");
+}
+
+/// Key material is compared, not the trailing comment.
+#[test]
+fn the_runner_matches_on_key_material_not_comment() {
+    let cfg = fixture_with(|v| declare_keys(v, Some(KEY_S1), Some(KEY_S2)));
+    let same_key_other_label = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIserver1key someone@laptop";
+    assert!(substrate_core::render::authorized_keys(&cfg, same_key_other_label).is_ok());
+}
+
+/// Declared keys that leave out the runner would build a node the runner
+/// cannot reach — refused, and the callers check this before destroying.
+#[test]
+fn a_runner_outside_the_declared_set_is_refused() {
+    let cfg = fixture_with(|v| declare_keys(v, Some(KEY_S2), None));
+    assert!(substrate_core::render::authorized_keys(&cfg, KEY_S1).is_err());
+}
+
+/// End to end through the real renderer: both declared keys land in the
+/// node's cloud-config as authorized keys for the admin user.
+#[test]
+fn a_rendered_node_authorizes_every_declared_key() {
+    let cfg = fixture_with(|v| declare_keys(v, Some(KEY_S1), Some(KEY_S2)));
+    let keys = substrate_core::render::authorized_keys(&cfg, KEY_S1).unwrap();
+    let (name, node) = cfg.nodes.iter().next().expect("fixture has a node");
+    let vm = substrate_core::render::Vm {
+        name: name.clone(),
+        static_ip: node.ip.clone(),
+        hypervisor: node.hypervisor.clone(),
+        bootstrap: node.bootstrap,
+        memory_mib: None,
+        vcpu: None,
+        storage_disk_gb: None,
+    };
+    let rendered = substrate_core::render::cloud_config(&cfg, &vm, None, &keys);
+    let doc: substrate_core::yaml::Value =
+        substrate_core::yaml::from_str(&rendered).expect("cloud-config parses");
+    let authorized = doc["users"][0]["ssh_authorized_keys"]
+        .as_array()
+        .expect("a key list");
+    assert_eq!(authorized.len(), 2);
+    assert!(
+        authorized.iter().any(|k| k == KEY_S2),
+        "server2's key must be on the node"
+    );
+}

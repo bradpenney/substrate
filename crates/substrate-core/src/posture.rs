@@ -801,15 +801,29 @@ pub fn check_firewall_restrictions(probes: Option<&[FirewallProbe]>, r: &mut Rep
             }
             Some(false) => {}
         }
-        if p.permitted == Some(false) {
-            // The other direction, and it matters just as much: a firewall that
-            // blocks everything is not correct, it is broken where nobody looks
-            // until a scrape quietly stops arriving.
-            r.fail(format!(
-                "firewall: {} ({}) is refused for {}, which MUST reach it",
-                p.port, p.what, p.allowed_label
-            ));
-            continue;
+        match p.permitted {
+            Some(false) => {
+                // The other direction, and it matters just as much: a firewall
+                // that blocks everything is not correct, it is broken where
+                // nobody looks until a scrape quietly stops arriving.
+                r.fail(format!(
+                    "firewall: {} ({}) is refused for {}, which MUST reach it",
+                    p.port, p.what, p.allowed_label
+                ));
+                continue;
+            }
+            None => {
+                // A refusal on its own proves nothing about an allow-list: a
+                // port with nothing listening refuses everyone too. Until the
+                // ALLOWED source is seen to connect, this port is information,
+                // not an invariant that holds (bug-211).
+                r.info(format!(
+                    "firewall: {} refused the denied source, but the allowed side ({}) was not reached — allow-list unproven",
+                    p.port, p.allowed_label
+                ));
+                continue;
+            }
+            Some(true) => {}
         }
         checked += 1;
         ports.insert(p.port);
@@ -951,9 +965,14 @@ fn parse_rfc3339_unix(s: &str) -> Option<i64> {
 /// correct zone label with replicas still piled on one machine fails here; so
 /// would a future setting that looks right and is not.
 ///
-/// A replica counts if it has a node and has not failed. A STOPPED replica of a
-/// detached volume counts — its data is on that disk, which is the whole
-/// question. One line when every volume holds; one finding per volume that does
+/// A replica counts only if it is a real copy, by the rule the roll's guard
+/// uses: never failed, finished building at least once, and on a live disk
+/// under the UUID it records. A STOPPED replica of a detached volume counts —
+/// its data is on that disk, which is the whole question — but one still
+/// rebuilding does not, and neither does a record left behind on a disk a roll
+/// destroyed. The first version counted both, and on the night it shipped it
+/// reported two volumes as spanning both machines on the strength of replicas
+/// that were still being built. One line when every volume holds; one finding per volume that does
 /// not, naming the volume and how many machines its replicas reach, never the
 /// machines themselves (nothing published names one).
 ///
@@ -964,6 +983,7 @@ pub fn check_replicas_span_hypervisors(
     volumes: &Value,
     replicas: &Value,
     nodes: &Value,
+    lh_nodes: &Value,
     r: &mut Report,
 ) {
     use std::collections::{BTreeMap, BTreeSet};
@@ -988,6 +1008,9 @@ pub fn check_replicas_span_hypervisors(
         return;
     }
     vols.sort_by_key(|v| name_of(v));
+    // The SAME rule the roll's last-replica guard uses (crate::longhorn), so
+    // the nightly line and the guard can never disagree about what a copy is.
+    let live = crate::longhorn::live_disks(lh_nodes);
 
     let (mut held, mut short) = (0, 0);
     for v in vols {
@@ -1004,11 +1027,7 @@ pub fn check_replicas_span_hypervisors(
         let reached: BTreeSet<&str> = items(replicas)
             .iter()
             .filter(|rep| rep.pointer("/spec/volumeName").and_then(Value::as_str) == Some(vol))
-            .filter(|rep| {
-                rep.pointer("/spec/failedAt")
-                    .and_then(Value::as_str)
-                    .is_none_or(str::is_empty)
-            })
+            .filter(|rep| crate::longhorn::replica_is_live(rep, &live))
             .filter_map(|rep| rep.pointer("/spec/nodeID").and_then(Value::as_str))
             .filter_map(|node| node_hv.get(node).copied())
             .collect();

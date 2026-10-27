@@ -145,6 +145,28 @@ pub fn is_syncing_error(stderr: &str) -> bool {
     s.contains("syncing") || s.contains("being processed") || s.contains("conflict")
 }
 
+/// Names of the Replica records on `node` — every one of which is gone once the
+/// roll has destroyed that node, because its storage disk is deleted with it.
+///
+/// They are not just stale; they are actively harmful (bug-201, third form).
+/// For a DETACHED volume nothing ever marks them failed, so they sit at
+/// `desire=running, state=stopped` and Longhorn waits for them before it will
+/// start the engine. On 2026-10-23 two of them stopped garmin-sync-state from
+/// attaching at all (`DeadlineExceeded`), and they had to be deleted by hand.
+pub fn replicas_on_node(replicas: &Value, node: &str) -> Vec<String> {
+    replicas
+        .get("items")
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |items| {
+            items
+                .iter()
+                .filter(|r| r.pointer("/spec/nodeID").and_then(Value::as_str) == Some(node))
+                .filter_map(|r| r.pointer("/metadata/name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+}
+
 /// Names of the `volumeattachments.storage.k8s.io` pinning volumes to a
 /// node (bug-170). Deleting them after the node is gone lets the CSI
 /// attacher unpublish immediately instead of waiting six minutes for a
@@ -163,14 +185,96 @@ pub fn attachments_on_node(attachments: &Value, node: &str) -> Vec<String> {
         })
 }
 
+/// When Longhorn last saw this node become Ready, if it is Ready now.
+///
+/// Longhorn keeps a node's disk status after the Kubernetes node is gone: on
+/// 2026-10-23 s2-vm1 was mid-reinstall, its Node object deleted, and its OLD
+/// disk still read `Ready=True` under the old UUID, while the node itself read
+/// `Ready=False, KubernetesNodeGone`. A disk's own condition is therefore not
+/// evidence on its own; the node's is the first thing to ask.
+fn node_ready_since(node: &Value) -> Option<&str> {
+    node.pointer("/status/conditions")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|c| c.get("type").and_then(Value::as_str) == Some("Ready"))
+        .filter(|c| c.get("status").and_then(Value::as_str) == Some("True"))
+        .and_then(|c| c.get("lastTransitionTime").and_then(Value::as_str))
+}
+
+/// When this disk's Ready condition last became True, if it is True.
+fn disk_ready_since(d: &Value) -> Option<&str> {
+    d.get("conditions")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|c| c.get("type").and_then(Value::as_str) == Some("Ready"))
+        .filter(|c| c.get("status").and_then(Value::as_str) == Some("True"))
+        .and_then(|c| c.get("lastTransitionTime").and_then(Value::as_str))
+}
+
+/// The disk was admitted AFTER the node last came back (bug-202).
+///
+/// `disk_admitted` alone is fooled by a status Longhorn never cleared: a node
+/// that rejoins after a roll can briefly show its DESTROYED disk's old
+/// `Ready=True`, which reads as "already admitted" and skips the re-admit the
+/// new disk needs. A Ready that predates the node's own return is a leftover,
+/// not a verdict. Both timestamps are Longhorn's own RFC 3339 strings, so the
+/// comparison is on one clock.
+pub fn disk_admitted_since_return(node: &Value) -> bool {
+    let Some(back) = node_ready_since(node) else {
+        return false;
+    };
+    disk_admitted(node)
+        && node
+            .pointer("/status/diskStatus")
+            .and_then(Value::as_object)
+            .is_some_and(|disks| {
+                disks
+                    .values()
+                    .any(|d| disk_ready_since(d).is_some_and(|t| t >= back))
+            })
+}
+
+/// A `diskStatus` entry whose Ready condition is True.
+fn disk_is_ready(d: &Value) -> bool {
+    d.get("conditions")
+        .and_then(Value::as_array)
+        .is_some_and(|cs| {
+            cs.iter().any(|c| {
+                c.get("type").and_then(Value::as_str) == Some("Ready")
+                    && c.get("status").and_then(Value::as_str) == Some("True")
+            })
+        })
+}
+
 /// Volumes that would have NO healthy replica left once `dead` is
-/// destroyed (bug-158). A replica counts as surviving when it has never
-/// failed and lives elsewhere; attached or detached makes no difference —
+/// destroyed (bug-158). Attached or detached makes no difference —
 /// exempting detached volumes is exactly how garmin-sync-state eroded to
 /// zero replicas across four same-name replacements. Sorted for stable
 /// messages.
-pub fn volumes_without_surviving_replica(replicas: &Value, dead: &str) -> Vec<String> {
+///
+/// A replica counts as surviving only when it has never failed, lives on
+/// another node, AND sits on a disk that node currently reports Ready under
+/// the same UUID the replica records (bug-201).
+///
+/// That last condition is the one the first version lacked, and it is not a
+/// refinement. A roll deletes a node's storage disk and gives it a new one, so
+/// every replica that was on it is gone — but for a DETACHED volume Longhorn
+/// does not find out until the volume next attaches. Until then its Replica
+/// record still reads `stopped`, with no `failedAt`. On 2026-10-23
+/// garmin-sync-state's replica on a just-rolled s1-vm2 read exactly that, and
+/// this function counted it, so the guard would have let the roll destroy
+/// s1-vm3 — the only copy that still existed. The Replica record describes
+/// what Longhorn last knew about a disk; `diskStatus` describes the disk that
+/// is there now. Only the second is evidence.
+///
+/// `lh_nodes` is `nodes.longhorn.io` — Longhorn's nodes, not Kubernetes'.
+pub fn volumes_without_surviving_replica(
+    replicas: &Value,
+    lh_nodes: &Value,
+    dead: &str,
+) -> Vec<String> {
     use std::collections::BTreeMap;
+    let ready_disks = live_disks(lh_nodes);
     let mut survivors: BTreeMap<String, usize> = BTreeMap::new();
     for r in replicas
         .get("items")
@@ -185,15 +289,11 @@ pub fn volumes_without_surviving_replica(replicas: &Value, dead: &str) -> Vec<St
             continue;
         };
         let entry = survivors.entry(volume.to_string()).or_insert(0);
-        let failed = r
-            .pointer("/spec/failedAt")
-            .and_then(Value::as_str)
-            .is_some_and(|f| !f.is_empty());
         let node = r
             .pointer("/spec/nodeID")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if !failed && node != dead {
+        if node != dead && replica_is_live(r, &ready_disks) {
             *entry += 1;
         }
     }
@@ -204,7 +304,72 @@ pub fn volumes_without_surviving_replica(replicas: &Value, dead: &str) -> Vec<St
         .collect()
 }
 
+/// Node name -> the UUIDs of its disks that are live: Ready, on a node
+/// Longhorn sees as Ready. The evidence every "is this a real copy?" question
+/// in this crate is answered from.
+pub fn live_disks(
+    lh_nodes: &Value,
+) -> std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> {
+    lh_nodes
+        .get("items")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        // A node Longhorn does not see as Ready contributes no live disks,
+        // whatever its disks' own leftover conditions say.
+        .filter(|n| node_ready_since(n).is_some())
+        .map(|n| {
+            let name = n
+                .pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let uuids = n
+                .pointer("/status/diskStatus")
+                .and_then(Value::as_object)
+                .map(|disks| {
+                    disks
+                        .values()
+                        .filter(|d| disk_is_ready(d))
+                        .filter_map(|d| d.get("diskUUID").and_then(Value::as_str))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (name, uuids)
+        })
+        .collect()
+}
+
+/// A replica that is a real copy: never failed, has completed a rebuild at
+/// least once (`healthyAt` — a replica still building is not a copy yet), and
+/// sits on a live disk under the UUID it records (bug-201: a record left on a
+/// disk the roll destroyed still reads `stopped` with no `failedAt`).
+pub fn replica_is_live(
+    r: &Value,
+    live: &std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>>,
+) -> bool {
+    let failed = r
+        .pointer("/spec/failedAt")
+        .and_then(Value::as_str)
+        .is_some_and(|f| !f.is_empty());
+    let built = r
+        .pointer("/spec/healthyAt")
+        .and_then(Value::as_str)
+        .is_some_and(|h| !h.is_empty());
+    let node = r
+        .pointer("/spec/nodeID")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let on_live_disk = r
+        .pointer("/spec/diskID")
+        .and_then(Value::as_str)
+        .is_some_and(|id| live.get(node).is_some_and(|u| u.contains(id)));
+    !failed && built && on_live_disk
+}
+
 #[cfg(test)]
+// Capitals in test names are deliberate emphasis on the thing that must not
+// regress — the convention tests/posture.rs already allows.
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
 
@@ -299,16 +464,149 @@ mod tests {
         assert!(attachments_on_node(&json!({}), "s1-vm1").is_empty());
     }
 
+    /// A replica on `node`'s disk, which in these fixtures is `uuid-<node>`.
     fn replica(volume: &str, node: &str, failed_at: &str) -> Value {
-        json!({"metadata": {"labels": {"longhornvolume": volume}},
-               "spec": {"nodeID": node, "failedAt": failed_at}})
+        replica_on(volume, node, failed_at, &format!("uuid-{node}"))
     }
+
+    fn replica_on(volume: &str, node: &str, failed_at: &str, disk: &str) -> Value {
+        json!({"metadata": {"labels": {"longhornvolume": volume}},
+               "spec": {"nodeID": node, "failedAt": failed_at, "diskID": disk,
+                        "healthyAt": "2026-10-24T01:00:00Z"}})
+    }
+
+    /// Longhorn's nodes, each with one disk `uuid-<node>`; `not_ready` lists the
+    /// nodes whose disk is reporting itself not Ready.
+    fn lh_nodes(names: &[&str], not_ready: &[&str]) -> Value {
+        let items: Vec<Value> = names
+            .iter()
+            .map(|n| {
+                let ready = if not_ready.contains(n) {
+                    "False"
+                } else {
+                    "True"
+                };
+                json!({"metadata": {"name": n}, "status": {
+                    "conditions": [{"type": "Ready", "status": "True", "lastTransitionTime": "2026-10-24T01:00:00Z"}],
+                    "diskStatus": {"disk-1": {
+                        "diskUUID": format!("uuid-{n}"),
+                        "conditions": [{"type": "Ready", "status": ready}]}}}})
+            })
+            .collect();
+        json!({ "items": items })
+    }
+
+    const FLEET: &[&str] = &["s1-vm1", "s1-vm2", "s1-vm3", "s2-vm1", "s2-vm2"];
 
     #[test]
     fn three_healthy_replicas_survive_any_node() {
         let rs = json!({"items": [
             replica("pvc-a", "s1-vm1", ""), replica("pvc-a", "s1-vm2", ""), replica("pvc-a", "s1-vm3", "")]});
-        assert!(volumes_without_surviving_replica(&rs, "s1-vm1").is_empty());
+        assert!(volumes_without_surviving_replica(&rs, &lh_nodes(FLEET, &[]), "s1-vm1").is_empty());
+    }
+
+    /// bug-201, as found: the replica on a just-rolled node still reads as not
+    /// failed, but its node's disk is the new, not-yet-admitted one. It is not
+    /// a copy, so destroying the node holding the only real one is refused.
+    #[test]
+    fn a_replica_on_a_disk_that_is_not_Ready_does_not_survive() {
+        let rs = json!({"items": [
+            replica("pvc-garmin", "s1-vm2", ""), replica("pvc-garmin", "s1-vm3", "")]});
+        assert_eq!(
+            volumes_without_surviving_replica(&rs, &lh_nodes(FLEET, &["s1-vm2"]), "s1-vm3"),
+            vec!["pvc-garmin"]
+        );
+    }
+
+    /// The same replica after its node's disk was re-admitted: the node is
+    /// Ready again, but under a NEW disk UUID. The record points at the old one.
+    #[test]
+    fn a_replica_recorded_against_a_replaced_disk_does_not_survive() {
+        let rs = json!({"items": [
+            replica_on("pvc-garmin", "s1-vm2", "", "uuid-of-the-deleted-disk"),
+            replica("pvc-garmin", "s1-vm3", "")]});
+        assert_eq!(
+            volumes_without_surviving_replica(&rs, &lh_nodes(FLEET, &[]), "s1-vm3"),
+            vec!["pvc-garmin"]
+        );
+    }
+
+    /// The s2-vm1 shape: the node is gone (`KubernetesNodeGone`) but its old
+    /// disk still reads Ready under the old UUID. Not a copy.
+    #[test]
+    fn a_replica_on_a_GONE_node_does_not_survive_even_if_its_disk_reads_Ready() {
+        let mut nodes = lh_nodes(FLEET, &[]);
+        nodes["items"][4]["status"]["conditions"] =
+            json!([{"type": "Ready", "status": "False", "reason": "KubernetesNodeGone"}]);
+        let rs = json!({"items": [
+            replica("pvc-garmin", "s2-vm2", ""), replica("pvc-garmin", "s1-vm3", "")]});
+        assert_eq!(
+            volumes_without_surviving_replica(&rs, &nodes, "s1-vm3"),
+            vec!["pvc-garmin"]
+        );
+    }
+
+    fn rejoined(node_back: &str, disk_ready: &str) -> Value {
+        json!({"status": {
+            "conditions": [{"type": "Ready", "status": "True", "lastTransitionTime": node_back}],
+            "diskStatus": {"disk-1": {"diskUUID": "u", "conditions": [
+                {"type": "Ready", "status": "True", "lastTransitionTime": disk_ready},
+                {"type": "Schedulable", "status": "True", "lastTransitionTime": disk_ready}]}}}})
+    }
+
+    /// bug-202: a Ready left over from the destroyed disk is not a verdict.
+    #[test]
+    fn a_disk_Ready_from_BEFORE_the_node_returned_is_not_admitted() {
+        let n = rejoined("2026-10-24T01:20:00Z", "2026-09-16T23:10:00Z");
+        assert!(
+            disk_admitted(&n),
+            "the old helper is fooled — that is the bug"
+        );
+        assert!(!disk_admitted_since_return(&n));
+    }
+
+    #[test]
+    fn a_disk_Ready_after_the_node_returned_is_admitted() {
+        assert!(disk_admitted_since_return(&rejoined(
+            "2026-10-24T01:20:00Z",
+            "2026-10-24T01:22:30Z"
+        )));
+    }
+
+    /// A replica still rebuilding has never been healthy: not a copy yet.
+    #[test]
+    fn a_replica_that_has_never_finished_building_does_not_survive() {
+        let mut building = replica("pvc-a", "s2-vm1", "");
+        building["spec"]["healthyAt"] = json!("");
+        let rs = json!({"items": [building, replica("pvc-a", "s1-vm1", "")]});
+        assert_eq!(
+            volumes_without_surviving_replica(&rs, &lh_nodes(FLEET, &[]), "s1-vm1"),
+            vec!["pvc-a"]
+        );
+    }
+
+    #[test]
+    fn only_the_destroyed_nodes_replica_records_are_named() {
+        let rs = json!({"items": [
+            {"metadata": {"name": "pvc-a-r-1"}, "spec": {"nodeID": "s1-vm3"}},
+            {"metadata": {"name": "pvc-a-r-2"}, "spec": {"nodeID": "s2-vm2"}},
+            {"metadata": {"name": "pvc-b-r-1"}, "spec": {"nodeID": "s1-vm3"}}]});
+        assert_eq!(
+            replicas_on_node(&rs, "s1-vm3"),
+            vec!["pvc-a-r-1", "pvc-b-r-1"]
+        );
+        assert!(replicas_on_node(&rs, "s1-vm1").is_empty());
+        assert!(replicas_on_node(&json!({}), "s1-vm3").is_empty());
+    }
+
+    /// No Longhorn node data means no evidence any disk is live: refuse.
+    #[test]
+    fn without_longhorn_node_data_nothing_survives() {
+        let rs = json!({"items": [replica("pvc-a", "s1-vm1", ""), replica("pvc-a", "s2-vm1", "")]});
+        assert_eq!(
+            volumes_without_surviving_replica(&rs, &json!({}), "s1-vm1"),
+            vec!["pvc-a"]
+        );
     }
 
     #[test]
@@ -320,9 +618,9 @@ mod tests {
             replica("pvc-garmin", "s1-vm3", "2026-09-14T13:00:00Z"),
             replica("pvc-b", "s1-vm1", ""), replica("pvc-b", "s2-vm1", "")]});
         assert_eq!(
-            volumes_without_surviving_replica(&rs, "s2-vm1"),
+            volumes_without_surviving_replica(&rs, &lh_nodes(FLEET, &[]), "s2-vm1"),
             vec!["pvc-garmin"]
         );
-        assert!(volumes_without_surviving_replica(&rs, "s1-vm1").is_empty());
+        assert!(volumes_without_surviving_replica(&rs, &lh_nodes(FLEET, &[]), "s1-vm1").is_empty());
     }
 }
