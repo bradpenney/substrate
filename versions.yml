@@ -9,8 +9,8 @@
 # tag only says what was *asked* for.
 
 flux_operator:
-  version: v0.61.0
-  sha256: 550ebc8eec5fae00e55336cf5403a60846c51174095df3d8ca541b48481662af
+  version: v0.62.1
+  sha256: 17c7b0dfc808063e0ffd8afa92641a1baec0f1c01921d74aa5e8895e5538a549
   # Where the pinned asset comes from. {version} is substituted.
   url: https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/{version}/install.yaml
 
@@ -113,5 +113,5 @@ observability:
 # `substrate deploy-updates`.
 cosign:
   version: v3.1.4
-  sha256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+  sha256: 17c7b0dfc808063e0ffd8afa92641a1baec0f1c01921d74aa5e8895e5538a549
   url: https://github.com/sigstore/cosign/releases/download/{version}/cosign-linux-amd64
