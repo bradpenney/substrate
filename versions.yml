@@ -9,8 +9,8 @@
 # tag only says what was *asked* for.
 
 flux_operator:
-  version: v0.61.0
-  sha256: 550ebc8eec5fae00e55336cf5403a60846c51174095df3d8ca541b48481662af
+  version: v0.62.1
+  sha256: 17c7b0dfc808063e0ffd8afa92641a1baec0f1c01921d74aa5e8895e5538a549
   # Where the pinned asset comes from. {version} is substituted.
   url: https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/{version}/install.yaml
 
@@ -58,9 +58,9 @@ observability:
     install_as: node_exporter
 
   victoria_metrics:
-    version: v1.154.1
+    version: v1.156.0
     url: https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/{version}/victoria-metrics-linux-amd64-{version}.tar.gz
-    sha256: 8c40aec9f77be3a85fbe4b491238b80936af50497fef980b9434095d5076e424
+    sha256: 54409ea381db0316f0bf6f242c718bc498085eb1eb37520b73526e6d86891601
     member: victoria-metrics-prod
     install_as: victoria-metrics-prod
 
@@ -72,7 +72,7 @@ observability:
     install_as: victoria-logs-prod
 
   victoria_logs_datasource:
-    version: v0.33.1
+    version: v0.34.0
     # The Grafana datasource plugin for VictoriaLogs. THIRD-PARTY: Grafana does
     # not bundle it, so without it the provisioned VictoriaLogs datasource loads
     # as an unknown type and every log panel fails silently. That is what 1.5M
@@ -86,7 +86,7 @@ observability:
     # resistant. The published SHA-1 was verified to match, and the sha256 below
     # was then computed from that same reviewed artefact.
     url: https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/{version}/victoriametrics-logs-datasource-{version}.tar.gz
-    sha256: 849edf4d86a6555bbf3fdbe1c53ed719a6c51c3d69965dcc0384e2c129ad991a
+    sha256: 72c7dbe4bc046f278670f6ab4c4b1518201037f35f534eff462f76fa6ef771be
     # A PLUGIN tree: installed into Grafana's data directory, not /usr/local,
     # because grafana.ini points `plugins` there and ProtectSystem=strict makes
     # /usr read-only to the service. Third shape after install_binary and
@@ -95,15 +95,15 @@ observability:
     install_to: /var/lib/grafana/plugins/victoriametrics-logs-datasource
 
   grafana:
-    version: v13.2.4
+    version: v13.3.1
     # NOT a GitHub release asset — Grafana publishes the tarball and its
     # checksum at dl.grafana.com, so that is where both come from. The version
     # appears twice because the tag carries a `v` and the filename does not.
-    url: https://dl.grafana.com/oss/release/grafana-13.2.4.linux-amd64.tar.gz
-    sha256: c48765988fd88572607e4ea670251af8a8e64ab3e360d0f3cf67a6f3587b92ab
+    url: https://dl.grafana.com/oss/release/grafana-13.3.1.linux-amd64.tar.gz
+    sha256: 6acf8939dd2f73332cbcafc27a33973fb1115b8867e7ffa3223c6e2ecbed8531
     # A TREE, not a single binary (455 MB: bin/, conf/, public/). Installed by
     # the install_tree path, not install_binary — see ADR-102.
-    tree_root: grafana-13.2.4
+    tree_root: grafana-13.3.1
     install_to: /usr/local/share/grafana
 
 # cosign on every hypervisor: what install.sh verifies a substrate release

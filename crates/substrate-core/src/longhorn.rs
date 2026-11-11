@@ -167,6 +167,41 @@ pub fn replicas_on_node(replicas: &Value, node: &str) -> Vec<String> {
         })
 }
 
+/// Replica records on `node` whose deletion has NOT been accepted, meaning
+/// they have no `metadata.deletionTimestamp` (bug-215).
+///
+/// A record being deleted is fine: the API server took the delete, and the
+/// finalizer is Longhorn's business. A record with no deletionTimestamp is
+/// one the delete never reached. On 2026-10-27 the roll printed "forgetting 3
+/// Longhorn replica record(s)" while the delete failed in the Longhorn webhook
+/// with `No agent available`, and the result was discarded. All three records
+/// survived untouched, and garmin-sync-state could not attach. This is the
+/// re-read that would have caught it.
+pub fn undeleted_replicas_on_node(replicas: &Value, node: &str) -> Vec<String> {
+    replicas
+        .get("items")
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |items| {
+            items
+                .iter()
+                .filter(|r| r.pointer("/spec/nodeID").and_then(Value::as_str) == Some(node))
+                .filter(|r| r.pointer("/metadata/deletionTimestamp").is_none())
+                .filter_map(|r| r.pointer("/metadata/name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+}
+
+/// The konnectivity window (bug-215). Every controller join or leave makes
+/// k0s rewrite the konnectivity-agent DaemonSet and restart every agent.
+/// Until they reconnect, an API server can have no agent, and any request it
+/// must forward into the cluster fails. A Longhorn admission webhook is such
+/// a request. The failure is transient: the same call succeeds once the
+/// agents are back, so it is a retry, not a verdict.
+pub fn is_no_agent_error(stderr: &str) -> bool {
+    stderr.contains("No agent available")
+}
+
 /// Names of the `volumeattachments.storage.k8s.io` pinning volumes to a
 /// node (bug-170). Deleting them after the node is gone lets the CSI
 /// attacher unpublish immediately instead of waiting six minutes for a
@@ -597,6 +632,36 @@ mod tests {
         );
         assert!(replicas_on_node(&rs, "s1-vm1").is_empty());
         assert!(replicas_on_node(&json!({}), "s1-vm3").is_empty());
+    }
+
+    /// bug-215: the re-read after the delete. A record being deleted has been
+    /// handled; one with no deletionTimestamp is one the delete never reached.
+    #[test]
+    fn a_record_the_delete_never_reached_is_named_and_one_being_deleted_is_not() {
+        let rs = json!({"items": [
+            {"metadata": {"name": "pvc-a-r-1", "deletionTimestamp": "2026-10-27T10:51:02Z"},
+             "spec": {"nodeID": "s2-vm1"}},
+            {"metadata": {"name": "pvc-b-r-1"}, "spec": {"nodeID": "s2-vm1"}},
+            {"metadata": {"name": "pvc-b-r-2"}, "spec": {"nodeID": "s1-vm2"}}]});
+        assert_eq!(undeleted_replicas_on_node(&rs, "s2-vm1"), vec!["pvc-b-r-1"]);
+        assert!(undeleted_replicas_on_node(&rs, "s1-vm3").is_empty());
+        assert!(undeleted_replicas_on_node(&json!({}), "s2-vm1").is_empty());
+    }
+
+    /// bug-215: the exact error from 2026-10-27 is a retry; a refusal on its
+    /// merits is not, so it still halts.
+    #[test]
+    fn no_agent_available_is_a_retry_and_a_real_refusal_is_not() {
+        assert!(is_no_agent_error(
+            "Error from server (InternalError): Internal error occurred: failed calling webhook \
+             \"mutator.longhorn.io\": failed to call webhook: Post \
+             \"https://longhorn-admission-webhook.longhorn-system.svc:9502/v1/webhook/mutation?timeout=10s\": \
+             No agent available"
+        ));
+        assert!(!is_no_agent_error(
+            "admission webhook \"validator.longhorn.io\" denied the request: replica is in use"
+        ));
+        assert!(!is_no_agent_error(""));
     }
 
     /// No Longhorn node data means no evidence any disk is live: refuse.

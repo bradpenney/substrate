@@ -1270,8 +1270,29 @@ impl<'a> Gate<'a> {
             // ...and its volumes, so they can (bug-170).
             provision::detach_dead_node_volumes(admin, donor_host, &donor_vm.static_ip, vm);
             // ...and its replica records, which would otherwise block a
-            // detached volume from ever attaching again (bug-201).
-            provision::forget_dead_node_replicas(admin, donor_host, &donor_vm.static_ip, vm);
+            // detached volume from ever attaching again (bug-201). That is a
+            // write through Longhorn's webhook, and the leave just made k0s
+            // restart every konnectivity agent, so wait them out first and
+            // HALT if the records survive (bug-215): the 2026-10-27 roll
+            // printed "forgetting 3 records", kept all three, and a volume
+            // then could not attach. Halting here is before the node is
+            // re-created; the fix is to delete the named records via
+            // break-glass and roll again.
+            if let Err(e) =
+                provision::wait_konnectivity_settled(admin, donor_host, &donor_vm.static_ip)
+            {
+                println!("ROLL HALTED: {e}");
+                return false;
+            }
+            if let Err(e) =
+                provision::forget_dead_node_replicas(admin, donor_host, &donor_vm.static_ip, vm)
+            {
+                println!(
+                    "ROLL HALTED: could not forget {}'s Longhorn replica records: {e}",
+                    vm.name
+                );
+                return false;
+            }
             let iso = format!(
                 "{}/{}-cloudinit.iso",
                 self.cfg.libvirt.iso_pool_path, vm.name
@@ -1322,6 +1343,14 @@ impl<'a> Gate<'a> {
                 provision::NODE_READY_TIMEOUT,
                 provision::SSH_WAIT_INTERVAL,
             ) {
+                println!("ROLL HALTED: {e}");
+                return false;
+            }
+            // The join restarts every konnectivity agent too (bug-215); the
+            // re-admit below writes through Longhorn's webhook.
+            if let Err(e) =
+                provision::wait_konnectivity_settled(admin, donor_host, &donor_vm.static_ip)
+            {
                 println!("ROLL HALTED: {e}");
                 return false;
             }

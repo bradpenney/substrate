@@ -600,6 +600,74 @@ pub fn detach_dead_node_volumes(admin_user: &str, donor_host: &Host, donor_ip: &
     );
 }
 
+/// How long k0s gets to finish restarting the konnectivity agents after a
+/// controller leaves or joins (bug-215). On 2026-10-27 the rollout took about
+/// two minutes on five nodes; five gives that a wide margin.
+pub const KONNECTIVITY_SETTLE_TIMEOUT: u64 = 300;
+
+/// Attempts at a Longhorn write that fails with `No agent available`, and the
+/// pause between them: a minute in all, on top of the settle wait.
+const NO_AGENT_ATTEMPTS: u32 = 6;
+const NO_AGENT_RETRY_SECS: u64 = 10;
+
+/// Wait for k0s to finish rolling the konnectivity agents (bug-215).
+///
+/// Every controller leave or join makes k0s rewrite the konnectivity-agent
+/// DaemonSet and restart every agent. Until they reconnect an API server can
+/// have no agent, and a call through a Longhorn webhook fails with `No agent
+/// available`. On 2026-10-27 that silently left a destroyed node's replica
+/// records in place, and halted the next node's disk re-admit.
+///
+/// This narrows the window rather than closing it: k0s may rewrite the
+/// DaemonSet a moment AFTER this returns. The guarantee comes from each
+/// Longhorn write retrying that error and the roll re-reading what it
+/// changed, which is why both exist.
+pub fn wait_konnectivity_settled(
+    admin_user: &str,
+    donor_host: &Host,
+    donor_ip: &str,
+) -> Result<()> {
+    println!(
+        "[{}] waiting for the konnectivity agents to settle...",
+        donor_host.name
+    );
+    let out = k0s_kubectl(
+        admin_user,
+        donor_ip,
+        &format!(
+            "-n kube-system rollout status ds/konnectivity-agent --timeout={KONNECTIVITY_SETTLE_TIMEOUT}s"
+        ),
+    )?;
+    if !out.ok() {
+        bail!(
+            "konnectivity agents did not settle within {KONNECTIVITY_SETTLE_TIMEOUT}s: {}",
+            out.stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+/// `k0s_kubectl` for a Longhorn WRITE: retried while the error is the
+/// konnectivity window (bug-215), returned as-is otherwise so the caller judges
+/// a real refusal on its merits.
+fn longhorn_write(admin_user: &str, ip: &str, args: &str) -> Result<crate::exec::Output> {
+    let mut attempt = 1;
+    loop {
+        let out = k0s_kubectl(admin_user, ip, args)?;
+        if out.ok()
+            || !crate::longhorn::is_no_agent_error(&out.stderr)
+            || attempt >= NO_AGENT_ATTEMPTS
+        {
+            return Ok(out);
+        }
+        println!(
+            "    no konnectivity agent yet; retrying in {NO_AGENT_RETRY_SECS}s ({attempt}/{NO_AGENT_ATTEMPTS})"
+        );
+        std::thread::sleep(std::time::Duration::from_secs(NO_AGENT_RETRY_SECS));
+        attempt += 1;
+    }
+}
+
 /// Delete the Longhorn Replica records left on a node the roll has destroyed
 /// (bug-201). Its storage disk went with it, so each record describes data that
 /// no longer exists — and for a detached volume, one that blocks attach.
@@ -607,17 +675,43 @@ pub fn detach_dead_node_volumes(admin_user: &str, donor_host: &Host, donor_ip: &
 /// Safe by construction: it runs only AFTER the roll's last-replica guard has
 /// proven every volume keeps a live copy elsewhere, and it names only replicas
 /// whose node is the one just destroyed.
-pub fn forget_dead_node_replicas(admin_user: &str, donor_host: &Host, donor_ip: &str, dead: &Vm) {
-    let Some(rs) = k0s_kubectl_json(
-        admin_user,
-        donor_ip,
-        "-n longhorn-system get replicas.longhorn.io",
-    ) else {
-        return;
+///
+/// CHECKED, NOT ASSUMED (bug-215). The first version discarded the delete's
+/// result, so a delete refused in the konnectivity window printed "forgetting
+/// 3 Longhorn replica record(s)" and changed nothing. Now the delete retries
+/// that error, any other refusal is an error, and the records are re-read
+/// afterwards: any record on the dead node whose deletion was not accepted is
+/// an error the roll halts on, rather than a volume that cannot attach later.
+pub fn forget_dead_node_replicas(
+    admin_user: &str,
+    donor_host: &Host,
+    donor_ip: &str,
+    dead: &Vm,
+) -> Result<()> {
+    // `None` only when this cluster has no Longhorn at all; any other failure
+    // to list is an error, because "could not look" is not "nothing there".
+    let read = || -> Result<Option<serde_json::Value>> {
+        let out = k0s_kubectl(
+            admin_user,
+            donor_ip,
+            "-n longhorn-system get replicas.longhorn.io -o json",
+        )?;
+        if !out.ok() {
+            if out.stderr.contains("doesn't have a resource type") {
+                return Ok(None);
+            }
+            bail!("could not list Longhorn replicas: {}", out.stderr.trim());
+        }
+        serde_json::from_str(&out.stdout)
+            .map(Some)
+            .context("Longhorn replica list was not JSON")
+    };
+    let Some(rs) = read()? else {
+        return Ok(());
     };
     let names = crate::longhorn::replicas_on_node(&rs, &dead.name);
     if names.is_empty() {
-        return;
+        return Ok(());
     }
     println!(
         "[{}] forgetting {} Longhorn replica record(s) on {}...",
@@ -625,14 +719,29 @@ pub fn forget_dead_node_replicas(admin_user: &str, donor_host: &Host, donor_ip: 
         names.len(),
         dead.name
     );
-    let _ = k0s_kubectl(
+    let out = longhorn_write(
         admin_user,
         donor_ip,
         &format!(
-            "-n longhorn-system delete replicas.longhorn.io {} --wait=false",
+            "-n longhorn-system delete replicas.longhorn.io {} --wait=false --ignore-not-found",
             names.join(" ")
         ),
-    );
+    )?;
+    if !out.ok() {
+        bail!("delete refused: {}", out.stderr.trim());
+    }
+    let after = read()?.context("Longhorn replicas vanished as a resource type mid-roll")?;
+    let survivors = crate::longhorn::undeleted_replicas_on_node(&after, &dead.name);
+    if !survivors.is_empty() {
+        bail!(
+            "{} replica record(s) on {} survived the delete: {}",
+            survivors.len(),
+            dead.name,
+            survivors.join(" ")
+        );
+    }
+    println!("    all {} record(s) deleted", names.len());
+    Ok(())
 }
 
 /// How long a re-added disk gets to come up Ready and Schedulable.
@@ -702,8 +811,11 @@ pub fn readmit_longhorn_disk(
         "[{}] re-admitting {}'s longhorn disk (stale record {}, reserved {})...",
         donor_host.name, node.name, stale.key, stale.storage_reserved
     );
+    // Through the Longhorn webhook, so retried across the konnectivity window
+    // (bug-215): on 2026-10-27 s2-vm2's evict patch hit `No agent available`
+    // and the roll halted on an error that would have cleared in a minute.
     let patch = |body: &str| -> Result<crate::exec::Output> {
-        k0s_kubectl(
+        longhorn_write(
             admin_user,
             donor_ip,
             &format!(

@@ -59,9 +59,23 @@ jobs:
       - name: Update versions.yml
         if: steps.check.outputs.changed == 'true'
         run: |
-          sed -i "s|^  version: ${{ steps.check.outputs.current }}$|  version: ${{ steps.check.outputs.latest }}|" versions.yml
-          sed -i "s|^  sha256: .*$|  sha256: ${{ steps.sum.outputs.sha }}|" versions.yml
+          set -euo pipefail
+          # SCOPED TO THE flux_operator BLOCK (its header line through the next
+          # blank line). The unscoped version rewrote EVERY two-space
+          # `sha256:` in the file, and cosign became the second one when it
+          # was added (ADR-192), so PR #5 (v0.62.1) arrived with cosign's
+          # checksum replaced by flux-operator's. Merged, every host's cosign
+          # install would have failed verification, and with it install.sh.
+          sed -i "/^flux_operator:$/,/^$/ s|^  version: ${{ steps.check.outputs.current }}$|  version: ${{ steps.check.outputs.latest }}|" versions.yml
+          sed -i "/^flux_operator:$/,/^$/ s|^  sha256: .*$|  sha256: ${{ steps.sum.outputs.sha }}|" versions.yml
           grep -A3 '^flux_operator:' versions.yml
+          # Prove the edit touched EXACTLY the two lines it meant to: one
+          # version and one sha256, both inside flux_operator. Anything else
+          # fails the job instead of opening a PR a human has to catch.
+          [ "$(git diff --numstat versions.yml | cut -f1,2)" = "$(printf '2\t2')" ] \
+            || { echo "versions.yml changed more than the two flux_operator lines"; git diff versions.yml; exit 1; }
+          awk '/^flux_operator:$/{f=1} f&&/^$/{exit} f' versions.yml | grep -qx "  version: ${{ steps.check.outputs.latest }}"
+          awk '/^flux_operator:$/{f=1} f&&/^$/{exit} f' versions.yml | grep -qx "  sha256: ${{ steps.sum.outputs.sha }}"
 
       - name: Open a PR
         if: steps.check.outputs.changed == 'true'
