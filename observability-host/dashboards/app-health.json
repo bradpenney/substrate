@@ -528,7 +528,7 @@
             "type": "victoriametrics-logs-datasource",
             "uid": "victorialogs"
           },
-          "expr": "{kubernetes.pod_namespace=~\"$namespace\"} error OR ERROR OR warn OR WARN OR fatal OR panic",
+          "expr": "{kubernetes.pod_namespace=~\"$namespace\"} (error OR ERROR OR warn OR WARN OR fatal OR panic)",
           "refId": "A"
         }
       ],
