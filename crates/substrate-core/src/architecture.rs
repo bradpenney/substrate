@@ -353,15 +353,6 @@ fn wrap(s: &str, width: usize) -> String {
     out
 }
 
-/// First sentence only — a diagram label is a caption, not documentation. The
-/// full description travels to the generated page beside the diagram.
-fn first_sentence(s: &str) -> &str {
-    match s.find(". ") {
-        Some(i) => &s[..=i],
-        None => s,
-    }
-}
-
 fn shape_for(node_type: &str) -> &'static str {
     match node_type {
         "actor" => "person",
@@ -372,35 +363,106 @@ fn shape_for(node_type: &str) -> &'static str {
     }
 }
 
-/// Amber-on-dark, matching the estate's own pages. Colour carries meaning here:
-/// external systems are dimmed because they are not ours to change, and the
-/// invariant host is the only thing drawn in warning red.
-fn style_for(node: &Node, pad: &str) -> String {
-    let (fill, stroke, font) = match node.layer() {
-        "people" => ("#1b1815", "#ffb000", "#e8dcc8"),
-        "external" => ("#17150f", "#6b6257", "#a99f92"),
-        "physical" => ("#191612", "#ffb000", "#ffb000"),
-        "node" => ("#1d1a15", "#8a8078", "#e8dcc8"),
-        "cluster" => ("#161310", "#ffb000", "#ffb000"),
-        "platform" => ("#1b1815", "#c98f10", "#e8dcc8"),
-        "host-tier" => ("#1b1712", "#7fb3ff", "#dce8ff"),
-        "application" => ("#181a15", "#9ccc65", "#e4f0d5"),
-        _ => ("#1b1815", "#8a8078", "#e8dcc8"),
+/// Invariant's palette (invariant-platform.io): a cool near-black ground,
+/// hairline greys, and one hue per layer. Colour says what a thing IS, as on
+/// the site; the failure-prone host is the only thing drawn in rose.
+const GROUND: &str = "#0b0d10";
+const DEEP: &str = "#0d1014";
+const HAIR: &str = "#2a3138";
+const TEXT: &str = "#e6e8eb";
+const MUTED: &str = "#8b939e";
+const INVARIANT_HUE: &str = "#fb7185";
+
+/// (layer, hue). A layer not listed falls back to the neutral `node` style.
+const LAYERS: &[(&str, &str)] = &[
+    ("people", "#f59e0b"),
+    ("external", "#60a5fa"),
+    ("physical", "#8b939e"),
+    ("node", "#8b939e"),
+    ("cluster", "#22d3ee"),
+    ("platform", "#22d3ee"),
+    ("host-tier", "#a78bfa"),
+    ("application", "#34d399"),
+];
+
+/// `hue` laid over `base` at `t` (0..=1), as #rrggbb. D2 takes no alpha, so
+/// every tint is computed here instead of left to the renderer.
+fn mix(hue: &str, base: &str, t: f64) -> String {
+    let ch =
+        |h: &str, i: usize| u8::from_str_radix(&h[1 + 2 * i..3 + 2 * i], 16).unwrap_or(0) as f64;
+    let c = |i: usize| (ch(base, i) + (ch(hue, i) - ch(base, i)) * t).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", c(0), c(1), c(2))
+}
+
+fn layer_class(layer: &str) -> String {
+    let known = LAYERS.iter().any(|(l, _)| *l == layer);
+    format!("layer-{}", if known { layer } else { "node" })
+}
+
+/// The D2 classes every view shares. Shapes and connectors carry a class name
+/// into the SVG, so the page that shows a view can light a node's connections
+/// on hover without the diagram knowing anything about the page.
+fn classes_block() -> String {
+    let leaf = |hue: &str| {
+        format!(
+            "{{ style: {{ fill: \"linear-gradient({}, {})\"; stroke: \"{}\"; stroke-width: 1; \
+             border-radius: 10; font-color: \"{TEXT}\"; shadow: false }} }}",
+            mix(hue, DEEP, 0.16),
+            DEEP,
+            mix(hue, DEEP, 0.55)
+        )
     };
+    let mut out = String::from("classes: {\n");
+    for (layer, hue) in LAYERS {
+        out.push_str(&format!("  layer-{layer}: {}\n", leaf(hue)));
+    }
+    out.push_str(&format!("  invariant: {}\n", leaf(INVARIANT_HUE)));
+    out.push_str(&format!(
+        "  container: {{ style: {{ fill: \"{DEEP}\"; stroke: \"{HAIR}\"; stroke-dash: 4; \
+         border-radius: 14; font-color: \"{MUTED}\"; text-transform: uppercase; font-size: 13; \
+         bold: false; shadow: false }} }}\n"
+    ));
+    out.push_str(&format!(
+        "  edge: {{ style: {{ stroke: \"{}\"; stroke-width: 2; font-color: \"{MUTED}\"; \
+         font-size: 11; italic: false }} }}\n",
+        mix(MUTED, GROUND, 0.45)
+    ));
+    out.push_str("}\n\n");
+    out
+}
+
+/// The node's class: its layer, or `invariant` for the failure-prone host.
+fn class_for(node: &Node) -> String {
     let invariant = node
         .detail()
         .map(|d| d.contains("failure-prone"))
         .unwrap_or(false);
-    let stroke = if invariant { "#ff5c4d" } else { stroke };
-    let width = if invariant { 3 } else { 2 };
-    // Built with the caller's indent rather than post-processed: replacing
-    // every double-space afterwards also mangles the spaces INSIDE the block,
-    // which is how the first version produced ragged output that still compiled.
-    format!(
-        "{pad}  style: {{\n{pad}    fill: \"{fill}\"\n{pad}    stroke: \"{stroke}\"\n\
-         {pad}    stroke-width: {width}\n{pad}    font-color: \"{font}\"\n\
-         {pad}    border-radius: 6\n{pad}  }}\n"
-    )
+    if invariant {
+        "invariant".to_string()
+    } else {
+        layer_class(node.layer())
+    }
+}
+
+/// The nearest ancestor that is drawn in this view, skipping hidden ones.
+fn drawn_parent(
+    id: &str,
+    containment: &BTreeMap<String, Vec<String>>,
+    visible: &BTreeSet<String>,
+) -> Option<String> {
+    let mut at = id.to_string();
+    let mut seen = BTreeSet::new();
+    while seen.insert(at.clone()) {
+        let parent = containment
+            .iter()
+            .find(|(_, kids)| kids.contains(&at))
+            .map(|(c, _)| c.clone())?;
+        if visible.contains(&parent) {
+            return Some(parent);
+        }
+        at = parent;
+    }
+    None
 }
 
 impl Architecture {
@@ -478,28 +540,33 @@ impl Architecture {
         for line in wrap(view.purpose, 76).split("\\n") {
             out.push_str(&format!("# {line}\n"));
         }
-        out.push_str(
-            "\nvars: {\n  d2-config: {\n    layout-engine: elk\n    dark-theme-id: 200\n  }\n}\n\n",
-        );
         out.push_str(&format!(
-            "title: |md\n  # {}\n| {{ near: top-center; style.font-color: \"#ffb000\" }}\n\n",
+            "\nvars: {{\n  d2-config: {{\n    layout-engine: elk\n    theme-id: 200\n    \
+             theme-overrides: {{ N7: \"{GROUND}\" }}\n  }}\n}}\n\n"
+        ));
+        out.push_str(&classes_block());
+        out.push_str(&format!(
+            "title: \"{}\" {{\n  near: top-left\n  shape: text\n  style: {{ font-size: 15; \
+             font-color: \"{MUTED}\"; text-transform: uppercase; bold: false }}\n}}\n\n",
             d2_quote(view.title)
         ));
 
         // Children are emitted inside their container so D2 nests them.
         let mut emitted: BTreeSet<String> = BTreeSet::new();
-        let is_child: BTreeSet<&str> = containment
-            .values()
-            .flat_map(|v| v.iter().map(|s| s.as_str()))
-            .collect();
 
         for node in &self.nodes {
-            if !visible.contains(&node.unique_id) || is_child.contains(node.unique_id.as_str()) {
+            if !visible.contains(&node.unique_id)
+                || drawn_parent(&node.unique_id, &containment, &visible).is_some()
+            {
                 continue;
             }
             self.emit_node(&mut out, node, &containment, &visible, &mut emitted, 0);
         }
 
+        // A collapsed box turns several real edges into the same drawn pair.
+        // Each pair is drawn once, carrying every protocol that crosses it
+        // ("HTTPS · DoT"), in the order the model first names them.
+        let mut pairs: Vec<((String, String), Vec<String>, String)> = Vec::new();
         for r in &self.relationships {
             if !view.edge_layers.is_empty() && !view.edge_layers.contains(&r.layer()) {
                 continue;
@@ -524,15 +591,34 @@ impl Architecture {
                 continue;
             }
             let label = r.protocol.clone().unwrap_or_default();
+            match pairs.iter_mut().find(|(k, _, _)| k.0 == s && k.1 == d) {
+                Some((_, labels, _)) => {
+                    if !label.is_empty() && !labels.contains(&label) {
+                        labels.push(label);
+                    }
+                }
+                None => pairs.push((
+                    (s, d),
+                    if label.is_empty() {
+                        vec![]
+                    } else {
+                        vec![label]
+                    },
+                    r.layer().to_string(),
+                )),
+            }
+        }
+        for ((s, d), labels, layer) in pairs {
             out.push_str(&format!(
-                "{} -> {}: {{ {}\n  style: {{ stroke: \"#c98f10\"; stroke-width: 2 }}\n}}\n",
+                "{} -> {}: {{ {}\n  class: [edge; edge-{}]\n}}\n",
                 d2_id(&s),
                 d2_id(&d),
-                if label.is_empty() {
+                if labels.is_empty() {
                     String::new()
                 } else {
-                    format!("label: {label}")
-                }
+                    format!("label: {}", labels.join(" · "))
+                },
+                d2_id(&layer)
             ));
         }
         out
@@ -546,25 +632,73 @@ impl Architecture {
         visible: &BTreeSet<String>,
         containment: &BTreeMap<String, Vec<String>>,
     ) -> Option<String> {
-        if visible.contains(id) {
-            return Some(self.qualified(id, containment));
-        }
-        let parent = containment
-            .iter()
-            .find(|(_, kids)| kids.iter().any(|k| k == id))
-            .map(|(c, _)| c.clone())?;
-        self.visible_ancestor(&parent, visible, containment)
+        self.ancestor_walk(id, visible, containment, &mut BTreeSet::new())
     }
 
-    /// D2 addresses nested shapes by path, so a child must be referred to as
-    /// `container.child` or the edge silently creates a NEW top-level shape.
-    fn qualified(&self, id: &str, containment: &BTreeMap<String, Vec<String>>) -> String {
-        match containment
+    /// `seen` stops the walk going round: the estate is composed of the
+    /// hypervisors, and a hypervisor's parent is the estate, so in a view
+    /// that draws neither, following parents then parts never ended.
+    fn ancestor_walk(
+        &self,
+        id: &str,
+        visible: &BTreeSet<String>,
+        containment: &BTreeMap<String, Vec<String>>,
+        seen: &mut BTreeSet<String>,
+    ) -> Option<String> {
+        if visible.contains(id) {
+            return Some(self.qualified(id, containment, visible));
+        }
+        if !seen.insert(id.to_string()) {
+            return None;
+        }
+        if let Some(parent) = containment
             .iter()
             .find(|(_, kids)| kids.iter().any(|k| k == id))
             .map(|(c, _)| c.clone())
         {
-            Some(parent) => format!("{}.{}", self.qualified(&parent, containment), id),
+            return self.ancestor_walk(&parent, visible, containment, seen);
+        }
+        // No parent of its own: a thing COMPOSED of parts sits wherever all of
+        // its parts sit. The cluster is made of VMs on two hypervisors, so it
+        // has no container, yet every one of its nodes is inside the estate.
+        // Without this, every edge out of the cluster vanished from the
+        // context view, including the whole inbound path. The parts are read
+        // from the composed-of relationships themselves: `containment()` places
+        // each node once, so the VMs appear there only under their hypervisor.
+        let parts: Vec<&String> = self
+            .relationships
+            .iter()
+            .filter_map(|r| r.relationship_type.composed_of.as_ref())
+            .filter(|c| c.container == id)
+            .flat_map(|c| c.nodes.iter())
+            .collect();
+        let mut landing: Option<String> = None;
+        for part in parts {
+            // Each part walks its own path: two VMs reaching the same estate is
+            // agreement, not a cycle.
+            let at = self.ancestor_walk(part, visible, containment, &mut seen.clone())?;
+            match &landing {
+                None => landing = Some(at),
+                Some(l) if *l == at => {}
+                Some(_) => return None,
+            }
+        }
+        landing
+    }
+
+    /// D2 addresses nested shapes by path, so a child must be referred to as
+    /// `container.child` or the edge silently creates a NEW top-level shape.
+    /// The path runs through DRAWN ancestors only: naming a hidden one makes
+    /// D2 invent an unstyled box for it (the observability view grew a raw
+    /// `homelab` and `server1` that way).
+    fn qualified(
+        &self,
+        id: &str,
+        containment: &BTreeMap<String, Vec<String>>,
+        visible: &BTreeSet<String>,
+    ) -> String {
+        match drawn_parent(id, containment, visible) {
+            Some(parent) => format!("{}.{}", self.qualified(&parent, containment, visible), id),
             None => id.to_string(),
         }
     }
@@ -582,37 +716,26 @@ impl Architecture {
             return;
         }
         let pad = "  ".repeat(depth);
-        let kids: Vec<&Node> = containment
-            .get(&node.unique_id)
-            .map(|ks| {
-                ks.iter()
-                    .filter(|k| visible.contains(*k))
-                    .filter_map(|k| self.node(k))
-                    .collect()
+        let kids: Vec<&Node> = self
+            .nodes
+            .iter()
+            .filter(|n| visible.contains(&n.unique_id))
+            .filter(|n| {
+                drawn_parent(&n.unique_id, containment, visible).as_deref()
+                    == Some(node.unique_id.as_str())
             })
-            .unwrap_or_default();
-
-        let mut label = wrap(first_sentence(&node.description), 34);
-        if let Some(d) = node.detail() {
-            label.push_str(&format!("\\n\\n{}", wrap(d, 34)));
-        }
-        let controls = if node.controls.is_empty() {
-            String::new()
-        } else {
-            format!("\\n\\n⛨ {} control(s)", node.controls.len())
-        };
+            .collect();
 
         out.push_str(&format!("{pad}{}: {{\n", d2_id(&node.unique_id)));
         out.push_str(&format!("{pad}  label: \"{}\"\n", d2_quote(&node.name)));
+        // No tooltip: D2 draws it as an icon on every shape. The page showing
+        // the view reads descriptions from the model and shows them on hover.
         if kids.is_empty() {
             out.push_str(&format!("{pad}  shape: {}\n", shape_for(&node.node_type)));
-            out.push_str(&format!(
-                "{pad}  tooltip: \"{}{}\"\n",
-                d2_quote(&label.replace("\\n", " ")),
-                d2_quote(&controls.replace("\\n", " "))
-            ));
+            out.push_str(&format!("{pad}  class: [node; {}]\n", class_for(node)));
+        } else {
+            out.push_str(&format!("{pad}  class: container\n"));
         }
-        out.push_str(&style_for(node, &pad));
         for kid in kids {
             self.emit_node(out, kid, containment, visible, emitted, depth + 1);
         }
@@ -933,6 +1056,71 @@ mod tests {
         // box beside the cluster it belonged in.
         assert_eq!(d2_id("k0s-cluster.flux"), "k0s-cluster.flux");
         assert_eq!(d2_id("has space/slash"), "has_space_slash");
+    }
+
+    #[test]
+    fn an_edge_from_a_composed_cluster_lands_on_the_collapsed_estate() {
+        // The cluster is composed of VMs that sit on hypervisors inside the
+        // estate; it has no container of its own. Its edges must still reach
+        // the context view, and two edges that collapse into one are drawn once.
+        let a = arch_from(serde_json::json!({
+            "nodes": [node("estate", "physical", None), node("host", "physical", None),
+                      node("host2", "physical", None), node("vm2", "node", None),
+                      node("vm", "node", None), node("cluster", "cluster", None),
+                      node("svc", "platform", None), node("saas", "external", None),
+                      node("svc2", "platform", None)],
+            "relationships": [
+                {"unique-id": "e", "relationship-type": {"composed-of": {"container": "estate", "nodes": ["host", "host2"]}}},
+                {"unique-id": "h", "relationship-type": {"deployed-in": {"container": "host", "nodes": ["vm"]}}},
+                {"unique-id": "h2", "relationship-type": {"deployed-in": {"container": "host2", "nodes": ["vm2"]}}},
+                {"unique-id": "c", "relationship-type": {"composed-of": {"container": "cluster", "nodes": ["vm", "vm2"]}}},
+                {"unique-id": "s", "relationship-type": {"deployed-in": {"container": "cluster", "nodes": ["svc", "svc2"]}}},
+                {"unique-id": "out1", "description": "", "metadata": [{"layer": "traffic"}], "protocol": "HTTPS",
+                 "relationship-type": {"connects": {"source": {"node": "svc"}, "destination": {"node": "saas"}}}},
+                {"unique-id": "out2", "description": "", "metadata": [{"layer": "traffic"}], "protocol": "DoT",
+                 "relationship-type": {"connects": {"source": {"node": "svc2"}, "destination": {"node": "saas"}}}}
+            ]
+        }));
+        let view = View {
+            id: "t",
+            title: "t",
+            purpose: "t",
+            node_layers: &["physical", "external"],
+            edge_layers: &[],
+            collapse: &["estate"],
+        };
+        let d2 = a.render_d2(&view);
+        assert_eq!(d2.matches("estate -> saas").count(), 1, "{d2}");
+        assert!(d2.contains("label: HTTPS · DoT"), "{d2}");
+    }
+
+    #[test]
+    fn a_hidden_parent_is_never_named_in_a_path() {
+        // Naming a container the view does not draw makes D2 invent an
+        // unstyled box for it. A shape whose parents are hidden is drawn at
+        // the top level and addressed by its own id.
+        let a = arch_from(serde_json::json!({
+            "nodes": [node("estate", "physical", None), node("host", "physical", None),
+                      node("svc", "host-tier", None), node("saas", "external", None)],
+            "relationships": [
+                {"unique-id": "e", "relationship-type": {"composed-of": {"container": "estate", "nodes": ["host"]}}},
+                {"unique-id": "h", "relationship-type": {"deployed-in": {"container": "host", "nodes": ["svc"]}}},
+                {"unique-id": "o", "description": "", "metadata": [{"layer": "traffic"}], "protocol": "HTTPS",
+                 "relationship-type": {"connects": {"source": {"node": "svc"}, "destination": {"node": "saas"}}}}
+            ]
+        }));
+        let view = View {
+            id: "t",
+            title: "t",
+            purpose: "t",
+            node_layers: &["host-tier", "external"],
+            edge_layers: &[],
+            collapse: &[],
+        };
+        let d2 = a.render_d2(&view);
+        assert!(d2.contains("\nsvc: {"), "{d2}");
+        assert!(d2.contains("svc -> saas"), "{d2}");
+        assert!(!d2.contains("estate") && !d2.contains("host."), "{d2}");
     }
 
     #[test]
