@@ -353,15 +353,6 @@ fn wrap(s: &str, width: usize) -> String {
     out
 }
 
-/// First sentence only — a diagram label is a caption, not documentation. The
-/// full description travels to the generated page beside the diagram.
-fn first_sentence(s: &str) -> &str {
-    match s.find(". ") {
-        Some(i) => &s[..=i],
-        None => s,
-    }
-}
-
 fn shape_for(node_type: &str) -> &'static str {
     match node_type {
         "actor" => "person",
@@ -372,35 +363,85 @@ fn shape_for(node_type: &str) -> &'static str {
     }
 }
 
-/// Amber-on-dark, matching the estate's own pages. Colour carries meaning here:
-/// external systems are dimmed because they are not ours to change, and the
-/// invariant host is the only thing drawn in warning red.
-fn style_for(node: &Node, pad: &str) -> String {
-    let (fill, stroke, font) = match node.layer() {
-        "people" => ("#1b1815", "#ffb000", "#e8dcc8"),
-        "external" => ("#17150f", "#6b6257", "#a99f92"),
-        "physical" => ("#191612", "#ffb000", "#ffb000"),
-        "node" => ("#1d1a15", "#8a8078", "#e8dcc8"),
-        "cluster" => ("#161310", "#ffb000", "#ffb000"),
-        "platform" => ("#1b1815", "#c98f10", "#e8dcc8"),
-        "host-tier" => ("#1b1712", "#7fb3ff", "#dce8ff"),
-        "application" => ("#181a15", "#9ccc65", "#e4f0d5"),
-        _ => ("#1b1815", "#8a8078", "#e8dcc8"),
+/// Invariant's palette (invariant-platform.io): a cool near-black ground,
+/// hairline greys, and one hue per layer. Colour says what a thing IS, as on
+/// the site; the failure-prone host is the only thing drawn in rose.
+const GROUND: &str = "#0b0d10";
+const DEEP: &str = "#0d1014";
+const HAIR: &str = "#2a3138";
+const TEXT: &str = "#e6e8eb";
+const MUTED: &str = "#8b939e";
+const INVARIANT_HUE: &str = "#fb7185";
+
+/// (layer, hue). A layer not listed falls back to the neutral `node` style.
+const LAYERS: &[(&str, &str)] = &[
+    ("people", "#f59e0b"),
+    ("external", "#60a5fa"),
+    ("physical", "#8b939e"),
+    ("node", "#8b939e"),
+    ("cluster", "#22d3ee"),
+    ("platform", "#22d3ee"),
+    ("host-tier", "#a78bfa"),
+    ("application", "#34d399"),
+];
+
+/// `hue` laid over `base` at `t` (0..=1), as #rrggbb. D2 takes no alpha, so
+/// every tint is computed here instead of left to the renderer.
+fn mix(hue: &str, base: &str, t: f64) -> String {
+    let ch =
+        |h: &str, i: usize| u8::from_str_radix(&h[1 + 2 * i..3 + 2 * i], 16).unwrap_or(0) as f64;
+    let c = |i: usize| (ch(base, i) + (ch(hue, i) - ch(base, i)) * t).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", c(0), c(1), c(2))
+}
+
+fn layer_class(layer: &str) -> String {
+    let known = LAYERS.iter().any(|(l, _)| *l == layer);
+    format!("layer-{}", if known { layer } else { "node" })
+}
+
+/// The D2 classes every view shares. Shapes and connectors carry a class name
+/// into the SVG, so the page that shows a view can light a node's connections
+/// on hover without the diagram knowing anything about the page.
+fn classes_block() -> String {
+    let leaf = |hue: &str| {
+        format!(
+            "{{ style: {{ fill: \"linear-gradient({}, {})\"; stroke: \"{}\"; stroke-width: 1; \
+             border-radius: 10; font-color: \"{TEXT}\"; shadow: false }} }}",
+            mix(hue, DEEP, 0.16),
+            DEEP,
+            mix(hue, DEEP, 0.55)
+        )
     };
+    let mut out = String::from("classes: {\n");
+    for (layer, hue) in LAYERS {
+        out.push_str(&format!("  layer-{layer}: {}\n", leaf(hue)));
+    }
+    out.push_str(&format!("  invariant: {}\n", leaf(INVARIANT_HUE)));
+    out.push_str(&format!(
+        "  container: {{ style: {{ fill: \"{DEEP}\"; stroke: \"{HAIR}\"; stroke-dash: 4; \
+         border-radius: 14; font-color: \"{MUTED}\"; text-transform: uppercase; font-size: 13; \
+         bold: false; shadow: false }} }}\n"
+    ));
+    out.push_str(&format!(
+        "  edge: {{ style: {{ stroke: \"{}\"; stroke-width: 2; font-color: \"{MUTED}\"; \
+         font-size: 11; italic: false }} }}\n",
+        mix(MUTED, GROUND, 0.45)
+    ));
+    out.push_str("}\n\n");
+    out
+}
+
+/// The node's class: its layer, or `invariant` for the failure-prone host.
+fn class_for(node: &Node) -> String {
     let invariant = node
         .detail()
         .map(|d| d.contains("failure-prone"))
         .unwrap_or(false);
-    let stroke = if invariant { "#ff5c4d" } else { stroke };
-    let width = if invariant { 3 } else { 2 };
-    // Built with the caller's indent rather than post-processed: replacing
-    // every double-space afterwards also mangles the spaces INSIDE the block,
-    // which is how the first version produced ragged output that still compiled.
-    format!(
-        "{pad}  style: {{\n{pad}    fill: \"{fill}\"\n{pad}    stroke: \"{stroke}\"\n\
-         {pad}    stroke-width: {width}\n{pad}    font-color: \"{font}\"\n\
-         {pad}    border-radius: 6\n{pad}  }}\n"
-    )
+    if invariant {
+        "invariant".to_string()
+    } else {
+        layer_class(node.layer())
+    }
 }
 
 impl Architecture {
@@ -478,11 +519,14 @@ impl Architecture {
         for line in wrap(view.purpose, 76).split("\\n") {
             out.push_str(&format!("# {line}\n"));
         }
-        out.push_str(
-            "\nvars: {\n  d2-config: {\n    layout-engine: elk\n    dark-theme-id: 200\n  }\n}\n\n",
-        );
         out.push_str(&format!(
-            "title: |md\n  # {}\n| {{ near: top-center; style.font-color: \"#ffb000\" }}\n\n",
+            "\nvars: {{\n  d2-config: {{\n    layout-engine: elk\n    theme-id: 200\n    \
+             theme-overrides: {{ N7: \"{GROUND}\" }}\n  }}\n}}\n\n"
+        ));
+        out.push_str(&classes_block());
+        out.push_str(&format!(
+            "title: \"{}\" {{\n  near: top-left\n  shape: text\n  style: {{ font-size: 15; \
+             font-color: \"{MUTED}\"; text-transform: uppercase; bold: false }}\n}}\n\n",
             d2_quote(view.title)
         ));
 
@@ -525,14 +569,15 @@ impl Architecture {
             }
             let label = r.protocol.clone().unwrap_or_default();
             out.push_str(&format!(
-                "{} -> {}: {{ {}\n  style: {{ stroke: \"#c98f10\"; stroke-width: 2 }}\n}}\n",
+                "{} -> {}: {{ {}\n  class: [edge; edge-{}]\n}}\n",
                 d2_id(&s),
                 d2_id(&d),
                 if label.is_empty() {
                     String::new()
                 } else {
                     format!("label: {label}")
-                }
+                },
+                d2_id(r.layer())
             ));
         }
         out
@@ -592,27 +637,16 @@ impl Architecture {
             })
             .unwrap_or_default();
 
-        let mut label = wrap(first_sentence(&node.description), 34);
-        if let Some(d) = node.detail() {
-            label.push_str(&format!("\\n\\n{}", wrap(d, 34)));
-        }
-        let controls = if node.controls.is_empty() {
-            String::new()
-        } else {
-            format!("\\n\\n⛨ {} control(s)", node.controls.len())
-        };
-
         out.push_str(&format!("{pad}{}: {{\n", d2_id(&node.unique_id)));
         out.push_str(&format!("{pad}  label: \"{}\"\n", d2_quote(&node.name)));
+        // No tooltip: D2 draws it as an icon on every shape. The page showing
+        // the view reads descriptions from the model and shows them on hover.
         if kids.is_empty() {
             out.push_str(&format!("{pad}  shape: {}\n", shape_for(&node.node_type)));
-            out.push_str(&format!(
-                "{pad}  tooltip: \"{}{}\"\n",
-                d2_quote(&label.replace("\\n", " ")),
-                d2_quote(&controls.replace("\\n", " "))
-            ));
+            out.push_str(&format!("{pad}  class: [node; {}]\n", class_for(node)));
+        } else {
+            out.push_str(&format!("{pad}  class: container\n"));
         }
-        out.push_str(&style_for(node, &pad));
         for kid in kids {
             self.emit_node(out, kid, containment, visible, emitted, depth + 1);
         }
